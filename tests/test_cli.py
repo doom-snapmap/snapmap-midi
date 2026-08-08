@@ -52,6 +52,26 @@ def test_the_output_folder_is_created(tmp_path):
     assert (missing / "rawmap.json").is_file()
 
 
+def test_the_retired_out_flag_refuses_instead_of_guessing(tmp_path, capsys):
+    """`--out` was removed, and removing it was not enough. argparse
+    abbreviates unambiguous prefixes, so `--out song.json` bound to
+    `--out-dir` and wrote `song.json/rawmap.json` -- a DIRECTORY named after
+    the file someone meant to write, with no error. Anyone working from muscle
+    memory or an old note got that silently."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["compile", TINY_MIDI, "--out", str(tmp_path / "song.json")])
+    assert exit_info.value.code == 2
+    assert "--out was removed" in capsys.readouterr().err
+    assert not (tmp_path / "song.json").exists()
+
+
+def test_no_flag_binds_by_abbreviation(tmp_path):
+    """The same trap, for every other flag. `--but` bound to `--button`."""
+    for abbreviated in ("--but", "--out-d", "--basel"):
+        with pytest.raises(SystemExit):
+            main(["compile", TINY_MIDI, abbreviated, "x", "--out-dir", str(tmp_path)])
+
+
 def test_missing_midi_file_is_a_clean_error(tmp_path, capsys):
     """Not a traceback. Mistyping a path is the most ordinary mistake there
     is, and the MIDI reader's bare FileNotFoundError is not an answer."""

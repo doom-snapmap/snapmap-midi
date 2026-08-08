@@ -1,10 +1,18 @@
 # Code owners -- a change to any path below REQUIRES the maintainer's review before it can merge.
 # Pair this with branch protection on `main` that has "Require review from Code Owners" enabled.
-# These are the supply-chain-critical surfaces for a Python package: the CI workflows, and the
-# dependency declaration that decides what gets installed.
+# These are the supply-chain-critical surfaces for a Python package: the CI workflows, the
+# dependency declaration that decides what gets installed, and the shipped data that decides
+# what every note resolves to.
+#
+# The data directory joined this list when the sound palette started shipping. It carries
+# identifiers rather than code, so a tampered entry cannot execute anything -- but it CAN
+# silently change which sound every note plays, and no test can tell an intentional palette
+# change from a malicious one.
 #
 # NOTE: @adiazpar is the maintainer's GitHub handle -- verify it matches the account that owns
 # the repo (an invalid handle here is silently ignored by GitHub, i.e. no enforcement).
 
-/.github/         @adiazpar
-/pyproject.toml   @adiazpar
+/.github/                    @adiazpar
+/pyproject.toml              @adiazpar
+/src/snapmap_midi/data/      @adiazpar
+/tools/                      @adiazpar

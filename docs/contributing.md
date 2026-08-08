@@ -41,7 +41,8 @@ py -3.12 -m venv .venv          # Windows
 python3.12 -m venv .venv        # Linux / macOS
 ```
 
-Activate it, then install in editable mode with the dev extras:
+Install into it in editable mode with the dev extras. These call the environment's
+interpreter by path, so they work whether or not you have activated it:
 
 ```bash
 .venv/Scripts/python.exe -m pip install -e ".[dev]"    # Windows
@@ -55,8 +56,13 @@ not just the checkout.
 Check it:
 
 ```bash
-python -m snapmap_midi --help
+.venv/Scripts/python.exe -m snapmap_midi --help        # Windows
+.venv/bin/python -m snapmap_midi --help                # Linux / macOS
 ```
+
+If you would rather type `python` and `pytest` bare, activate the environment first — the
+[README](../README.md#the-isolated-way-recommended) has the activation line for each shell,
+including the PowerShell execution-policy fix. Every command in this guide works either way.
 
 ## 3. Game data
 

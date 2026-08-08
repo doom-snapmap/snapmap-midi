@@ -68,6 +68,12 @@ saved map a timeline is an ordinary entity:
 A map authored this way has been loaded into the live editor with every entity at its
 assigned id, and playtested through the editor → play → exit cycle without a crash.
 
+The same rule — match what the engine writes — decides the rest of the document. It is why
+the blank stage carries sixteen persistent integers in its `variables` block: every
+engine-saved map to hand carries exactly sixteen, byte-identical, while every other variable
+kind varies between maps, so they are part of the format rather than one author's editor
+history. See [`architecture.md`](architecture.md#the-blank-stage).
+
 ## The optional overrides
 
 None of these is needed for ordinary use. They exist for people doing something unusual.

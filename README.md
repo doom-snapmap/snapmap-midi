@@ -10,15 +10,101 @@ the *names* of the sounds the game already has, which is what lets it work out o
 Every line here is our own implementation, built from our own reverse-engineering of the map
 format; no decompiled or copied content.
 
-## Quick start
+## Install
 
-Python 3.12 or newer. `mido` is the only dependency and pip fetches it.
+You need **Python 3.12 or newer**. Nothing else — `mido` is the only dependency and pip
+fetches it for you. Check what you have:
+
+```bash
+python --version
+```
+
+If that says 3.11 or lower, or errors, get Python from [python.org](https://www.python.org/downloads/).
+**On Windows, tick "Add python.exe to PATH" in the installer** — without it the commands below
+will not be found.
+
+### The short way
+
+If you just want it working and do not mind installing into your main Python:
 
 ```bash
 pip install git+https://github.com/doom-snapmap/snapmap-midi.git
 ```
 
-Then compile:
+Skip to [Compile a song](#compile-a-song). If that command errors with
+`externally-managed-environment`, your Python does not allow it — use the isolated way below.
+
+### The isolated way (recommended)
+
+A *virtual environment* is a private folder holding this tool and its dependency, so it
+cannot clash with anything else on your machine and you can delete it in one go. Nothing is
+installed system-wide.
+
+**1. Pick a folder to keep it in and go there.** Anywhere you like; this uses your home
+folder.
+
+```bash
+cd %USERPROFILE%
+```
+
+<details>
+<summary>PowerShell, macOS or Linux</summary>
+
+```bash
+cd ~
+```
+</details>
+
+**2. Create the environment.** This makes a folder called `snapmap-midi-env`:
+
+```bash
+python -m venv snapmap-midi-env
+```
+
+**3. Activate it.** This is the step people miss — until you do it, `snapmap-midi` will not
+be found. Pick the line for your shell:
+
+| Shell | Command |
+|---|---|
+| Windows — Command Prompt | `snapmap-midi-env\Scripts\activate.bat` |
+| Windows — PowerShell | `snapmap-midi-env\Scripts\Activate.ps1` |
+| Windows — Git Bash | `source snapmap-midi-env/Scripts/activate` |
+| macOS / Linux | `source snapmap-midi-env/bin/activate` |
+
+Your prompt gains a `(snapmap-midi-env)` prefix. That prefix is how you know it is active.
+
+<details>
+<summary>PowerShell refuses with "running scripts is disabled on this system"</summary>
+
+Windows blocks scripts by default. Allow them for your own account only:
+
+```bash
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Then run the activate line again.
+</details>
+
+**4. Install into it:**
+
+```bash
+pip install git+https://github.com/doom-snapmap/snapmap-midi.git
+```
+
+**5. Check it worked:**
+
+```bash
+snapmap-midi --help
+```
+
+### Coming back later
+
+The environment persists, but **activation does not** — it lasts only for that terminal
+window. Next time, `cd` back and run the activate line from step 3 again. Then carry on.
+
+To remove everything, delete the `snapmap-midi-env` folder. Nothing else was touched.
+
+## Compile a song
 
 ```bash
 snapmap-midi compile song.mid
@@ -27,7 +113,14 @@ snapmap-midi compile song.mid
 That is the whole command. It writes `rawmap.json` into the map loader's folder
 (`%LOCALAPPDATA%\snapmap-plus\`), creating it if it isn't there yet. In game, open the
 console with `~`, run `sh_rawmaps_on`, then open any map — yours loads instead. Walk to the
-switch in front of you and press it.
+switch in front of you and press it. `sh_rawmaps_off` when you're done.
+
+To keep a song rather than overwrite the one slot the loader reads, give it a folder. The
+filename stays `rawmap.json`, because that is the only name the loader will open:
+
+```bash
+snapmap-midi compile song.mid --out-dir D:/songs/bach
+```
 
 Not sure what a sound category actually contains? Build a map that plays every sound in it
 in sequence and prints a numbered legend:
@@ -76,6 +169,10 @@ created". It conflated two different things — making the engine **spawn** one 
 which really is out of reach from outside the game, and **describing** one in a saved map,
 which is just schema. In a saved map a timeline is an ordinary entity: class
 `idTarget_Timeline`, stock inherit `snapmaps/unknown`, and no reference slots at all.
+
+A map authored this way has been loaded into the live editor with every entity present at its
+assigned id — the timeline included — and playtested through the editor → play → exit cycle
+without a crash.
 
 Pass `--baseline` if you want the song added to a map you already have instead. It is an
 option now, not a prerequisite.
@@ -128,6 +225,10 @@ python -m pytest
 Hermetic — a fresh clone runs green with nothing configured, including the headline byte
 gate. Four tests compile *against* a saved map to prove that path still works; they carry
 the `savedmap` marker and skip when none is configured.
+
+The suite hides `SNAPMAP_MIDI_PATHS` from every test that has not asked for it, so your own
+overrides cannot change the result. Without that, a contributor with a palette configured for
+their game version ran a different suite than CI did.
 
 Three byte-identical gates guard output, each paired with structural assertions so that when
 bytes move you learn *what* moved. Bytes moving while structure holds is the signature of an
