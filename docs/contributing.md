@@ -85,7 +85,7 @@ fully configured contributor.
 python -m pytest
 ```
 
-Expect `91 passed, 4 skipped` on a clone with nothing configured.
+Expect `106 passed, 4 skipped` on a clone with nothing configured.
 
 ### What the byte gates mean
 

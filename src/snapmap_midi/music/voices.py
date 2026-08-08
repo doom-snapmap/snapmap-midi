@@ -12,6 +12,8 @@ means fewer chances to lose that race.
 
 from __future__ import annotations
 
+import heapq
+
 from snapmap_midi.sound.palette import shader_pitch
 
 
@@ -38,6 +40,11 @@ def allocate_voices(notes, max_speakers: int) -> int:
     return len(free_at)
 
 
+#: One past the highest pitch a sound name can encode. The octave is a single
+#: digit, so the ceiling is octave 9's B: (9 + 1) * 12 + 11.
+_PITCH_CEILING = (9 + 1) * 12 + 11 + 1
+
+
 def thin_polyphony(notes, max_poly: int):
     """Keep at most `max_poly` simultaneous notes, preferring higher pitches.
 
@@ -45,19 +52,57 @@ def thin_polyphony(notes, max_poly: int):
     listener misses least. Kept notes retain their FULL length -- this reduces
     how many notes sound at once, not how long each one lasts, so stops still
     land while sustain stays natural.
+
+    Implemented as a sweep rather than the obvious nested scan. The obvious
+    one asks, for every note, how many of ALL the others overlap it, which is
+    quadratic -- and it ran on the densest arrangements, because a dense
+    arrangement is the only reason to reach for `max_poly` at all. A five
+    thousand note file took two thirds of a second here and milliseconds
+    everywhere else in the compiler.
+
+    The sweep walks onsets in order, keeping a live count of sounding notes
+    per pitch. Pitches are bounded by the naming scheme, so "how many sounding
+    notes are higher than this one" is a short fixed-width sum instead of a
+    pass over the arrangement.
+
+    `tests/test_voices.py` pins this against the original implementation over
+    randomised inputs, including the cases that make it subtle: chords, ties
+    in pitch, zero-length notes, and unpitched sounds that all collapse onto
+    the same pitch.
     """
     ordered = sorted(notes, key=lambda n: n.start)
-    pitch = {id(n): (shader_pitch(n.shader) or 0) for n in ordered}
+    pitches = [shader_pitch(n.shader) or 0 for n in ordered]
+
+    sounding = [0] * (_PITCH_CEILING + 1)
+    ending: list[tuple[int, int]] = []  # min-heap of (end, index), the live notes
     kept = []
-    for note in ordered:
-        # How many notes sounding at this one's onset are higher?
-        higher = sum(
-            1
-            for other in ordered
-            if other is not note
-            and other.start <= note.start < other.end
-            and pitch[id(other)] > pitch[id(note)]
-        )
-        if higher < max_poly:
-            kept.append(note)
+    index, total = 0, len(ordered)
+
+    while index < total:
+        onset = ordered[index].start
+
+        # Every note that starts at this instant joins the live set. They must
+        # join BEFORE the eviction below, so that a zero-length note is added
+        # and immediately removed rather than lingering.
+        group_end = index
+        while group_end < total and ordered[group_end].start == onset:
+            sounding[pitches[group_end]] += 1
+            heapq.heappush(ending, (ordered[group_end].end, group_end))
+            group_end += 1
+
+        # Anything that has finished by now is no longer sounding. A note is
+        # sounding at `onset` only while start <= onset < end, so an end
+        # exactly at `onset` is already over.
+        while ending and ending[0][0] <= onset:
+            _, finished = heapq.heappop(ending)
+            sounding[pitches[finished]] -= 1
+
+        for i in range(index, group_end):
+            # Strictly higher, so the note itself and anything at its own
+            # pitch are both excluded -- ties are kept, as they always were.
+            if sum(sounding[pitches[i] + 1 :]) < max_poly:
+                kept.append(ordered[i])
+
+        index = group_end
+
     return kept

@@ -18,7 +18,6 @@ from snapmap_midi import paths
 from snapmap_midi.compile import compile_to_rawmap
 from snapmap_midi.music.gm import DRUM_MAP, SUSTAINED, gm_to_family
 from snapmap_midi.music.midi import Note, parse_notes
-from snapmap_midi.music.voices import allocate_voices, thin_polyphony
 from snapmap_midi.rawmap import template
 from snapmap_midi.rawmap.codec import deserialize
 from snapmap_midi.sound.events import (
@@ -77,25 +76,6 @@ def test_decl_for_prefers_same_pitch_class_over_nearest():
     assert decl_for("ins_piano", 60, index) == "play_pianoc4"
     assert decl_for("ins_piano", 84, index) == "play_pianoc5"
     assert decl_for("ins_missing", 60, index) is None
-
-
-def test_thin_polyphony_keeps_highest_voices():
-    notes = [
-        Note(0, 1000, "play_pianoc4", True, 0, "ins_piano"),
-        Note(0, 1000, "play_pianoe4", True, 0, "ins_piano"),
-        Note(0, 1000, "play_pianog4", True, 0, "ins_piano"),
-    ]
-    kept = thin_polyphony(notes, max_poly=2)
-    assert {n.shader for n in kept} == {"play_pianoe4", "play_pianog4"}
-    # Full length retained: this cuts density, not duration.
-    assert all(n.end == 1000 for n in kept)
-
-
-def test_allocate_voices_overlap_vs_sequential():
-    overlap = [Note(0, 500, "a", True, 0, "f"), Note(100, 600, "b", True, 0, "f")]
-    assert allocate_voices(overlap, max_speakers=8) == 2
-    sequential = [Note(0, 500, "a", True, 0, "f"), Note(500, 900, "b", True, 0, "f")]
-    assert allocate_voices(sequential, max_speakers=8) == 1
 
 
 def test_eventcall_encodings_match_proven_forms():
