@@ -2,12 +2,12 @@
 
 **Compile a standard MIDI file into a playable music map for DOOM (2016)'s SnapMap editor.**
 
-Feed it a `.mid` and a baseline map; it returns a map whose switch plays the song. Seven real
-songs have been verified end to end in game.
+Feed it a `.mid`; it builds a room with a switch that plays the song. Seven real songs have
+been verified end to end in game.
 
-**This repo ships NO game data.** The sound palette and the baseline map are inputs you
-supply from your own installed copy — see [`docs/game-data.md`](docs/game-data.md). Every
-line here is our own implementation, built from our own reverse-engineering of the map
+**This repo ships NO game data** — no declaration files, no saved maps, no audio. It ships
+the *names* of the sounds the game already has, which is what lets it work out of the box.
+Every line here is our own implementation, built from our own reverse-engineering of the map
 format; no decompiled or copied content.
 
 ## Quick start
@@ -18,25 +18,22 @@ Python 3.12 or newer. `mido` is the only dependency and pip fetches it.
 pip install git+https://github.com/doom-snapmap/snapmap-midi.git
 ```
 
-Point it at the two inputs it needs from your game, once:
-
-```bash
-SNAPMAP_MIDI_PATHS='{"palette_decl": "/path/to/palette.decl", "baseline_map": "/path/to/baseline.json"}'
-```
-
 Then compile:
 
 ```bash
-snapmap-midi compile song.mid --out song.json
+snapmap-midi compile song.mid
 ```
 
-Load the result in the editor and press the switch.
+That is the whole command. It writes `rawmap.json` into the map loader's folder
+(`%LOCALAPPDATA%\snapmap-plus\`), creating it if it isn't there yet. In game, open the
+console with `~`, run `sh_rawmaps_on`, then open any map — yours loads instead. Walk to the
+switch in front of you and press it.
 
 Not sure what a sound category actually contains? Build a map that plays every sound in it
 in sequence and prints a numbered legend:
 
 ```bash
-snapmap-midi audition ins_noise --out audition.json
+snapmap-midi audition ins_noise
 ```
 
 ## Documentation
@@ -44,7 +41,7 @@ snapmap-midi audition ins_noise --out audition.json
 | Doc | What's in it |
 |---|---|
 | [`docs/capabilities.md`](docs/capabilities.md) | every command, flag and tuning lever |
-| [`docs/game-data.md`](docs/game-data.md) | the inputs you supply, and how to configure them |
+| [`docs/game-data.md`](docs/game-data.md) | what ships, what doesn't, and the optional overrides |
 | [`docs/architecture.md`](docs/architecture.md) | how a MIDI file becomes a map |
 | [`docs/limits.md`](docs/limits.md) | the engine limit worth knowing, and the byte-gate rule |
 | [`docs/contributing.md`](docs/contributing.md) | fresh machine to open pull request |
@@ -68,6 +65,21 @@ sample and smears into the next phrase.
 Voices are allocated per layer, so one instrument can never steal another's voice or cut it
 off mid-phrase.
 
+### The map is built from nothing
+
+The song is staged in a blank room the compiler writes itself: two portal caps, a player
+spawn, a timeline, and the switch that fires it.
+
+That timeline used to be the reason a *baseline map* was a required input. `idTarget_Timeline`
+cannot be placed from the editor's entity palette, and that was read as "a timeline cannot be
+created". It conflated two different things — making the engine **spawn** one at runtime,
+which really is out of reach from outside the game, and **describing** one in a saved map,
+which is just schema. In a saved map a timeline is an ordinary entity: class
+`idTarget_Timeline`, stock inherit `snapmaps/unknown`, and no reference slots at all.
+
+Pass `--baseline` if you want the song added to a map you already have instead. It is an
+option now, not a prerequisite.
+
 ### The limit worth knowing about
 
 The engine recycles sound emitter slots under load. A note whose slot is recycled can no
@@ -83,7 +95,7 @@ Full detail in [`docs/limits.md`](docs/limits.md).
 ```python
 from snapmap_midi.compile import compile_to_rawmap
 
-raw, stats = compile_to_rawmap("song.mid", baseline_bytes, button_name="my-song")
+raw, stats = compile_to_rawmap("song.mid", button_name="my-song")
 ```
 
 The map-authoring core underneath knows nothing about music and is usable on its own — see
@@ -91,15 +103,21 @@ The map-authoring core underneath knows nothing about music and is usable on its
 
 ## Repository layout
 
+Modules are grouped by subsystem, stacked lowest first. Each may use the layers below it and
+never the ones above.
+
 | Path | What |
 |---|---|
-| `src/snapmap_midi/` | the package: the compile pipeline and the CLI |
-| `src/snapmap_midi/rawmap/` | the map-authoring core — codec, value builders, documents, reference slots |
-| `src/snapmap_midi/data/` | curated ear-labels for the sound palette (reference material) |
+| `src/snapmap_midi/rawmap/` | the map-authoring core — codec, value builders, documents, reference slots, the blank-map template |
+| `src/snapmap_midi/sound/` | the game's sound surface — the palette, event calls, timeline authoring |
+| `src/snapmap_midi/music/` | the MIDI domain — parsing, General MIDI tables, voice allocation |
+| `src/snapmap_midi/data/` | the shipped sound palette, and curated ear-labels for it |
+| `tools/` | maintainer scripts, not part of the installed package |
 | `tests/` | the suite, its fixtures, and the MIDI-input generator |
 | `docs/` | contributor documentation |
 
-`rawmap/` is kept independently reusable; a test asserts it never imports the music layer.
+A test asserts each layer imports only downward, so `rawmap/` stays promotable to its own
+distribution by a directory move.
 
 ## Tests
 
@@ -107,14 +125,14 @@ The map-authoring core underneath knows nothing about music and is usable on its
 python -m pytest
 ```
 
-Hermetic by default — a fresh clone runs green with no game data. Tests needing real game
-data carry the `gamedata` marker and skip when none is configured.
+Hermetic — a fresh clone runs green with nothing configured, including the headline byte
+gate. Four tests compile *against* a saved map to prove that path still works; they carry
+the `savedmap` marker and skip when none is configured.
 
-Two byte-identical gates guard output: one rebuilds an arrangement verified in game, the
-other a full compile. Both are paired with structural assertions, so when bytes move you
-learn *what* moved. Bytes moving while structure holds is the signature of an accidental
-key-order change — the map format preserves key insertion order rather than sorting — and
-should be treated as a regression, not an improvement.
+Three byte-identical gates guard output, each paired with structural assertions so that when
+bytes move you learn *what* moved. Bytes moving while structure holds is the signature of an
+accidental key-order change — the map format preserves key insertion order rather than
+sorting — and should be treated as a regression, not an improvement.
 
 ## License
 

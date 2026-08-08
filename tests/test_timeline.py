@@ -178,7 +178,7 @@ def test_roundtrip_preserves_events(minimal_timeline_map):
 
 @pytest.mark.savedmap
 def test_reproduces_proven_groove_byte_identical():
-    # This one needs a third input beyond the two the gamedata marker checks.
+    # This one needs a second input beyond the saved map the marker checks.
     # Skip on it explicitly rather than dereferencing None: a partial
     # configuration should degrade, not crash.
     fixture = paths.groove_fixture()

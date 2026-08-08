@@ -75,12 +75,17 @@ jobs:
           python-version: '3.12'
 
       - name: Structural guards (layering, no network client, protected surface)
-        # These assert properties of the repository rather than of any function: the authoring
-        # core imports no music module, no shipped module reaches for a network client, and the
-        # protected method names have not been renamed out from under a downstream author.
+        # These assert properties of the repository rather than of any function: each
+        # subsystem imports only downward, no shipped module reaches for a network client, and
+        # the protected method names have not been renamed out from under a downstream author.
+        #
+        # The whole file runs rather than a `-k` selection. Selecting by keyword meant a guard
+        # whose name did not happen to contain one silently stopped running here, which is the
+        # exact failure mode these guards exist to catch. Every test in the file is hermetic,
+        # so there is nothing to gain by narrowing.
         run: |
           python -m pip install -e ".[dev]"
-          python -m pytest tests/test_document.py -v -k "import or network or surface"
+          python -m pytest tests/test_document.py -v
 
   test:
     name: Test (Windows + Ubuntu)

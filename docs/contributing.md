@@ -22,9 +22,9 @@ output or copyrighted game content — not into code, not into comments, not int
 fixture. If you learned something by reading the game's data, describe the finding and write
 your own implementation of it.
 
-**No game data, ever.** No `.decl` files. No saved maps. Those are inputs the user supplies
-from their own installed copy — see [`game-data.md`](game-data.md). CI enforces this and
-will fail the pull request.
+**No game data, ever.** No `.decl` files. No saved maps. No audio. Sound *names* do ship —
+they are identifiers, not content, and the line is drawn in [`game-data.md`](game-data.md).
+CI enforces the rest and will fail the pull request.
 
 **One change per pull request.** A rename bundled with a behaviour change makes both harder
 to review and makes a byte-gate movement ambiguous.
@@ -60,15 +60,16 @@ python -m snapmap_midi --help
 
 ## 3. Game data
 
-Optional for development. The suite is hermetic by default — every test builds its documents
-in code, so a fresh clone runs green with nothing configured.
+You need none. The sound palette ships with the package and maps are authored from nothing,
+so a fresh clone compiles real songs and runs the whole suite green.
 
-Five tests need real game-derived input. They carry the `gamedata` marker and skip when
-nothing is configured. **Seeing them skip is normal and not a failure.**
+Four tests compile *against* a saved map, to prove that path still works for people adding
+music to a level they already have. They carry the `savedmap` marker and skip when none is
+configured. **Seeing them skip is normal and not a failure.**
 
-If you want to run them, or to actually compile a song, see
-[`game-data.md`](game-data.md). One test (`groove_fixture`) needs an artifact that is not
-distributed and will skip permanently even for a fully configured contributor.
+If you want to run them, see [`game-data.md`](game-data.md). One of them also needs
+`groove_fixture`, an artifact that is not distributed and will skip permanently even for a
+fully configured contributor.
 
 ## 4. Running the suite
 
@@ -76,11 +77,11 @@ distributed and will skip permanently even for a fully configured contributor.
 python -m pytest
 ```
 
-Expect `54 passed, 5 skipped` on a clone with no game data configured.
+Expect `67 passed, 4 skipped` on a clone with nothing configured.
 
 ### What the byte gates mean
 
-Two tests compare compiler output byte for byte against a recorded artifact. If one moves,
+Three tests compare compiler output byte for byte against a recorded artifact. If one moves,
 **read [`limits.md`](limits.md) before doing anything else.**
 
 The short version: bytes moving while the structural assertions still pass is a regression,
@@ -94,12 +95,16 @@ semantic change is intended, and show which statistics moved.
 ### The structural guards
 
 A handful of tests in `tests/test_document.py` assert properties of the repository rather
-than of any function: that the authoring core imports no music module, that no shipped
-module reaches for a network client, that the protected method names have not been renamed.
+than of any function: that each subsystem imports only downward, that no shipped module
+reaches for a network client, that the protected method names have not been renamed.
 
-They look like bureaucracy and are not. The layering one is what keeps the authoring core
-promotable to its own library; the network one is what keeps this package a pure
-bytes-in/bytes-out tool.
+They look like bureaucracy and are not. The layering one is what keeps `rawmap/` promotable
+to its own library and `sound/` usable without a MIDI compiler; the network one is what
+keeps this package a pure bytes-out tool.
+
+The layering test is data-driven over the subsystem list, and it fails if a named package is
+missing rather than scanning an empty directory and passing vacuously. Its predecessor
+matched modules by bare name and would have gone quiet the moment they moved into packages.
 
 ## 5. Style
 
