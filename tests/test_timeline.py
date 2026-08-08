@@ -122,6 +122,33 @@ def test_authored_timeline_registers_in_every_table(minimal_map):
     assert len(doc.data["references"]["entityEntRefs"]["keyValues"]) >= uid + 2
 
 
+def test_the_stage_carries_the_engines_persistent_integers(minimal_map):
+    """Sixteen persistent integers are part of the format, not someone's
+    editor history: every engine-saved map to hand carries exactly sixteen,
+    byte-identical, while every other variable kind varies between maps.
+
+    A blank map authored without them matched no engine-produced sample, and
+    the from-scratch golden had that divergence frozen into it where no test
+    could notice.
+    """
+    from snapmap_midi.rawmap.template import PERSISTENT_INTEGERS, blank_map
+
+    variables = blank_map()["variables"]
+    slots = variables["persistentInteger"]
+    assert len(slots) == PERSISTENT_INTEGERS == 16
+    assert [s["info"]["name"] for s in slots] == ["Persistent Integer %d" % i for i in range(16)]
+    assert all(s["initialValue"] == 0 for s in slots)
+    assert all(
+        s["bounds"] == {"maxRange": 10000, "minRange": -10000, "~type": "idRange < int >"}
+        for s in slots
+    )
+    # Everything else is genuinely empty -- a fresh map has no user variables.
+    for kind, value in variables.items():
+        if kind in ("allocCount", "persistentInteger", "~type"):
+            continue
+        assert value == [], "%s should be empty in a blank map" % kind
+
+
 def test_a_stage_can_be_authored_without_a_scheduler(minimal_map):
     """`rawmap` is a general map library, not a music one. A caller that wants
     the room and intends to author its own timeline gets exactly that."""

@@ -7,3 +7,8 @@
 # the code, which is the hardest kind of failure to diagnose.
 *.mid binary
 tests/fixtures/*.json binary
+
+# Generated package data. `tools/build_sound_palette.py` writes LF on every
+# platform; pinning it here too means a contributor with core.autocrlf off
+# cannot accidentally commit 943 lines of CRLF as a whole-file diff.
+src/snapmap_midi/data/*.json text eol=lf

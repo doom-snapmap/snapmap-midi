@@ -36,8 +36,14 @@ _ITEM = re.compile(
     r'sound\s*=\s*"([^"]+)";\s*text\s*=\s*"[^"]*";\s*desc\s*=\s*"[^"]*";\s*category\s*=\s*"([^"]+)";',
     re.S,
 )
-# A trailing note name: letter, optional flat, octave digit.
+#: A trailing note name: letter, optional flat, octave digit. Ambiguous on its
+#: own -- see `shader_pitch` -- and used only as a fallback for names the
+#: palette does not contain.
 _NOTE = re.compile(r"([a-g])(b?)(\d)$")
+
+#: The same, anchored at BOTH ends, for what follows a known instrument stem.
+#: Anchoring both ends is what removes the ambiguity.
+_NOTE_EXACT = re.compile(r"^([a-g])(b?)(\d)$")
 _PITCH_CLASS = {
     "c": 0,
     "db": 1,
@@ -67,14 +73,82 @@ def note_to_midi(letter: str, accidental: str, octave: str) -> int:
     return (int(octave) + 1) * 12 + _PITCH_CLASS[letter + accidental]
 
 
+def _category_stem(sounds) -> str:
+    """The instrument prefix a category's sounds share, e.g. `play_flute`.
+
+    Chosen as the prefix length that lets the MOST names parse as a note,
+    longest wins on a tie -- not simply the longest common prefix. A category
+    whose sounds happen to share a note letter would have that letter absorbed
+    into the common prefix, leaving a bare octave digit behind.
+    """
+    if not sounds:
+        return ""
+    low, high = min(sounds), max(sounds)
+    common = len(low)
+    for i, ch in enumerate(low):
+        if i >= len(high) or ch != high[i]:
+            common = i
+            break
+
+    best_length, best_parsed = 0, -1
+    for length in range(common + 1):
+        parsed = sum(1 for s in sounds if _NOTE_EXACT.match(s[length:]))
+        if parsed >= best_parsed:  # >= so the longest wins a tie
+            best_length, best_parsed = length, parsed
+    return low[:best_length]
+
+
+def _pitch_of(sound: str, stem: str) -> Optional[int]:
+    """The pitch a sound name spells after its instrument prefix."""
+    m = _NOTE_EXACT.match(sound[len(stem) :])
+    return note_to_midi(m.group(1), m.group(2), m.group(3)) if m else None
+
+
+@lru_cache(maxsize=None)
+def _pitches(override: Optional[Path]) -> dict:
+    """{sound name: pitch} for every sound in the palette that has one."""
+    table = {}
+    for sounds in _load(override).values():
+        stem = _category_stem(sounds)
+        for sound in sounds:
+            pitch = _pitch_of(sound, stem)
+            if pitch is not None:
+                table[sound] = pitch
+    return table
+
+
 def shader_pitch(shader: str) -> Optional[int]:
-    """The MIDI pitch encoded in a sound name, or None if it is unpitched.
+    """The MIDI pitch a sound name spells, or None if it is unpitched.
 
     Percussion has no pitch in its name, which is exactly how the compiler
     tells a drum hit from a melodic note after the fact.
+
+    Resolved against the palette rather than by pattern alone, because the
+    pattern alone is ambiguous and was getting it wrong. A trailing `b` is
+    both a note and a flat marker, so `play_fluteb4` reads as either B4 or --
+    by eating the `e` from "flute" -- E-flat 4. Only knowing that the
+    instrument is spelled `play_flute` settles it. It used to read every wind
+    B as an E-flat a tritone away, and every `play_claveN` as a pitched E.
+
+    A sound the palette KNOWS and gives no pitch to is unpitched, full stop --
+    it does not then get guessed at. Only a name the palette has never heard of
+    falls back to the pattern, which is right for the one case that reaches
+    here: a caller naming a sound of its own.
     """
+    override = paths.palette_decl()
+    table = _pitches(override)
+    if shader in table:
+        return table[shader]
+    if shader in _known_sounds(override):
+        return None
     m = _NOTE.search(shader)
     return note_to_midi(m.group(1), m.group(2), m.group(3)) if m else None
+
+
+@lru_cache(maxsize=None)
+def _known_sounds(override: Optional[Path]) -> frozenset:
+    """Every sound name the palette contains, pitched or not."""
+    return frozenset(s for sounds in _load(override).values() for s in sounds)
 
 
 def _parse_decl(path: Path) -> dict:
@@ -137,6 +211,8 @@ def cache_clear() -> None:
     the key depends on ambient environment.
     """
     _load.cache_clear()
+    _pitches.cache_clear()
+    _known_sounds.cache_clear()
 
 
 def categories() -> list:
@@ -157,10 +233,11 @@ def build_note_index(decl_path: Optional[Path] = None) -> dict:
     """
     index: dict = defaultdict(dict)
     for category, sounds in _shared(decl_path).items():
+        stem = _category_stem(sounds)
         for sound in sounds:
-            m = _NOTE.search(sound)
-            if m:
-                index[category][note_to_midi(m.group(1), m.group(2), m.group(3))] = sound
+            pitch = _pitch_of(sound, stem)
+            if pitch is not None:
+                index[category][pitch] = sound
     return index
 
 

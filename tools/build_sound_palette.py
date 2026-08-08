@@ -71,7 +71,14 @@ def main(argv=None) -> int:
     payload = {"_note": _NOTE, "categories": grouped}
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+    # newline="" so the same declaration produces the same bytes on every
+    # platform. Text mode translates to os.linesep, so a regeneration on
+    # Windows would rewrite all 943 lines with CRLF and show the whole file as
+    # changed. `.gitattributes` pins the checked-in form to LF as well; belt
+    # and braces, because only one of the two protects a contributor whose
+    # `core.autocrlf` is off.
+    with open(out, "w", encoding="utf-8", newline="") as handle:
+        handle.write(json.dumps(payload, indent=1) + "\n")
 
     print("{} sounds in {} categories -> {}".format(total, len(grouped), out))
     for category, sounds in sorted(grouped.items(), key=lambda kv: -len(kv[1])):

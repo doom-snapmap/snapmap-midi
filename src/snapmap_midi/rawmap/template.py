@@ -79,8 +79,12 @@ TEMPLATE_PALETTE_REFS: dict[str, tuple[int, int]] = {
     TIMELINE_INHERIT: (0, 0),
 }
 
+#: How many persistent integers a map carries. Observed identical in every
+#: engine-saved map available, unlike every other variable kind, so this is
+#: the engine's own table rather than one map's editor history.
+PERSISTENT_INTEGERS = 16
+
 #: The ten variable kinds a map carries, in the order the format lists them.
-#: `allocCount` is parallel to this list, which is why the two stay together.
 _VARIABLE_KINDS = (
     "boolean",
     "cachedEntity",
@@ -308,16 +312,46 @@ def blank_map(module: str = DEFAULT_MODULE, with_timeline: bool = True) -> dict:
     return data
 
 
-def _variables() -> dict:
-    """An empty variable table.
+def _persistent_integer(index: int) -> dict:
+    """One of the sixteen persistent-integer slots every map carries."""
+    return {
+        "bounds": {"maxRange": 10000, "minRange": -10000, "~type": "idRange < int >"},
+        "info": {
+            "customIcon": {
+                "targetType": "idDeclSnapCustomIcon",
+                "value": None,
+                "~type": "|pointer",
+            },
+            "name": "Persistent Integer %d" % index,
+            "~type": "snapVarInfo_t",
+        },
+        "initialValue": 0,
+        "~type": "snapVarInteger_t",
+    }
 
-    `allocCount` runs parallel to the kind list and counts how many names have
-    ever been handed out per kind, so all-zeros is the only value consistent
-    with every list being empty. A saved map from the editor carries the
-    editor's own defaults here; a map authored from nothing has none.
+
+def _variables() -> dict:
+    """The variable table, empty except for what the engine always provides.
+
+    The sixteen persistent integers are NOT user content that a fresh map
+    legitimately has none of. Every engine-saved map to hand carries exactly
+    sixteen, byte-identical, with the same default names and bounds, while
+    every other kind varies from map to map. That makes them part of the
+    format rather than someone's editor history, so a map authored from
+    nothing carries them too.
+
+    `allocCount` is emitted as zeros. Which slot counts which kind is NOT
+    established -- a saved map with eighteen booleans carries the eighteen at
+    index 2, not at the index the key order would suggest -- so this claims
+    nothing beyond "no names have been handed out", which is true of a map
+    with no user variables in it.
     """
     table: dict[str, Any] = {"allocCount": [0] * len(_VARIABLE_KINDS)}
     for kind in _VARIABLE_KINDS:
-        table[kind] = []
+        table[kind] = (
+            [_persistent_integer(i) for i in range(PERSISTENT_INTEGERS)]
+            if kind == "persistentInteger"
+            else []
+        )
     table["~type"] = "idSnapVariables"
     return table
