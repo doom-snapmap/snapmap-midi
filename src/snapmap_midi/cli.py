@@ -59,6 +59,12 @@ def out_dir_is_default(destination: Path) -> bool:
 
 
 def _compile(args) -> int:
+    # Checked here rather than left to the MIDI reader, which raises a bare
+    # FileNotFoundError and prints a traceback at someone who mistyped a path.
+    if not Path(args.midi).is_file():
+        print("no such MIDI file: {}".format(args.midi))
+        return 2
+
     overrides = dict(kv.split("=", 1) for kv in args.remap.split(",")) if args.remap else None
     drums = {"auto": "auto", "on": True, "off": False}[args.drums]
     raw, stats = compile_to_rawmap(
@@ -72,9 +78,18 @@ def _compile(args) -> int:
         hard_stop=args.hard_stop,
         max_events=args.max_events,
     )
-    destination = _write(raw, args.out_dir)
     print("compiled {}: {}".format(args.midi, stats))
-    _report(destination)
+    if not stats["notes"]:
+        # A map that loads and plays nothing looks exactly like success until
+        # you press the switch, so say it now rather than let them find out.
+        print("     WARNING: no notes were compiled -- this map will be silent")
+    elif stats["dropped"]:
+        print(
+            "     note: {} note(s) had no sound in the palette and were dropped".format(
+                stats["dropped"]
+            )
+        )
+    _report(_write(raw, args.out_dir))
     return 0
 
 
