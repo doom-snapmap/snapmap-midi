@@ -104,6 +104,11 @@ window. Next time, `cd` back and run the activate line from step 3 again. Then c
 
 ## Update, find, remove
 
+Same three commands either way — a virtual environment changes nothing about them. It only
+changes *which* installation they act on, so **activate first if you used one** (step 3
+above). Without that you will update or remove the copy in your main Python instead, or be
+told it is not installed at all. `pip show -f` tells you which one you are talking to.
+
 **Update to the latest version:**
 
 ```bash
