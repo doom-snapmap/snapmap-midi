@@ -104,6 +104,45 @@ window. Next time, `cd` back and run the activate line from step 3 again. Then c
 
 To remove everything, delete the `snapmap-midi-env` folder. Nothing else was touched.
 
+### Updating
+
+```bash
+pip install --upgrade git+https://github.com/doom-snapmap/snapmap-midi.git
+```
+
+Check what you ended up with:
+
+```bash
+python -c "import snapmap_midi; print(snapmap_midi.__version__)"
+```
+
+<details>
+<summary>If that says 0.1.0, or the update seems to do nothing</summary>
+
+Releases up to and including `0.1.0` all carried the same version number, so pip cannot tell
+them apart and `--upgrade` does nothing between them — silently, exit `0`.
+
+It is worth knowing why, because the behaviour looks like a bug and is not. Installing from a
+git URL does **not** use git tags; this repository has none. pip clones whatever the default
+branch points at, reads the `version` field out of `pyproject.toml`, and compares that one
+string against what you have. Same string, no upgrade — even though it has already downloaded
+the new code and recorded the new commit id. It throws the clone away.
+
+Force it once, and normal `--upgrade` works from then on:
+
+```bash
+pip install --force-reinstall git+https://github.com/doom-snapmap/snapmap-midi.git
+```
+
+`--force-reinstall` skips the version comparison entirely and reinstalls whatever it fetched.
+</details>
+
+To install one specific version, branch or commit, put it after `@`:
+
+```bash
+pip install "git+https://github.com/doom-snapmap/snapmap-midi.git@v0.2.0"
+```
+
 ## Compile a song
 
 ```bash
