@@ -21,7 +21,7 @@ from snapmap_midi.sound.timeline import (
     add_button,
     author_sound_timeline,
     chord,
-    find_timeline,
+    ensure_timeline,
     melody,
     set_events,
 )
@@ -65,9 +65,9 @@ def test_set_events_returns_timeline_id_and_count(minimal_timeline_map):
     doc = _doc(minimal_timeline_map)
     tid = set_events(doc, [("play_pianoc4", 0), ("play_pianod4", 300)])
     assert isinstance(tid, str) and tid
-    events = find_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
-        "item[0]"
-    ]["events"]
+    events = ensure_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"][
+        "entityEvents"
+    ]["item[0]"]["events"]
     assert events["num"] == 2
     assert events["item[0]"]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
     assert events["item[1]"]["eventTime"] == 300
@@ -77,7 +77,7 @@ def test_chord_layering_in_one_timeline(minimal_timeline_map):
     doc = _doc(minimal_timeline_map)
     events = chord(["play_pianoc4", "play_pianoe4", "play_pianog4"], 0) + [(KICK, 0)]
     set_events(doc, events)
-    items = find_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
+    items = ensure_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
         "item[0]"
     ]["events"]
     assert items["num"] == 4
@@ -90,7 +90,7 @@ def test_missing_timeline_is_authored_not_an_error(minimal_map):
     instead."""
     doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
     assert doc.find_timeline() is None
-    timeline = find_timeline(doc)
+    timeline = ensure_timeline(doc)
     assert timeline["entityDef"]["className"] == "idTarget_Timeline"
     assert timeline["entityDef"]["inherit"] == TIMELINE_INHERIT
     # One empty group, so the first event has somewhere to go.
@@ -102,8 +102,8 @@ def test_timeline_is_authored_only_once(minimal_map):
     """A document that already has one keeps the one it has, so adding sounds
     to a map someone saved never grows a second scheduler."""
     doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
-    first = find_timeline(doc)
-    assert find_timeline(doc) is first
+    first = ensure_timeline(doc)
+    assert ensure_timeline(doc) is first
     timelines = [
         e
         for e in doc.data["entities"]
@@ -116,7 +116,7 @@ def test_authored_timeline_registers_in_every_table(minimal_map):
     """A timeline the engine cannot find in `instanceEntities` is a timeline
     that does not exist as far as the map is concerned."""
     doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
-    timeline = find_timeline(doc)
+    timeline = ensure_timeline(doc)
     uid = timeline["uniqueId"]
     assert uid in doc.data["instanceEntities"]["values"]
     assert len(doc.data["references"]["entityEntRefs"]["keyValues"]) >= uid + 2

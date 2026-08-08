@@ -29,7 +29,7 @@ from snapmap_midi.rawmap.palette_refs import PRODUCT_PALETTE_REFS
 from snapmap_midi.rawmap.template import blank_map
 from snapmap_midi.sound import events as _events
 from snapmap_midi.sound.palette import shader_pitch
-from snapmap_midi.sound.timeline import add_button, find_timeline
+from snapmap_midi.sound.timeline import add_button, ensure_timeline
 
 
 def compile_to_rawmap(
@@ -64,7 +64,7 @@ def compile_to_rawmap(
     """
     data = blank_map() if baseline_bytes is None else json.loads(baseline_bytes)
     doc = SnapMapDocument(data=data, palette_refs=PRODUCT_PALETTE_REFS)
-    timeline = find_timeline(doc)
+    timeline = ensure_timeline(doc)
     timeline_id = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
         "item[0]"
     ]["entity"]

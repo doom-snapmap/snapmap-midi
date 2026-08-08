@@ -35,11 +35,6 @@ LISTENER_CLASS = "idSnapMapListener_Simple"
 # ---- event construction ----
 
 
-def note(shader: str, time_ms: int, channel: str = DEFAULT_CHANNEL):
-    """A single scheduled sound."""
-    return (shader, int(time_ms), channel)
-
-
 def chord(shaders: Iterable[str], time_ms: int, channel: str = DEFAULT_CHANNEL):
     """Several sounds at the same instant."""
     return [(s, int(time_ms), channel) for s in shaders]
@@ -53,13 +48,18 @@ def melody(shaders: Iterable[str], step_ms: int, start_ms: int = 0, channel: str
 # ---- map mutation ----
 
 
-def find_timeline(doc: SnapMapDocument) -> dict:
+def ensure_timeline(doc: SnapMapDocument) -> dict:
     """The document's timeline entity, authoring one if it has none.
 
-    This used to raise, and the message told you to go and find a baseline map
-    that contained a timeline. That requirement is gone: a timeline is
-    describable from nothing, so the honest response to a document without one
-    is to write one rather than to send the caller away.
+    This was `find_timeline`, and it used to raise -- the message told you to
+    go and find a baseline map that contained a timeline. That requirement is
+    gone: a timeline is describable from nothing, so the honest response to a
+    document without one is to write one rather than send the caller away.
+
+    It is not called `find_timeline` any more because it no longer only
+    finds. `SnapMapDocument.find_timeline` is the pure query that returns None
+    -- two functions a line apart answering to the same name with opposite
+    contracts, one of them mutating, is a trap.
     """
     return doc.ensure_timeline()
 
@@ -67,7 +67,7 @@ def find_timeline(doc: SnapMapDocument) -> dict:
 def set_events(doc: SnapMapDocument, events) -> str:
     """Schedule (shader, time_ms[, channel]) tuples. Returns the timeline id."""
     events = list(events)
-    timeline = find_timeline(doc)
+    timeline = ensure_timeline(doc)
     group = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]["item[0]"]
     items = {}
     for i, event in enumerate(events):

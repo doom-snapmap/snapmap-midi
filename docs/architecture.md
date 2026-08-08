@@ -120,7 +120,9 @@ returns finished map bytes. `audition.py` uses the same API, which is why there 
 copy of the recipe.
 
 `find_timeline` used to raise when a document had no timeline, with a message telling the
-caller to go and find a baseline map containing one. It now authors one.
+caller to go and find a baseline map containing one. It now authors one, and is called
+`ensure_timeline` because it no longer only finds — `SnapMapDocument.find_timeline` keeps
+that name for the pure query that returns `None`.
 
 ### `compile.py` — orchestration
 
