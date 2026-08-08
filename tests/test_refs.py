@@ -11,6 +11,7 @@ from snapmap_midi.rawmap.palette_refs import (
     SPEAKER_INHERIT,
     SWITCH_INHERIT,
 )
+from snapmap_midi.rawmap.template import TEMPLATE_PALETTE_REFS, TIMELINE_INHERIT
 
 
 def _doc() -> dict:
@@ -57,12 +58,22 @@ def test_unknown_inherit_is_an_error_not_a_silent_zero():
 
 def test_table_covers_every_inherit_the_product_authors():
     """Any inherit a product code path passes to the writer must be present,
-    or that path raises the moment it runs."""
+    or that path raises the moment it runs.
+
+    The three sound entities plus the four the blank stage is built from.
+    """
     assert set(PRODUCT_PALETTE_REFS) == {
         SPEAKER_INHERIT,
         LISTENER_ON_USE_INHERIT,
         SWITCH_INHERIT,
-    }
+    } | set(TEMPLATE_PALETTE_REFS)
+
+
+def test_timeline_pair_is_the_observed_one():
+    """Read out of an engine-saved map, not inferred. A timeline carries no
+    reference slots at all, which is what makes authoring one from nothing
+    cheaper than authoring a speaker."""
+    assert PRODUCT_PALETTE_REFS[TIMELINE_INHERIT] == (0, 0)
 
 
 def test_switch_pair_matches_the_value_proven_in_game():

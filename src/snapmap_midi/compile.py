@@ -19,22 +19,22 @@ a different way to reduce how many sounds are live at once.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Optional
 
-from snapmap_midi import events as _events
-from snapmap_midi.midi import parse_notes
-from snapmap_midi.palette import shader_pitch
+from snapmap_midi.music.midi import parse_notes
+from snapmap_midi.music.voices import allocate_voices, thin_polyphony
 from snapmap_midi.rawmap.codec import serialize
 from snapmap_midi.rawmap.document import SPEAKER_INHERIT, SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import PRODUCT_PALETTE_REFS
-from snapmap_midi.timeline import add_button, find_timeline
-from snapmap_midi.voices import allocate_voices, thin_polyphony
+from snapmap_midi.rawmap.template import blank_map
+from snapmap_midi.sound import events as _events
+from snapmap_midi.sound.palette import shader_pitch
+from snapmap_midi.sound.timeline import add_button, find_timeline
 
 
 def compile_to_rawmap(
     mid_path,
-    baseline_bytes: bytes,
+    baseline_bytes: Optional[bytes] = None,
     button_name: str = "snapmap-midi-song",
     family_overrides: Optional[dict] = None,
     drums="auto",
@@ -56,8 +56,14 @@ def compile_to_rawmap(
     drum_overrides: Optional[dict] = None,
     note_index=None,
 ):
-    """Compile a MIDI file into finished map bytes plus a statistics summary."""
-    doc = SnapMapDocument(data=json.loads(baseline_bytes), palette_refs=PRODUCT_PALETTE_REFS)
+    """Compile a MIDI file into finished map bytes plus a statistics summary.
+
+    `baseline_bytes` is optional. Omit it and the song is staged in a blank
+    room authored from nothing; pass a saved map and the song is added to it,
+    reusing that map's timeline if it has one.
+    """
+    data = blank_map() if baseline_bytes is None else json.loads(baseline_bytes)
+    doc = SnapMapDocument(data=data, palette_refs=PRODUCT_PALETTE_REFS)
     timeline = find_timeline(doc)
     timeline_id = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
         "item[0]"
@@ -108,7 +114,7 @@ def compile_to_rawmap(
         decaying_events = decaying_events[:max_events]
     groups = [(timeline_id, decaying_events)]
 
-    module = Path(doc.data["instances"][0]["moduleName"]).stem
+    module = doc.module_stem()
 
     # Per-layer voice allocation: each MIDI channel gets its own speakers,
     # sized to that layer's own polyphony. Layers never steal from each other

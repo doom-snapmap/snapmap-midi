@@ -7,17 +7,20 @@ samples decay on their own play as one-shots; notes that hold at full volume
 play on dedicated speaker voices so they can actually be stopped when the note
 ends.
 
-Layout:
-    rawmap/     the map authoring core -- codec, value builders, documents
-    palette     the sound palette index and pitch resolution
-    gm          instrument-program and percussion mapping tables
-    midi        MIDI parsing and note pairing
-    voices      voice allocation and polyphony thinning
-    events      event-call construction
-    timeline    the reusable timeline authoring API
-    compile     orchestration: notes to a finished map
+Layout is by subsystem, stacked lowest first. Each layer may use the ones
+below it and never the ones above, which is what keeps any single layer usable
+on its own:
+
+    rawmap/     the map authoring core -- codec, values, documents, templates
+    sound/      the game's sound surface -- palette, event calls, timelines
+    music/      the MIDI domain -- parsing, General MIDI tables, voicing
+
+On top of those sits the product surface:
+
+    compile     orchestration: a MIDI file to a finished map
     audition    build a map that plays candidate sounds in sequence
-    paths       resolve game-derived inputs the product may not bundle
+    cli         the command-line entry point
+    paths       optional overrides for the data the product normally ships
 """
 
 from __future__ import annotations

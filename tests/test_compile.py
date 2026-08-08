@@ -1,7 +1,8 @@
 """The MIDI compiler: mapping, pairing, voice allocation, and the byte gates.
 
-Pure-logic tests are hermetic. Tests needing the real sound palette or a real
-baseline map carry the `gamedata` marker and skip when none is configured.
+Everything here is hermetic, including the headline gate, because a compile
+now needs nothing but a MIDI file. The few tests that compile AGAINST a saved
+map carry the `savedmap` marker and skip when none is configured.
 """
 
 from __future__ import annotations
@@ -15,7 +16,11 @@ import pytest
 
 from snapmap_midi import paths
 from snapmap_midi.compile import compile_to_rawmap
-from snapmap_midi.events import (
+from snapmap_midi.music.gm import DRUM_MAP, SUSTAINED, gm_to_family
+from snapmap_midi.music.midi import Note, parse_notes
+from snapmap_midi.music.voices import allocate_voices, thin_polyphony
+from snapmap_midi.rawmap.codec import deserialize
+from snapmap_midi.sound.events import (
     START_CHANNEL,
     STOP_CHANNEL,
     events_block,
@@ -23,11 +28,12 @@ from snapmap_midi.events import (
     start,
     stop,
 )
-from snapmap_midi.gm import DRUM_MAP, SUSTAINED, gm_to_family
-from snapmap_midi.midi import Note, parse_notes
-from snapmap_midi.palette import build_note_index, decl_for, shader_pitch
-from snapmap_midi.rawmap.codec import deserialize
-from snapmap_midi.voices import allocate_voices, thin_polyphony
+from snapmap_midi.sound.palette import (
+    build_note_index,
+    decl_for,
+    load_palette,
+    shader_pitch,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TINY_MIDI = FIXTURES / "tiny.mid"
@@ -310,7 +316,7 @@ def test_hermetic_multi_voice_steps_speaker_positions(minimal_timeline_map):
 # ---- byte gates (need the real palette and baseline) ----
 
 
-@pytest.mark.gamedata
+@pytest.mark.savedmap
 def test_compile_golden_bytes():
     """Byte gate. If this moves while the structural gate still passes,
     suspect an accidental key-order change -- not an improvement."""
@@ -318,7 +324,7 @@ def test_compile_golden_bytes():
     assert raw == GOLDEN.read_bytes()
 
 
-@pytest.mark.gamedata
+@pytest.mark.savedmap
 def test_compile_golden_structure():
     """Structural gate. Tells you WHAT moved when the byte gate fails."""
     raw, stats = compile_to_rawmap(TINY_MIDI, paths.baseline_map().read_bytes(), **_GOLDEN_PARAMS)
@@ -343,7 +349,7 @@ def test_compile_golden_structure():
     assert stats["sustained"] >= 2  # both string notes
 
 
-@pytest.mark.gamedata
+@pytest.mark.savedmap
 def test_compile_end_to_end_produces_a_timeline():
     raw, stats = compile_to_rawmap(
         TINY_MIDI, paths.baseline_map().read_bytes(), button_name="claude-test-song"
@@ -354,11 +360,115 @@ def test_compile_end_to_end_produces_a_timeline():
     assert "idTarget_Timeline" in classes
 
 
-@pytest.mark.gamedata
-def test_real_palette_indexes_pitched_sounds():
+def test_shipped_palette_indexes_pitched_sounds():
+    """No marker and no skip: the palette ships, so this runs everywhere.
+
+    It used to need a configured game file, which meant the one test proving
+    the palette parses at all never ran in CI or on a contributor's machine.
+    """
     index = build_note_index()
     assert index, "the palette parsed to nothing"
-    assert any("ins_piano" == k for k in index), "no piano category found"
+    for family in ("ins_piano", "ins_violin", "ins_flute"):
+        assert family in index, "no %s category in the shipped palette" % family
+    # Middle C has to resolve, or every melody lands on a fallback.
+    assert decl_for("ins_piano", 60, index) == "play_pianoc4"
+
+
+def test_shipped_palette_covers_every_family_the_tables_name():
+    """`gm.py` maps program numbers onto family names and `DRUM_MAP` names
+    percussion sounds outright. Either naming something the palette does not
+    contain compiles to silence, which looks like success."""
+    palette = load_palette()
+    everything = {sound for sounds in palette.values() for sound in sounds}
+
+    families = {gm_to_family(program) for program in range(128)}
+    missing = sorted(f for f in families | SUSTAINED if f not in palette)
+    assert not missing, "families with no sounds in the palette: %s" % missing
+
+    absent = sorted(s for s in set(DRUM_MAP.values()) if s not in everything)
+    assert not absent, "drum sounds absent from the palette: %s" % absent
+
+
+def test_compiles_with_no_inputs_at_all():
+    """The headline: a MIDI file, and nothing else. No palette to configure,
+    no baseline map to find."""
+    raw, stats = compile_to_rawmap(TINY_MIDI, button_name="from-scratch")
+    obj = deserialize(raw)
+    classes = [(e.get("entityDef") or {}).get("className") for e in obj["entities"]]
+    assert "idTarget_Timeline" in classes
+    assert stats["notes"] > 0 and stats["dropped"] == 0
+
+
+# ---- from-scratch byte gate ----
+#
+# The default path now authors its own map, so it needs its own gate. The
+# hermetic gate below covers a compile against a supplied baseline and would
+# not notice the stage itself changing: a cap losing its rotation, the player
+# start moving, a reference table sized differently. All of those are silent
+# in every structural assertion and fatal in game.
+
+SCRATCH_GOLDEN = FIXTURES / "tiny_song_scratch.json"
+
+_SCRATCH_PARAMS = dict(button_name="scratch-test", drums="auto", max_speakers=32)
+
+
+def test_from_scratch_golden_bytes():
+    """Byte gate on the map authored from nothing, palette included.
+
+    This one gate covers more than any other: the shipped palette resolving
+    the same sounds, the blank stage, the synthesized timeline, and the whole
+    compile on top of them.
+    """
+    raw, _ = compile_to_rawmap(TINY_MIDI, **_SCRATCH_PARAMS)
+    assert raw == SCRATCH_GOLDEN.read_bytes()
+
+
+def test_from_scratch_golden_structure():
+    """Structural companion, so a byte diff says WHAT moved."""
+    raw, stats = compile_to_rawmap(TINY_MIDI, **_SCRATCH_PARAMS)
+    obj = deserialize(raw)
+    by_class = {}
+    for e in obj["entities"]:
+        by_class.setdefault((e.get("entityDef") or {}).get("className"), []).append(e)
+
+    # The stage: both portals capped, somewhere to spawn, one scheduler.
+    assert len(by_class["idSnapMapCapEntity"]) == 2
+    assert obj["doorsAndCaps"]["portalDoors"] == [
+        e["uniqueId"] for e in by_class["idSnapMapCapEntity"]
+    ]
+    assert len(by_class["idSnapMapGameEntity_ComboStart"]) == 1
+    assert len(by_class["idTarget_Timeline"]) == 1
+    # The song: one group per voice plus the shared one-shot group.
+    timeline = by_class["idTarget_Timeline"][0]
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    assert groups["num"] == stats["voices"] + 1
+    assert len(by_class["idSnapMapGameEntity_Speaker"]) == stats["voices"]
+    # The trigger: a switch wired through a listener, and nothing else wired.
+    assert len(by_class["idInteractable"]) == 1
+    assert len(by_class["idSnapMapListener_Simple"]) == 1
+    assert obj["targets"]["connections"] == [
+        -(by_class["idInteractable"][0]["uniqueId"] + 1),
+        by_class["idSnapMapListener_Simple"][0]["uniqueId"],
+    ]
+    # Every entity registered against its instance, or the engine cannot see it.
+    assert obj["instanceEntities"]["values"] == [e["uniqueId"] for e in obj["entities"]]
+
+
+def test_from_scratch_switch_is_reachable_from_the_spawn():
+    """A switch the player cannot walk to is a song that never plays."""
+    obj = deserialize(compile_to_rawmap(TINY_MIDI, **_SCRATCH_PARAMS)[0])
+
+    def position(class_name):
+        entity = next(
+            e for e in obj["entities"] if (e.get("entityDef") or {}).get("className") == class_name
+        )
+        edit = entity["entityDef"]["state"]["edit"].get("spawnPosition", {})
+        return (edit.get("x", 0), edit.get("y", 0), edit.get("z", 0))
+
+    spawn = position("idSnapMapGameEntity_ComboStart")
+    switch = position("idInteractable")
+    distance = sum((a - b) ** 2 for a, b in zip(spawn, switch)) ** 0.5
+    assert distance < 256, "switch is %.0f units from the spawn" % distance
 
 
 if __name__ == "__main__":

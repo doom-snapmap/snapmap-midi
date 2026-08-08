@@ -21,6 +21,7 @@ import copy
 from typing import Any, Optional
 
 from snapmap_midi.rawmap import refs as _refs
+from snapmap_midi.rawmap import template as _template
 from snapmap_midi.rawmap.codec import serialize as _serialize
 from snapmap_midi.rawmap.refs import PaletteRefs
 from snapmap_midi.rawmap.values import Mat2D, Vec3
@@ -189,6 +190,45 @@ class SnapMapDocument:
         # game.
         self.add_entity_refs(unique_id, SPEAKER_INHERIT)
         return unique_id
+
+    def module_stem(self, instance: int = 0) -> str:
+        """The bare module name an entity reference string is built from."""
+        name = self.data["instances"][instance]["moduleName"]
+        return name.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+
+    def find_timeline(self) -> Optional[dict]:
+        """The first timeline entity, or None if the document has none."""
+        for e in self.data.get("entities", []):
+            if (e.get("entityDef") or {}).get("className") == _template.TIMELINE_CLASS:
+                return e
+        return None
+
+    def add_timeline(self, unique_id: Optional[int] = None, owning_instance: int = 0) -> dict:
+        """Add a timeline entity with one empty event group. Returns it.
+
+        A timeline is an ordinary entity in a saved map — class
+        `idTarget_Timeline`, stock inherit, reference pair (0, 0). It is not
+        placeable from the editor's palette, which is a fact about the EDITOR
+        and was long mistaken for a fact about the format; describing one here
+        is no harder than describing a speaker.
+        """
+        if unique_id is None:
+            unique_id = self.next_safe_uid()
+
+        entity = _template.timeline_entity(unique_id, self.module_stem(owning_instance))
+        self.data["entities"].append(entity)
+        self.extend_instance_entities(unique_id, owning_instance)
+        self.add_entity_refs(unique_id, _template.TIMELINE_INHERIT)
+        return entity
+
+    def ensure_timeline(self, owning_instance: int = 0) -> dict:
+        """The document's timeline, authoring one if it has none.
+
+        This is what makes a baseline map optional. A document that already
+        carries a timeline — a map saved out of the editor, say — keeps the
+        one it has, so existing arrangements are untouched.
+        """
+        return self.find_timeline() or self.add_timeline(owning_instance=owning_instance)
 
     def add_connection(self, source_uid: int, target_uid: int) -> None:
         """Wire `source_uid` to fire into `target_uid`.

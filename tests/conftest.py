@@ -1,10 +1,11 @@
 """Test-session layer for the snapmap-midi product suite.
 
 Hermetic by default. Every test here runs with no host repository and no game
-assets: documents are built in code. Tests that genuinely need game-derived
-input (the sound palette, a real baseline map) carry the `gamedata` marker and
-skip when nothing has been configured, following the marker precedent used by
-the sibling toolchain suite.
+assets: documents are built in code, the sound palette ships with the package,
+and maps are authored from nothing. The only remaining external input is a
+saved map to compile AGAINST, which a few tests use to prove that adding a song
+to an existing map still works. Those carry the `savedmap` marker and skip when
+none is configured.
 
 Run standalone:
 
@@ -28,27 +29,26 @@ assert (_PRODUCT_ROOT / "rawmap" / "codec.py").is_file(), (
     "product root is wrong for this file's location"
 )
 
-# Modules whose every test needs configured game-derived input.
-_GAMEDATA_MODULES = frozenset()
+# Modules whose every test needs a configured saved map.
+_SAVEDMAP_MODULES = frozenset()
 
 
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        "gamedata: needs game-derived input (sound palette, baseline map); "
-        "skipped when none is configured",
+        "savedmap: needs a saved baseline map to compile against; skipped when none is configured",
     )
 
 
 def pytest_collection_modifyitems(config, items):
     from snapmap_midi import paths
 
-    if paths.gamedata_configured():
+    if paths.baseline_configured():
         return
-    skip = pytest.mark.skip(reason="no game data configured (see snapmap_midi.paths)")
+    skip = pytest.mark.skip(reason="no baseline map configured (see snapmap_midi.paths)")
     for item in items:
         module = Path(str(item.fspath)).stem
-        if module in _GAMEDATA_MODULES or item.get_closest_marker("gamedata"):
+        if module in _SAVEDMAP_MODULES or item.get_closest_marker("savedmap"):
             item.add_marker(skip)
 
 

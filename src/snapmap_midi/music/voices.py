@@ -12,7 +12,7 @@ means fewer chances to lose that race.
 
 from __future__ import annotations
 
-from snapmap_midi.palette import shader_pitch
+from snapmap_midi.sound.palette import shader_pitch
 
 
 def allocate_voices(notes, max_speakers: int) -> int:

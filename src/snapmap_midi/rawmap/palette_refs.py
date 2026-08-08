@@ -1,12 +1,15 @@
 """Reference-slot counts for every palette entry this product authors.
 
-snapmap-midi creates exactly three kinds of entity, so its table is small enough to
+snapmap-midi creates a handful of entity kinds, so its table is small enough to
 state explicitly and defend entry by entry, rather than extracted in bulk from
 saved maps.
 
 Provenance differs per entry, and the difference matters:
 
   - The speaker and listener pairs are observed directly in engine-saved maps.
+  - The timeline, cap and player-start pairs are likewise observed directly,
+    read out of an engine-saved map of the same blank-room module this product
+    now authors from scratch.
   - The switch pair is NOT. No saved sample in hand contains one. Its entity
     count of 1 is shared by all twelve observed entries under the same palette
     prefix, so it is well supported. Its variable count of 0 is inference: of
@@ -21,6 +24,8 @@ not a fixture refresh.
 
 from __future__ import annotations
 
+from snapmap_midi.rawmap.template import TEMPLATE_PALETTE_REFS
+
 SPEAKER_INHERIT = "snapmaps/audio/2d_speaker"
 LISTENER_ON_USE_INHERIT = "snapmaps/listener/interactable/on_use"
 SWITCH_INHERIT = "snapmaps/interactibles/crate_switch"
@@ -29,4 +34,7 @@ PRODUCT_PALETTE_REFS: dict[str, tuple[int, int]] = {
     SPEAKER_INHERIT: (0, 0),
     LISTENER_ON_USE_INHERIT: (0, 1),
     SWITCH_INHERIT: (1, 0),
+    # The stage this product authors around the song: the timeline itself, the
+    # two portal caps and the player start.
+    **TEMPLATE_PALETTE_REFS,
 }

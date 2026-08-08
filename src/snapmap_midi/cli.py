@@ -1,4 +1,9 @@
-"""Command-line surface: compile a MIDI file, or build an audition map."""
+"""Command-line surface: compile a MIDI file, or build an audition map.
+
+The whole surface is one required argument. Everything a compile used to
+demand -- a sound palette to point at, a saved map to inherit a timeline from,
+an output name -- is either shipped, authored, or fixed by the loader.
+"""
 
 from __future__ import annotations
 
@@ -10,18 +15,47 @@ from snapmap_midi import paths
 from snapmap_midi.audition import DEFAULT_GAP_MS, candidates_in_category, legend
 from snapmap_midi.audition import build as build_audition
 from snapmap_midi.compile import compile_to_rawmap
+from snapmap_midi.sound.palette import categories
 
 
-def _resolve_baseline(explicit: str | None) -> Path:
-    if explicit:
-        return Path(explicit)
-    configured = paths.baseline_map()
-    if configured is None:
-        sys.exit(
-            "no baseline map given and none configured.\n"
-            "Pass --baseline, or configure baseline_map (see snapmap_midi.paths)."
+def _baseline_bytes(explicit) -> bytes | None:
+    """The saved map to add to, or None to author a blank one.
+
+    An explicit path wins over a configured one; neither is the ordinary case.
+    """
+    path = Path(explicit) if explicit else paths.baseline_map()
+    return path.read_bytes() if path else None
+
+
+def _write(raw: bytes, out_dir) -> Path:
+    """Write the map where the loader reads it, creating the folder if absent.
+
+    The folder is normally created by the loader itself the first time it
+    runs. Creating it here too means compiling works on a machine where that
+    has not happened yet, rather than failing on a missing directory.
+    """
+    destination = paths.rawmap_destination(out_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(raw)
+    return destination
+
+
+def _report(destination: Path) -> None:
+    """Say where the map went, and warn if it went somewhere unusable."""
+    print("  -> {}".format(destination))
+    if out_dir_is_default(destination):
+        print("     load it with `sh_rawmaps_on` in the console, then open any map")
+    else:
+        print(
+            "     the loader only reads {}; move it there to play it".format(
+                paths.rawmap_destination()
+            )
         )
-    return configured
+
+
+def out_dir_is_default(destination: Path) -> bool:
+    """True when the map landed where the loader will actually find it."""
+    return destination == paths.rawmap_destination()
 
 
 def _compile(args) -> int:
@@ -29,7 +63,7 @@ def _compile(args) -> int:
     drums = {"auto": "auto", "on": True, "off": False}[args.drums]
     raw, stats = compile_to_rawmap(
         args.midi,
-        _resolve_baseline(args.baseline).read_bytes(),
+        _baseline_bytes(args.baseline),
         button_name=args.button,
         family_overrides=overrides,
         drums=drums,
@@ -38,9 +72,9 @@ def _compile(args) -> int:
         hard_stop=args.hard_stop,
         max_events=args.max_events,
     )
-    Path(args.out).write_bytes(raw)
+    destination = _write(raw, args.out_dir)
     print("compiled {}: {}".format(args.midi, stats))
-    print("  -> {}".format(args.out))
+    _report(destination)
     return 0
 
 
@@ -48,14 +82,14 @@ def _audition(args) -> int:
     candidates = candidates_in_category(args.category)
     if not candidates:
         print("no sounds in category {!r}".format(args.category))
+        print("available: {}".format(", ".join(sorted(categories()))))
         return 2
     raw = build_audition(
         candidates,
-        _resolve_baseline(args.baseline).read_bytes(),
+        _baseline_bytes(args.baseline),
         gap_ms=args.gap,
         label="snapmap-midi-audition-" + args.category,
     )
-    Path(args.out).write_bytes(raw)
     total = len(candidates) * args.gap / 1000.0
     print(
         "=== {} ({} sounds, {} ms apart, ~{:.0f}s total) ===".format(
@@ -64,8 +98,25 @@ def _audition(args) -> int:
     )
     print("press the switch once; sounds play in this order:\n")
     print("\n".join(legend(candidates, args.gap)))
-    print("\n  -> {}".format(args.out))
+    print()
+    _report(_write(raw, args.out_dir))
     return 0
+
+
+def _add_shared(parser) -> None:
+    """Flags both subcommands take, so neither drifts from the other."""
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        dest="out_dir",
+        help="write the map to this folder instead of the loader's (the filename "
+        "is always rawmap.json -- the loader reads no other name)",
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help="add to this saved map instead of authoring a blank one",
+    )
 
 
 def main(argv=None) -> int:
@@ -77,8 +128,7 @@ def main(argv=None) -> int:
 
     c = sub.add_parser("compile", help="compile a .mid into a map")
     c.add_argument("midi")
-    c.add_argument("--out", required=True)
-    c.add_argument("--baseline", default=None, help="baseline map containing a timeline entity")
+    _add_shared(c)
     c.add_argument("--button", default="snapmap-midi-song")
     c.add_argument("--remap", default=None, help='retimbre families, e.g. "ins_guitar=ins_piano"')
     c.add_argument("--drums", default="auto", choices=["auto", "on", "off"])
@@ -101,8 +151,7 @@ def main(argv=None) -> int:
 
     a = sub.add_parser("audition", help="build a map that plays candidate sounds")
     a.add_argument("category", nargs="?", default="ins_noise")
-    a.add_argument("--out", required=True)
-    a.add_argument("--baseline", default=None)
+    _add_shared(a)
     a.add_argument("--gap", type=int, default=DEFAULT_GAP_MS)
     a.set_defaults(func=_audition)
 

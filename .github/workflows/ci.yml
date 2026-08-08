@@ -31,9 +31,10 @@ jobs:
             echo "::error::declaration files are game data and must never be committed"
             exit 1
           fi
-          # These two byte fixtures are the ONLY JSON allowed to look map-shaped.
-          # (tiny.mid is not JSON; the binary step below covers it.)
-          allowed="tests/fixtures/tiny_song_default.json tests/fixtures/tiny_song_hermetic.json"
+          # These byte-gate fixtures are the ONLY JSON allowed to look map-shaped. Two are
+          # compiled against a saved map; the third is authored from nothing by this repo and
+          # contains no game content at all. (tiny.mid is not JSON; the binary step covers it.)
+          allowed="tests/fixtures/tiny_song_default.json tests/fixtures/tiny_song_hermetic.json tests/fixtures/tiny_song_scratch.json"
           for f in $(git ls-files '*.json'); do
             case " $allowed " in *" $f "*) continue ;; esac
             # Process substitution, not a pipe: `grep -q` exits on first match, `head` then
@@ -107,17 +108,19 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
-      - name: Assert the game-data tests skipped rather than vanished
+      - name: Assert the saved-map tests skipped rather than vanished
         shell: bash
         run: |
           set -euo pipefail
-          # Public CI has no game data, so these MUST skip. Asserting the count catches a test
-          # that silently became a no-op instead of one that correctly skipped.
+          # Public CI has no saved map to compile against, so these MUST skip. Asserting the
+          # count catches a test that silently became a no-op instead of one that skipped.
+          # It is 4 and not 5 because the palette now ships: the test that proves it parses
+          # needs nothing configured and runs here.
           # Captured in a variable rather than a temp file: nothing here should leave a
           # stray artifact in the workspace for the guard job to trip over.
-          out="$(python -m pytest -q -m gamedata 2>&1)"
+          out="$(python -m pytest -q -m savedmap 2>&1)"
           echo "$out"
           case "$out" in
-            *"5 skipped"*) echo "game-data tests skipped as expected" ;;
-            *) echo "::error::expected exactly 5 game-data tests to skip" ; exit 1 ;;
+            *"4 skipped"*) echo "saved-map tests skipped as expected" ;;
+            *) echo "::error::expected exactly 4 saved-map tests to skip" ; exit 1 ;;
           esac

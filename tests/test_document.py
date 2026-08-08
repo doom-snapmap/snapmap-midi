@@ -127,16 +127,46 @@ def test_clone_preserves_the_concrete_class(minimal_map):
 # ---- layering ----
 
 
-def test_core_does_not_import_the_music_layer():
-    """The core stays independently promotable: a future non-music tool must
-    be able to depend on it without dragging a MIDI compiler along."""
-    banned = re.compile(
-        r"^\s*(from|import)\s+(snapmap_midi\.)?"
-        r"(midi|gm|timeline|compile|voices|events|palette|audition|cli)\b",
+# The subsystem stack, lowest first. A package may import from itself and from
+# anything BELOW it, never from anything above. `paths` is deliberately absent:
+# it imports nothing internal, so it is a leaf every layer may use.
+_LAYERS = ["rawmap", "sound", "music"]
+
+#: Product-surface modules, which sit above every subsystem.
+_SURFACE = ["compile", "audition", "cli"]
+
+
+def _forbidden_imports_for(layer_index: int) -> re.Pattern:
+    """Everything the layer at `layer_index` is not allowed to import."""
+    above = _LAYERS[layer_index + 1 :] + _SURFACE
+    return re.compile(
+        r"^\s*(from|import)\s+snapmap_midi\.(%s)\b" % "|".join(above),
         re.M,
     )
-    for f in (_PRODUCT_ROOT / "rawmap").rglob("*.py"):
-        assert not banned.search(f.read_text(encoding="utf-8")), f
+
+
+@pytest.mark.parametrize("index,layer", list(enumerate(_LAYERS)))
+def test_subsystem_imports_only_downward(index, layer):
+    """Each subsystem stays independently usable: `rawmap` must not drag in a
+    MIDI compiler, and `sound` must be usable to place sounds by hand with no
+    music layer present.
+
+    This is the layering that makes the packages meaningful rather than
+    decorative. Promoting `rawmap/` to its own distribution should be a
+    directory move, and that stays true only if it is proven.
+    """
+    banned = _forbidden_imports_for(index)
+    files = list((_PRODUCT_ROOT / layer).rglob("*.py"))
+    assert files, "layer %r has no modules; the layout moved" % layer
+    for f in files:
+        hit = banned.search(f.read_text(encoding="utf-8"))
+        assert not hit, "%s imports upward: %s" % (f, hit.group(0).strip())
+
+
+def test_every_subsystem_package_exists():
+    """A renamed or deleted package would make the scan above vacuous."""
+    for layer in _LAYERS:
+        assert (_PRODUCT_ROOT / layer / "__init__.py").is_file(), layer
 
 
 def test_product_does_not_import_the_host():

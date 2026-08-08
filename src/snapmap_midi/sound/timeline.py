@@ -4,9 +4,9 @@ A note is a scheduled sound-start event. Polyphony is several events at the
 same time; layering is several instruments interleaved in one list. A switch
 wired to an on-use listener triggers the whole thing.
 
-The map must already contain a timeline entity. That class is special and not
-placeable from the palette, so authoring fills an existing one rather than
-synthesizing it -- which is why a baseline map is a required input.
+Nothing here needs a map to start from. A document that already carries a
+timeline keeps the one it has; one that does not gets a freshly authored
+timeline entity, and a caller with no document at all gets a blank stage.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from __future__ import annotations
 import json
 from typing import Iterable, Optional
 
-from snapmap_midi.events import LAYERED_CHANNEL
-from snapmap_midi.events import start as _start_event
 from snapmap_midi.rawmap.codec import serialize
 from snapmap_midi.rawmap.document import SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import (
@@ -23,6 +21,9 @@ from snapmap_midi.rawmap.palette_refs import (
     PRODUCT_PALETTE_REFS,
     SWITCH_INHERIT,
 )
+from snapmap_midi.rawmap.template import blank_map
+from snapmap_midi.sound.events import LAYERED_CHANNEL
+from snapmap_midi.sound.events import start as _start_event
 
 DEFAULT_CHANNEL = LAYERED_CHANNEL
 
@@ -53,11 +54,14 @@ def melody(shaders: Iterable[str], step_ms: int, start_ms: int = 0, channel: str
 
 
 def find_timeline(doc: SnapMapDocument) -> dict:
-    """The first timeline entity, or raise."""
-    for e in doc.data["entities"]:
-        if (e.get("entityDef") or {}).get("className") == TIMELINE_CLASS:
-            return e
-    raise ValueError("no timeline entity in this map; use a baseline that contains one")
+    """The document's timeline entity, authoring one if it has none.
+
+    This used to raise, and the message told you to go and find a baseline map
+    that contained a timeline. That requirement is gone: a timeline is
+    describable from nothing, so the honest response to a document without one
+    is to write one rather than to send the caller away.
+    """
+    return doc.ensure_timeline()
 
 
 def set_events(doc: SnapMapDocument, events) -> str:
@@ -132,14 +136,21 @@ def add_button(
 
 
 def author_sound_timeline(
-    baseline, events, button_name: Optional[str] = "snapmap-midi-button"
+    events, baseline=None, button_name: Optional[str] = "snapmap-midi-button"
 ) -> bytes:
-    """Baseline plus events to finished map bytes.
+    """Events to finished map bytes.
+
+    `baseline` is optional and exists only for callers who want their sounds
+    added to a map they already have. Omit it and the events are staged in a
+    blank room authored from nothing, which is the ordinary case.
 
     Pass button_name=None to leave the timeline untriggered, for callers that
     fire it some other way.
     """
-    data = baseline if isinstance(baseline, dict) else json.loads(baseline)
+    if baseline is None:
+        data = blank_map()
+    else:
+        data = baseline if isinstance(baseline, dict) else json.loads(baseline)
     doc = SnapMapDocument(data=data, palette_refs=PRODUCT_PALETTE_REFS)
     timeline_id = set_events(doc, events)
     if button_name:

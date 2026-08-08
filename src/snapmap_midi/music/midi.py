@@ -15,8 +15,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
-from snapmap_midi import palette
-from snapmap_midi.gm import DRUM_CHANNEL, DRUM_MAP, SUSTAINED, gm_to_family
+from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, SUSTAINED, gm_to_family
+from snapmap_midi.sound import palette
 
 
 @dataclass
