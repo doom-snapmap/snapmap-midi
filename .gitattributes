@@ -1,0 +1,9 @@
+# Workflow YAML MUST be LF: a CRLF checkout puts stray \r into `shell: bash` steps,
+# breaking `set -euo pipefail`.
+*.yml text eol=lf
+
+# Byte fixtures are compared exactly. Never let line-ending translation touch them --
+# a CRLF-mangled fixture fails the byte gates for a reason that has nothing to do with
+# the code, which is the hardest kind of failure to diagnose.
+*.mid binary
+tests/fixtures/*.json binary

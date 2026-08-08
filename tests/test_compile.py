@@ -1,0 +1,365 @@
+"""The MIDI compiler: mapping, pairing, voice allocation, and the byte gates.
+
+Pure-logic tests are hermetic. Tests needing the real sound palette or a real
+baseline map carry the `gamedata` marker and skip when none is configured.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import mido
+import pytest
+
+from snapmap_midi import paths
+from snapmap_midi.compile import compile_to_rawmap
+from snapmap_midi.events import (
+    START_CHANNEL,
+    STOP_CHANNEL,
+    events_block,
+    fade,
+    start,
+    stop,
+)
+from snapmap_midi.gm import DRUM_MAP, SUSTAINED, gm_to_family
+from snapmap_midi.midi import Note, parse_notes
+from snapmap_midi.palette import build_note_index, decl_for, shader_pitch
+from snapmap_midi.rawmap.codec import deserialize
+from snapmap_midi.voices import allocate_voices, thin_polyphony
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+TINY_MIDI = FIXTURES / "tiny.mid"
+GOLDEN = FIXTURES / "tiny_song_default.json"
+
+# Compile parameters the golden is named for. Changing any of these means a
+# NEW golden under a new name, never an overwrite of this one.
+_GOLDEN_PARAMS = dict(button_name="claude-test-song", drums="auto", max_speakers=32)
+
+# A synthetic palette, so pairing and family selection can be tested without
+# the real one.
+_SYNTHETIC_INDEX = {
+    "ins_piano": {60: "play_pianoc4", 62: "play_pianod4", 72: "play_pianoc5"},
+    "ins_violin": {48: "play_violinc3", 67: "play_violing4"},
+    "ins_sine": {48: "play_sinec3", 67: "play_sineg4"},
+}
+
+
+# ---- pure logic ----
+
+
+def test_gm_to_family_band_edges():
+    assert gm_to_family(0) == "ins_piano"
+    assert gm_to_family(40) == "ins_violin"
+    assert gm_to_family(56) == "ins_trumpet"
+    assert gm_to_family(73) == "ins_flute"
+    assert gm_to_family(127) == "ins_marimba"
+
+
+def test_shader_pitch():
+    assert shader_pitch("play_pianoc4") == 60
+    assert shader_pitch("play_violindb6") == 85
+    assert shader_pitch("play_noise_kick_tight") is None
+
+
+def test_decl_for_prefers_same_pitch_class_over_nearest():
+    """An octave displacement keeps the melody in key; the nearest absolute
+    pitch would bend it out of key."""
+    index = {"ins_piano": {60: "play_pianoc4", 62: "play_pianod4", 72: "play_pianoc5"}}
+    assert decl_for("ins_piano", 60, index) == "play_pianoc4"
+    assert decl_for("ins_piano", 84, index) == "play_pianoc5"
+    assert decl_for("ins_missing", 60, index) is None
+
+
+def test_thin_polyphony_keeps_highest_voices():
+    notes = [
+        Note(0, 1000, "play_pianoc4", True, 0, "ins_piano"),
+        Note(0, 1000, "play_pianoe4", True, 0, "ins_piano"),
+        Note(0, 1000, "play_pianog4", True, 0, "ins_piano"),
+    ]
+    kept = thin_polyphony(notes, max_poly=2)
+    assert {n.shader for n in kept} == {"play_pianoe4", "play_pianog4"}
+    # Full length retained: this cuts density, not duration.
+    assert all(n.end == 1000 for n in kept)
+
+
+def test_allocate_voices_overlap_vs_sequential():
+    overlap = [Note(0, 500, "a", True, 0, "f"), Note(100, 600, "b", True, 0, "f")]
+    assert allocate_voices(overlap, max_speakers=8) == 2
+    sequential = [Note(0, 500, "a", True, 0, "f"), Note(500, 900, "b", True, 0, "f")]
+    assert allocate_voices(sequential, max_speakers=8) == 1
+
+
+def test_eventcall_encodings_match_proven_forms():
+    """Shapes established against the running game: the sound argument is a
+    NESTED declaration pointer, the count key carries a leading newline, and
+    channels are enum-keyed."""
+    s = start("play_pianoc4", 420)
+    assert s["eventCall"]["\neventHandle_t eventDef"] == "startSoundShader"
+    assert s["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
+    assert s["eventCall"]["args"]["item[1]"] == {"soundChannel_t": START_CHANNEL}
+    assert s["eventCall"]["args"]["\nnum"] == 2
+    assert s["eventTime"] == 420
+
+    st = stop(1000)
+    assert st["eventCall"]["\neventHandle_t eventDef"] == "stopSound"
+    assert st["eventCall"]["args"]["item[0]"] == {"soundChannel_t": STOP_CHANNEL}
+
+    f = fade(1000, to_db=-60.0, over_s=0.1)
+    assert f["eventCall"]["\neventHandle_t eventDef"] == "fadeSound"
+    assert f["eventCall"]["args"]["\nnum"] == 3
+
+    block = events_block([s, st])
+    assert block["num"] == 2 and "item[0]" in block and "item[1]" in block
+    # The count key is inserted last and key order is preserved on output.
+    assert list(block)[-1] == "num"
+
+
+def test_note_field_order_is_pinned():
+    """Field declaration order becomes key order in anything derived from this
+    record, and the format preserves key order rather than sorting. Reordering
+    these changes output bytes with no semantic change."""
+    assert [f for f in Note.__dataclass_fields__] == [
+        "start",
+        "end",
+        "shader",
+        "sustained",
+        "chan",
+        "fam",
+        "voice",
+    ]
+
+
+# ---- MIDI parsing (hermetic, against a synthetic palette) ----
+
+
+def _drumless_midi(tmp_path):
+    mid = mido.MidiFile()
+    tr = mido.MidiTrack()
+    mid.tracks.append(tr)
+    tr.append(mido.Message("program_change", channel=0, program=0, time=0))
+    tr.append(mido.Message("program_change", channel=1, program=40, time=0))
+    tr.append(mido.Message("note_on", channel=0, note=60, velocity=64, time=0))
+    tr.append(mido.Message("note_off", channel=0, note=60, velocity=0, time=480))
+    tr.append(mido.Message("note_on", channel=1, note=67, velocity=64, time=0))
+    tr.append(mido.Message("note_off", channel=1, note=67, velocity=0, time=480))
+    tr.append(mido.Message("note_on", channel=1, note=48, velocity=64, time=0))
+    tr.append(mido.Message("note_off", channel=1, note=48, velocity=0, time=240))
+    p = tmp_path / "drumless.mid"
+    mid.save(str(p))
+    return p
+
+
+def test_parse_notes_pairing_families_and_sustain():
+    notes, stats = parse_notes(TINY_MIDI, note_index=_SYNTHETIC_INDEX)
+    by_channel = {}
+    for n in notes:
+        by_channel.setdefault(n.chan, []).append(n)
+    piano = by_channel[0][0]
+    assert piano.fam == "ins_piano" and piano.sustained is False
+    assert piano.end > piano.start
+    assert all(n.fam == "ins_violin" and n.sustained for n in by_channel[1])
+    assert stats["drums_on"] is True
+    assert by_channel[9][0].shader == DRUM_MAP[36]
+    assert by_channel[9][0].fam == "drums"
+
+
+def test_parse_notes_channel_family_override_wins(tmp_path):
+    p = _drumless_midi(tmp_path)
+    notes, _ = parse_notes(p, channel_families={1: "ins_piano"}, note_index=_SYNTHETIC_INDEX)
+    channel_1 = [n for n in notes if n.chan == 1]
+    assert channel_1
+    assert all(n.fam == "ins_piano" and n.sustained is False for n in channel_1)
+
+
+def test_parse_notes_low_split(tmp_path):
+    p = _drumless_midi(tmp_path)
+    notes, _ = parse_notes(p, low_split=(60, "ins_sine"), note_index=_SYNTHETIC_INDEX)
+    low = [n for n in notes if n.chan == 1 and (shader_pitch(n.shader) or 99) < 60]
+    assert low and all(n.fam == "ins_sine" for n in low)
+    assert "ins_sine" in SUSTAINED  # the split target stays stoppable
+
+
+def test_parse_notes_drum_override():
+    notes, _ = parse_notes(
+        TINY_MIDI, drum_overrides={DRUM_MAP[36]: "play_noise_hat"}, note_index=_SYNTHETIC_INDEX
+    )
+    drum = [n for n in notes if n.chan == 9][0]
+    assert drum.shader == "play_noise_hat"
+
+
+def test_unpaired_note_is_held_to_the_end_not_dropped(tmp_path):
+    mid = mido.MidiFile()
+    tr = mido.MidiTrack()
+    mid.tracks.append(tr)
+    tr.append(mido.Message("program_change", channel=0, program=0, time=0))
+    tr.append(mido.Message("note_on", channel=0, note=60, velocity=64, time=0))
+    tr.append(mido.Message("note_on", channel=0, note=62, velocity=64, time=480))
+    tr.append(mido.Message("note_off", channel=0, note=62, velocity=0, time=480))
+    p = tmp_path / "unpaired.mid"
+    mid.save(str(p))
+    notes, _ = parse_notes(p, drums=False, note_index=_SYNTHETIC_INDEX)
+    held = [n for n in notes if n.shader == "play_pianoc4"][0]
+    assert held.end > held.start
+
+
+# ---- hermetic byte gate ----
+#
+# The gates below this one need real game data and therefore SKIP after the
+# product is lifted out of its host repository -- which would silently delete
+# the entire behaviour-neutrality proof at exactly the moment it matters most.
+# This one uses the synthetic baseline and synthetic palette, so it survives
+# the move and keeps a byte gate on the compiler wherever the code lives.
+
+HERMETIC_GOLDEN = FIXTURES / "tiny_song_hermetic.json"
+
+_HERMETIC_PARAMS = dict(button_name="hermetic-test", drums="auto", max_speakers=32)
+
+
+def _hermetic_compile(minimal_timeline_map):
+    return compile_to_rawmap(
+        TINY_MIDI,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        **_HERMETIC_PARAMS,
+    )
+
+
+def test_hermetic_compile_golden_bytes(minimal_timeline_map):
+    """Byte gate that needs no game data, so it survives extraction.
+
+    Covers the compile path end to end: speaker creation, the start/fade
+    builders, the events block, and multi-group entity events.
+    """
+    raw, _ = _hermetic_compile(minimal_timeline_map)
+    assert raw == HERMETIC_GOLDEN.read_bytes()
+
+
+def test_hermetic_compile_structure(minimal_timeline_map):
+    """Structural companion, so a byte diff says WHAT moved."""
+    raw, stats = _hermetic_compile(minimal_timeline_map)
+    obj = deserialize(raw)
+    timeline = next(
+        e
+        for e in obj["entities"]
+        if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    speakers = [
+        e
+        for e in obj["entities"]
+        if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
+    ]
+    assert groups["num"] == stats["voices"] + 1
+    assert len(speakers) == stats["voices"]
+    assert stats["notes"] == 4
+    assert stats["decaying"] == 2 and stats["sustained"] == 2
+
+
+def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
+    """The default golden contains no stopSound at all, so the hard-stop
+    branch would otherwise be entirely uncovered."""
+    raw, _ = compile_to_rawmap(
+        TINY_MIDI,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        hard_stop=True,
+        button_name="hermetic-test",
+    )
+    text = raw.decode("utf-8")
+    assert "stopSound" in text
+    assert "fadeSound" not in text
+
+
+def test_hermetic_multi_voice_steps_speaker_positions(minimal_timeline_map):
+    """Two overlapping sustained notes need two speakers, which exercises the
+    per-layer loop's position stepping -- also absent from the default golden,
+    which allocates exactly one voice."""
+    import mido
+
+    mid = mido.MidiFile()
+    tr = mido.MidiTrack()
+    mid.tracks.append(tr)
+    tr.append(mido.Message("program_change", channel=1, program=40, time=0))
+    tr.append(mido.Message("note_on", channel=1, note=67, velocity=64, time=0))
+    tr.append(mido.Message("note_on", channel=1, note=48, velocity=64, time=120))
+    tr.append(mido.Message("note_off", channel=1, note=67, velocity=0, time=480))
+    tr.append(mido.Message("note_off", channel=1, note=48, velocity=0, time=120))
+    path = FIXTURES / "_tmp_overlap.mid"
+    try:
+        mid.save(str(path))
+        raw, stats = compile_to_rawmap(
+            path,
+            json.dumps(minimal_timeline_map).encode("utf-8"),
+            note_index=_SYNTHETIC_INDEX,
+            button_name="hermetic-test",
+        )
+    finally:
+        path.unlink(missing_ok=True)
+    assert stats["voices"] == 2
+    obj = deserialize(raw)
+    positions = [
+        e["entityDef"]["state"]["edit"].get("spawnPosition", {}).get("x")
+        for e in obj["entities"]
+        if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
+    ]
+    assert positions == [120.0, 144.0]  # stepped by 24 per speaker
+
+
+# ---- byte gates (need the real palette and baseline) ----
+
+
+@pytest.mark.gamedata
+def test_compile_golden_bytes():
+    """Byte gate. If this moves while the structural gate still passes,
+    suspect an accidental key-order change -- not an improvement."""
+    raw, _ = compile_to_rawmap(TINY_MIDI, paths.baseline_map().read_bytes(), **_GOLDEN_PARAMS)
+    assert raw == GOLDEN.read_bytes()
+
+
+@pytest.mark.gamedata
+def test_compile_golden_structure():
+    """Structural gate. Tells you WHAT moved when the byte gate fails."""
+    raw, stats = compile_to_rawmap(TINY_MIDI, paths.baseline_map().read_bytes(), **_GOLDEN_PARAMS)
+    obj = deserialize(raw)
+    timeline = next(
+        e
+        for e in obj["entities"]
+        if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    speakers = [
+        e
+        for e in obj["entities"]
+        if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
+    ]
+    assert groups["num"] == stats["voices"] + 1  # group 0 plus one per voice
+    # Exact equality holds only because this baseline has ZERO pre-existing
+    # speakers. Against another baseline this must become a delta.
+    assert len(speakers) == stats["voices"]
+    assert stats["drums_on"] is True
+    assert stats["decaying"] >= 2  # piano note plus kick
+    assert stats["sustained"] >= 2  # both string notes
+
+
+@pytest.mark.gamedata
+def test_compile_end_to_end_produces_a_timeline():
+    raw, stats = compile_to_rawmap(
+        TINY_MIDI, paths.baseline_map().read_bytes(), button_name="claude-test-song"
+    )
+    assert stats["drums_on"] is True
+    obj = deserialize(raw)
+    classes = [(e.get("entityDef") or {}).get("className") for e in obj["entities"]]
+    assert "idTarget_Timeline" in classes
+
+
+@pytest.mark.gamedata
+def test_real_palette_indexes_pitched_sounds():
+    index = build_note_index()
+    assert index, "the palette parsed to nothing"
+    assert any("ins_piano" == k for k in index), "no piano category found"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

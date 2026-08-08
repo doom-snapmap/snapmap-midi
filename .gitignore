@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Test artifacts
+.pytest_cache/
+.ruff_cache/
+# test_compile.py writes a transient MIDI here; it must never reach a diff
+tests/fixtures/_tmp_*
+
+# Local editor / agent config (per-machine; not part of the package)
+.claude/
+.codex/

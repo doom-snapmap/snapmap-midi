@@ -1,0 +1,85 @@
+{
+  "_note": "User ear-labels from soundboard auditions. role = intended musical use. ins_noise = noise-texture-heavy: usable hits are clap/hat/kick_tight; eq/full/long/med/crash are noise sweeps/risers (great for electronic/EDM FX), not acoustic-kit pieces. For acoustic snare/crash/toms, audition ins_percussion (ben_ set).",
+  "ins_noise": {
+    "play_noise_clap": {
+      "heard": "hands clapping together",
+      "role": "clap / snare-sub",
+      "confirmed": true
+    },
+    "play_noise_crash": {
+      "heard": "quick sand shake (short)",
+      "role": "shaker / short-noise FX (NOT a crash cymbal)",
+      "confirmed": true
+    },
+    "play_noise_eq": {
+      "heard": "longer sand-shifting",
+      "role": "noise sweep / riser FX",
+      "confirmed": true
+    },
+    "play_noise_full": {
+      "heard": "fast drag through sand / nails on paper",
+      "role": "noise scratch / riser FX",
+      "confirmed": true
+    },
+    "play_noise_hat": {
+      "heard": "hi-hat",
+      "role": "hihat",
+      "confirmed": true
+    },
+    "play_noise_kick_bass": {
+      "heard": "(one of 5 kicks)",
+      "role": "kick",
+      "confirmed": false
+    },
+    "play_noise_kick_eq": {
+      "heard": "(one of 5 kicks)",
+      "role": "kick",
+      "confirmed": false
+    },
+    "play_noise_kick_low": {
+      "heard": "(one of 5 kicks)",
+      "role": "kick",
+      "confirmed": false
+    },
+    "play_noise_kick_res": {
+      "heard": "(one of 5 kicks)",
+      "role": "kick",
+      "confirmed": false
+    },
+    "play_noise_kick_tight": {
+      "heard": "preferred kick",
+      "role": "KICK (user's pick)",
+      "confirmed": true
+    },
+    "play_noise_long": {
+      "heard": "ambient sand-shifting",
+      "role": "noise pad / ambient FX",
+      "confirmed": true
+    },
+    "play_noise_med": {
+      "heard": "ambient sand-shifting",
+      "role": "noise pad / ambient FX",
+      "confirmed": true
+    },
+    "play_noise_rainstick": {
+      "heard": "(not reported)",
+      "role": "rainstick? (perc)",
+      "confirmed": false
+    },
+    "play_noise_ride": {
+      "heard": "(not reported)",
+      "role": "ride? (verify - may be noise)",
+      "confirmed": false
+    },
+    "play_noise_splash": {
+      "heard": "(not reported)",
+      "role": "splash? (verify - may be noise)",
+      "confirmed": false
+    },
+    "play_noise_tom": {
+      "heard": "single knock on a wooden door",
+      "role": "woodblock / knock (NOT a tom)",
+      "confirmed": true
+    }
+  }
+}

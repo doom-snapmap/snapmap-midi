@@ -1,0 +1,10 @@
+# Code owners -- a change to any path below REQUIRES the maintainer's review before it can merge.
+# Pair this with branch protection on `main` that has "Require review from Code Owners" enabled.
+# These are the supply-chain-critical surfaces for a Python package: the CI workflows, and the
+# dependency declaration that decides what gets installed.
+#
+# NOTE: @adiazpar is the maintainer's GitHub handle -- verify it matches the account that owns
+# the repo (an invalid handle here is silently ignored by GitHub, i.e. no enforcement).
+
+/.github/         @adiazpar
+/pyproject.toml   @adiazpar
