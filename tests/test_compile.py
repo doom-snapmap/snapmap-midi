@@ -19,6 +19,7 @@ from snapmap_midi.compile import compile_to_rawmap
 from snapmap_midi.music.gm import DRUM_MAP, SUSTAINED, gm_to_family
 from snapmap_midi.music.midi import Note, parse_notes
 from snapmap_midi.music.voices import allocate_voices, thin_polyphony
+from snapmap_midi.rawmap import template
 from snapmap_midi.rawmap.codec import deserialize
 from snapmap_midi.sound.events import (
     START_CHANNEL,
@@ -452,6 +453,53 @@ def test_from_scratch_golden_structure():
     ]
     # Every entity registered against its instance, or the engine cannot see it.
     assert obj["instanceEntities"]["values"] == [e["uniqueId"] for e in obj["entities"]]
+
+
+def test_a_song_past_the_initial_table_width_keeps_its_tables_consistent(tmp_path):
+    """`REFERENCE_TABLE_WIDTH` is where the blank stage's tables START, not a
+    ceiling. A dense arrangement allocates a speaker per voice and walks past
+    it; the reference tables have to grow with it or the engine reads off the
+    end of a prefix-sum array and rejects the map.
+
+    Deliberately far past the width rather than just over it, so the test
+    still means something if the starting width changes.
+    """
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    channels = [c for c in range(16) if c != 9]  # 9 is percussion
+    for channel in channels:
+        track.append(mido.Message("program_change", channel=channel, program=40, time=0))
+    for channel in channels:
+        for n in range(40):
+            track.append(mido.Message("note_on", channel=channel, note=40 + n, velocity=80, time=0))
+    # Every note overlaps every other, so each one needs its own speaker.
+    first = True
+    for channel in channels:
+        for n in range(40):
+            track.append(
+                mido.Message(
+                    "note_off", channel=channel, note=40 + n, velocity=0, time=8000 if first else 0
+                )
+            )
+            first = False
+    path = tmp_path / "dense.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(path, max_speakers=64, button_name="dense")
+    obj = deserialize(raw)
+    uids = [e["uniqueId"] for e in obj["entities"]]
+    assert max(uids) > template.REFERENCE_TABLE_WIDTH, "did not actually exceed the width"
+    assert stats["voices"] == len([u for u in uids]) - 6  # stage(4) + switch + listener
+
+    for table in ("entityEntRefs", "entityVarRefs"):
+        keys = obj["references"][table]["keyValues"]
+        values = obj["references"][table]["values"]
+        assert len(keys) >= max(uids) + 2, "%s not readable one past the last id" % table
+        assert all(keys[i] <= keys[i + 1] for i in range(len(keys) - 1)), "%s not monotonic" % table
+        assert keys[-1] == len(values), "%s prefix sum disagrees with its values" % table
+
+    assert obj["instanceEntities"]["values"] == uids
 
 
 def test_from_scratch_switch_is_reachable_from_the_spawn():
