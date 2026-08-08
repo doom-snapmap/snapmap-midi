@@ -67,6 +67,14 @@ Four tests compile *against* a saved map, to prove that path still works for peo
 music to a level they already have. They carry the `savedmap` marker and skip when none is
 configured. **Seeing them skip is normal and not a failure.**
 
+The suite hides `SNAPMAP_MIDI_PATHS` from every test that has not asked for it, so your own
+overrides cannot change the result. That matters: without it, a contributor who had
+`palette_decl` configured for their game version ran a different suite than CI did, and nine
+tests failed for reasons that had nothing to do with any code change. `savedmap` tests see
+the map overrides and still not the palette one — every byte gate is recorded against the
+shipped palette, so letting another palette through would compare output to a golden built
+from different sounds.
+
 If you want to run them, see [`game-data.md`](game-data.md). One of them also needs
 `groove_fixture`, an artifact that is not distributed and will skip permanently even for a
 fully configured contributor.
@@ -77,7 +85,7 @@ fully configured contributor.
 python -m pytest
 ```
 
-Expect `78 passed, 4 skipped` on a clone with nothing configured.
+Expect `90 passed, 4 skipped` on a clone with nothing configured.
 
 ### What the byte gates mean
 

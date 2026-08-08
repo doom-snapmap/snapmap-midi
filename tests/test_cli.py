@@ -123,4 +123,39 @@ def test_destination_falls_back_when_there_is_no_local_appdata(tmp_path, monkeyp
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.chdir(tmp_path)
     assert paths.loader_dir() is None
-    assert paths.rawmap_destination() == Path(tmp_path) / "rawmap.json"
+    assert paths.rawmap_destination() == Path(tmp_path).resolve() / "rawmap.json"
+
+
+def test_the_fallback_is_not_reported_as_loadable(tmp_path, monkeypatch, capsys):
+    """Writing to the working directory because there IS no loader folder is
+    not the same as landing where the loader reads. Saying otherwise is the
+    quiet wrong answer the old `--out` produced."""
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert paths.destination_is_loadable(paths.rawmap_destination()) is False
+    assert main(["compile", TINY_MIDI]) == 0
+    out = capsys.readouterr().out
+    assert "sh_rawmaps_on" not in out
+    assert "copy it to the game machine" in out
+
+
+def test_a_relative_out_dir_pointing_at_the_loader_is_recognised(tmp_path, monkeypatch, capsys):
+    """`--out-dir .` from inside the loader's own folder puts the map exactly
+    where it belongs. Comparing unresolved paths reported that as misplaced."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    loader = tmp_path / paths.LOADER_DIR_NAME
+    loader.mkdir()
+    monkeypatch.chdir(loader)
+    assert main(["compile", TINY_MIDI, "--out-dir", "."]) == 0
+    out = capsys.readouterr().out
+    assert "sh_rawmaps_on" in out
+    assert "move it there" not in out
+    assert (loader / "rawmap.json").is_file()
+
+
+def test_an_out_dir_elsewhere_is_reported_as_needing_a_move(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    assert main(["compile", TINY_MIDI, "--out-dir", str(tmp_path / "somewhere")]) == 0
+    out = capsys.readouterr().out
+    assert "move it there to play it" in out
+    assert "sh_rawmaps_on" not in out

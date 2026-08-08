@@ -1,4 +1,4 @@
-"""Orchestration: a MIDI file plus a baseline map becomes a playable map.
+"""Orchestration: a MIDI file becomes a playable map.
 
 The arrangement splits in two, because the two halves have to be scheduled
 differently:

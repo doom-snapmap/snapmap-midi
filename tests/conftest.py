@@ -14,7 +14,6 @@ Run standalone:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -28,9 +27,6 @@ _PRODUCT_ROOT = Path(__file__).resolve().parents[1] / "src" / "snapmap_midi"
 assert (_PRODUCT_ROOT / "rawmap" / "codec.py").is_file(), (
     "product root is wrong for this file's location"
 )
-
-# Modules whose every test needs a configured saved map.
-_SAVEDMAP_MODULES = frozenset()
 
 
 def pytest_configure(config):
@@ -47,9 +43,47 @@ def pytest_collection_modifyitems(config, items):
         return
     skip = pytest.mark.skip(reason="no baseline map configured (see snapmap_midi.paths)")
     for item in items:
-        module = Path(str(item.fspath)).stem
-        if module in _SAVEDMAP_MODULES or item.get_closest_marker("savedmap"):
+        if item.get_closest_marker("savedmap"):
             item.add_marker(skip)
+
+
+#: Overrides a `savedmap`-marked test is allowed to see. Deliberately NOT
+#: `palette_decl`: every byte gate in this suite is recorded against the
+#: SHIPPED palette, so letting a contributor's own palette through would make
+#: those gates compare output to a golden built from different sounds.
+_SAVEDMAP_KEYS = frozenset({"baseline_map", "groove_fixture"})
+
+
+@pytest.fixture(autouse=True)
+def hermetic_environment(request, monkeypatch):
+    """Hide the override table from every test that has not asked for it.
+
+    `SNAPMAP_MIDI_PATHS` is ambient process state, and letting it through
+    means a contributor who configured `palette_decl` for their own game
+    version runs a DIFFERENT suite from the one CI runs. The shipped-palette
+    assertions stop describing the shipped palette, and every byte gate
+    compares against a golden built from sounds it is no longer using. Nine
+    tests failed that way, none of them for a real reason.
+
+    `savedmap`-marked tests see the map overrides, because compiling against a
+    supplied map is the entire point of them -- and nothing else.
+
+    The palette cache is cleared either way: it is keyed on the source path,
+    and the source path is exactly what this fixture moves.
+    """
+    import json
+
+    from snapmap_midi import paths
+    from snapmap_midi.sound import palette
+
+    if request.node.get_closest_marker("savedmap") is None:
+        monkeypatch.delenv(paths.ENV_VAR, raising=False)
+    else:
+        kept = {k: v for k, v in paths._config().items() if k in _SAVEDMAP_KEYS}
+        monkeypatch.setenv(paths.ENV_VAR, json.dumps(kept))
+    palette.cache_clear()
+    yield
+    palette.cache_clear()
 
 
 def _blank_document() -> dict:
@@ -100,8 +134,3 @@ def minimal_timeline_map() -> dict:
         }
     )
     return doc
-
-
-@pytest.fixture
-def minimal_timeline_map_bytes(minimal_timeline_map) -> bytes:
-    return json.dumps(minimal_timeline_map).encode("utf-8")

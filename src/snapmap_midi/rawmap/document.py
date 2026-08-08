@@ -1,9 +1,13 @@
 """A mutable map document — the shared authoring surface.
 
-Building a map from nothing is impractical: the editor generates cap entities
-and populates reference tables when it SAVES, but does not reconstruct them
-when it LOADS. So authoring starts from a known-loadable saved map and applies
-minimal mutations, preserving everything the editor generated.
+The editor generates cap entities and populates reference tables when it
+SAVES, and does not reconstruct them when it LOADS, so a document missing them
+is rejected. That was long read as "building a map from nothing is
+impractical", and authoring started from a saved map to inherit them.
+
+It is an argument for writing those tables explicitly, not for demanding a
+saved map. `rawmap.template` writes them, and this class carries the mutations
+that keep them true as entities are added.
 
 This class carries the operations any map author needs. Anything specific to
 reverse-engineering workflows -- wire-chain composition, semantic validation,
@@ -215,7 +219,13 @@ class SnapMapDocument:
         if unique_id is None:
             unique_id = self.next_safe_uid()
 
-        entity = _template.timeline_entity(unique_id, self.module_stem(owning_instance))
+        # The instance index is threaded through, not defaulted. The module
+        # stem already varied with `owning_instance` while the reference string
+        # said instance 0 regardless, so a timeline on any instance but the
+        # first named a module/instance pair that does not exist.
+        entity = _template.timeline_entity(
+            unique_id, self.module_stem(owning_instance), instance=owning_instance
+        )
         self.data["entities"].append(entity)
         self.extend_instance_entities(unique_id, owning_instance)
         self.add_entity_refs(unique_id, _template.TIMELINE_INHERIT)

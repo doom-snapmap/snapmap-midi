@@ -34,9 +34,9 @@ decaying sound needs no slot held open, so it is immune. Only the sustained path
 
 ## The byte-gate honesty rule
 
-Two tests compare compiler output against a recorded artifact, byte for byte. Each is paired
-with structural assertions on the statistics summary, so a failure tells you *what* moved
-rather than only *that* something did.
+Three tests compare compiler output against a recorded artifact, byte for byte. Each is
+paired with structural assertions on the statistics summary, so a failure tells you *what*
+moved rather than only *that* something did.
 
 | Gate | Covers | Runs |
 |---|---|---|

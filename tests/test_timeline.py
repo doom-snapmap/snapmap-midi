@@ -122,6 +122,39 @@ def test_authored_timeline_registers_in_every_table(minimal_map):
     assert len(doc.data["references"]["entityEntRefs"]["keyValues"]) >= uid + 2
 
 
+def test_a_stage_can_be_authored_without_a_scheduler(minimal_map):
+    """`rawmap` is a general map library, not a music one. A caller that wants
+    the room and intends to author its own timeline gets exactly that."""
+    from snapmap_midi.rawmap.template import blank_map
+
+    stage = blank_map(with_timeline=False)
+    classes = [(e.get("entityDef") or {}).get("className") for e in stage["entities"]]
+    assert "idTarget_Timeline" not in classes
+    assert classes.count("idSnapMapCapEntity") == 2
+    # The tables still describe exactly what is there.
+    assert stage["instanceEntities"]["values"] == [e["uniqueId"] for e in stage["entities"]]
+    assert stage["instanceEntities"]["keyValues"] == [0, 3, 3]
+
+    doc = SnapMapDocument(data=stage, palette_refs=PRODUCT_PALETTE_REFS)
+    timeline = doc.add_timeline()
+    assert timeline["uniqueId"] == 62  # the id the template reserves for it
+    assert doc.data["instanceEntities"]["values"][-1] == 62
+
+
+def test_a_timeline_names_the_instance_that_owns_it(minimal_map):
+    """The self-reference is `<instance>_<module>/<inherit>_<id>`. The module
+    stem already varied with the owning instance while the index said 0
+    regardless, naming a module/instance pair that does not exist."""
+    minimal_map["instances"].append({"moduleName": "maps/modules/test/second.decl"})
+    minimal_map["instanceEntities"]["keyValues"] = [0, 0, 0, 0]
+    doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
+    timeline = doc.add_timeline(owning_instance=1)
+    reference = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
+        "item[0]"
+    ]["entity"]
+    assert reference.startswith("1_second/")
+
+
 def test_compiling_with_no_baseline_at_all(minimal_map):
     """The headline of the change: bytes out, nothing in."""
     raw = author_sound_timeline([("play_pianoc4", 0), (KICK, 400)], button_name="no-baseline")

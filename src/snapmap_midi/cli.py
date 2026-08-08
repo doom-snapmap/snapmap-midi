@@ -41,21 +41,29 @@ def _write(raw: bytes, out_dir) -> Path:
 
 
 def _report(destination: Path) -> None:
-    """Say where the map went, and warn if it went somewhere unusable."""
+    """Say where the map went, and how to reach it from there.
+
+    The three cases are genuinely different and used to be two. Writing to the
+    working directory because there is no loader folder is NOT "it landed
+    where the loader reads", and saying so was the same quiet wrong answer the
+    old `--out` produced.
+    """
     print("  -> {}".format(destination))
-    if out_dir_is_default(destination):
+    if paths.destination_is_loadable(destination):
         print("     load it with `sh_rawmaps_on` in the console, then open any map")
+    elif paths.loader_dir() is None:
+        print("     no loader folder on this platform -- copy it to the game machine's")
+        print(
+            "     %LOCALAPPDATA%\\{}\\{} to play it".format(
+                paths.LOADER_DIR_NAME, paths.RAWMAP_NAME
+            )
+        )
     else:
         print(
             "     the loader only reads {}; move it there to play it".format(
                 paths.rawmap_destination()
             )
         )
-
-
-def out_dir_is_default(destination: Path) -> bool:
-    """True when the map landed where the loader will actually find it."""
-    return destination == paths.rawmap_destination()
 
 
 def _compile(args) -> int:

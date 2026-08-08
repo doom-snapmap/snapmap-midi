@@ -27,7 +27,9 @@ from snapmap_midi.sound.events import start as _start_event
 
 DEFAULT_CHANNEL = LAYERED_CHANNEL
 
-TIMELINE_CLASS = "idTarget_Timeline"
+# The timeline's own class name is NOT restated here. It lives in
+# rawmap/template.py, which is what authors the entity; a second copy would be
+# a second thing to keep true.
 SWITCH_CLASS = "idInteractable"
 LISTENER_CLASS = "idSnapMapListener_Simple"
 

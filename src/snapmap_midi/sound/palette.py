@@ -114,18 +114,39 @@ def load_palette(decl_path: Optional[Path] = None) -> dict:
 
     Reads the shipped palette unless an override is given here or configured
     as `palette_decl`.
+
+    Returns a COPY. The parse behind it is cached and shared, so handing the
+    cached object out would let one caller's `palette["ins_piano"].pop()`
+    silently change what every later compile in the process resolves.
     """
+    return {category: list(sounds) for category, sounds in _shared(decl_path).items()}
+
+
+def _shared(decl_path: Optional[Path] = None) -> dict:
+    """The cached parse itself. Internal: callers must not mutate it."""
     return _load(decl_path or paths.palette_decl())
+
+
+def cache_clear() -> None:
+    """Forget the parsed palette.
+
+    Needed because the cache is keyed on the SOURCE, not its contents: after
+    regenerating the shipped palette, or pointing `palette_decl` at a rewritten
+    file at the same path, the old parse would otherwise be returned for the
+    life of the process. The test suite also calls this between tests, since
+    the key depends on ambient environment.
+    """
+    _load.cache_clear()
 
 
 def categories() -> list:
     """Every category name, in declaration order."""
-    return list(load_palette())
+    return list(_shared())
 
 
 def sounds_in_category(category: str, decl_path: Optional[Path] = None) -> list:
     """Every sound in a category, in declaration order."""
-    return list(load_palette(decl_path).get(category, ()))
+    return list(_shared(decl_path).get(category, ()))
 
 
 def build_note_index(decl_path: Optional[Path] = None) -> dict:
@@ -135,7 +156,7 @@ def build_note_index(decl_path: Optional[Path] = None) -> dict:
     no pitch, so they are absent by construction rather than by exclusion.
     """
     index: dict = defaultdict(dict)
-    for category, sounds in load_palette(decl_path).items():
+    for category, sounds in _shared(decl_path).items():
         for sound in sounds:
             m = _NOTE.search(sound)
             if m:

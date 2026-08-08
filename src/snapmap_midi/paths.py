@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from pathlib import Path
 
 #: Logical names this product understands.
@@ -49,7 +50,10 @@ PALETTE_DECL = "palette_decl"
 BASELINE_MAP = "baseline_map"
 GROOVE_FIXTURE = "groove_fixture"
 
-_ENV = "SNAPMAP_MIDI_PATHS"
+#: The environment variable holding the override table. Public so the test
+#: suite can clear it: these overrides are ambient process state, and a suite
+#: that reads them is a suite whose result depends on who is running it.
+ENV_VAR = "SNAPMAP_MIDI_PATHS"
 
 #: The one filename the loader reads. Fixed, not a preference.
 RAWMAP_NAME = "rawmap.json"
@@ -59,11 +63,12 @@ LOADER_DIR_NAME = "snapmap-plus"
 
 
 def loader_dir() -> Path | None:
-    """The folder the map loader reads from, or None off Windows.
+    """The folder the map loader reads from, or None when there isn't one.
 
-    Returns None rather than inventing a path on platforms where the game does
-    not run. The caller then writes to the working directory and says so,
-    which is more useful than a path nothing will ever read.
+    None means `LOCALAPPDATA` is unset, which in practice means a platform the
+    game does not run on. Inventing a path there would be worse than admitting
+    there is none: the caller writes to the working directory and says so,
+    rather than naming a location nothing will ever read.
     """
     local = os.environ.get("LOCALAPPDATA")
     if not local:
@@ -72,19 +77,35 @@ def loader_dir() -> Path | None:
 
 
 def rawmap_destination(out_dir=None) -> Path:
-    """Where to write the finished map.
+    """Where to write the finished map, as an absolute path.
 
     `out_dir` overrides the folder and nothing else: the filename stays fixed
     because the loader will not read any other one.
+
+    Resolved rather than returned as given, so that two paths naming the same
+    folder compare equal. `--out-dir .` from inside the loader's own folder
+    puts the map exactly where it belongs, and an unresolved comparison would
+    report that as misplaced.
     """
-    if out_dir is not None:
-        return Path(out_dir) / RAWMAP_NAME
+    directory = Path(out_dir) if out_dir is not None else loader_dir() or Path.cwd()
+    return (directory / RAWMAP_NAME).resolve()
+
+
+def destination_is_loadable(destination: Path) -> bool:
+    """True when a map at `destination` is somewhere the loader will read.
+
+    False for every path off the one hardcoded location -- including the
+    working-directory fallback, which is a place to put the bytes rather than
+    a place the game looks.
+    """
     directory = loader_dir()
-    return (directory or Path.cwd()) / RAWMAP_NAME
+    if directory is None:
+        return False
+    return Path(destination).resolve() == (directory / RAWMAP_NAME).resolve()
 
 
 def _config() -> dict:
-    raw = (os.environ.get(_ENV) or "").strip()
+    raw = (os.environ.get(ENV_VAR) or "").strip()
     if not raw:
         return {}
     if raw.startswith("{"):
@@ -102,12 +123,25 @@ def _config() -> dict:
 
 
 def resolve(name: str) -> Path | None:
-    """Path configured for a logical input, or None if unset or missing."""
+    """Path configured for a logical input, or None if unset or missing.
+
+    A path that is CONFIGURED but does not exist warns before returning None.
+    Silence there means a typo degrades into the default and the tool reports
+    success while ignoring exactly the thing you asked it to use -- the same
+    class of quiet wrong answer as writing a map nothing can load.
+    """
     value = _config().get(name)
     if not value:
         return None
     path = Path(value)
-    return path if path.exists() else None
+    if not path.exists():
+        warnings.warn(
+            "%s is configured as %r but no such file exists; ignoring it" % (name, str(path)),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    return path
 
 
 def palette_decl() -> Path | None:
