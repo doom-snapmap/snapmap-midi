@@ -8,15 +8,15 @@
 
 - [ ] Clean-room: this is my own implementation -- no decompiled or copyrighted game content
       is pasted into the repo.
-- [ ] No game data added: no `.decl` files, no saved maps. The palette and baseline are inputs
-      the user supplies from their own installed copy, never things this repo ships.
+- [ ] No game data added: no `.decl` files, no saved maps, no audio. Sound *names* do ship --
+      they are identifiers, not content. The line is drawn in docs/game-data.md.
 - [ ] Suite run locally: `python -m pytest`.
 - [ ] Style clean: `ruff check .` and `ruff format --check .`.
 - [ ] Docs updated for any behavior change (see docs/contributing.md).
 
 ### If a byte gate moved
 
-<!-- Delete this section if neither gate moved. -->
+<!-- Delete this section if none of the three moved. -->
 
 - [ ] The commit touches the compiler, not just the fixture.
 - [ ] I have stated the intended semantic change in words, above.

@@ -23,14 +23,19 @@ We will acknowledge your report, keep you posted on the fix, and credit you when
 Worth stating plainly, because it is narrower than for a tool that loads into a game process.
 
 **snapmap-midi ships no code into any game.** It is a command-line program and a Python
-library. It reads a MIDI file you give it, plus two data files you point it at, and writes a
-map file. It opens no network connection — a test enforces that no shipped module even
-imports an HTTP client or names a loopback address.
+library. It reads a MIDI file you give it and writes a map file. It opens no network
+connection — a test enforces that no shipped module even imports an HTTP client or names a
+loopback address.
 
 So the realistic risks are:
 
 - **A malicious MIDI input.** Parsing is delegated to `mido`; a crafted file that causes
   unbounded memory use or a crash in the parser is a real report and we want to hear it.
+- **A poisoned sound palette.** `src/snapmap_midi/data/sound_palette.json` is package data
+  that decides which sound every note resolves to. It holds identifiers only — no audio, no
+  paths, no code — so the worst a tampered entry can do is name a sound the game does not
+  have, or name a different one than intended. That is a correctness problem rather than a
+  code-execution one, but it is a supply-chain surface and it is owned accordingly.
 - **A compromised dependency.** `mido` is the only runtime dependency. Dependabot watches
   both it and the GitHub Actions.
 - **A compromised release path.** Covered below.

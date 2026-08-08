@@ -126,6 +126,27 @@ def _audition(args) -> int:
     return 0
 
 
+class _RetiredOut(argparse.Action):
+    """`--out` used to take a filename. Now it explains itself and stops.
+
+    Without this it is not an error at all: argparse abbreviates unambiguous
+    prefixes, so `--out song.json` bound to `--out-dir` and wrote
+    `song.json/rawmap.json` -- creating a DIRECTORY named after the file
+    someone meant to write. Silent, plausible, and wrong, which is the exact
+    failure this flag was retired for.
+    """
+
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=1, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error(
+            "--out was removed. The loader reads one filename, rawmap.json, so naming "
+            "the output was never a real choice.\n"
+            "  to write somewhere else:  --out-dir %s" % Path(values[0]).parent
+        )
+
+
 def _add_shared(parser) -> None:
     """Flags both subcommands take, so neither drifts from the other."""
     parser.add_argument(
@@ -135,6 +156,7 @@ def _add_shared(parser) -> None:
         help="write the map to this folder instead of the loader's (the filename "
         "is always rawmap.json -- the loader reads no other name)",
     )
+    parser.add_argument("--out", action=_RetiredOut, dest="_retired_out", help=argparse.SUPPRESS)
     parser.add_argument(
         "--baseline",
         default=None,
@@ -143,13 +165,16 @@ def _add_shared(parser) -> None:
 
 
 def main(argv=None) -> int:
+    # allow_abbrev=False: an unambiguous prefix silently binding to a longer
+    # flag is how `--out` kept working after it was removed.
     parser = argparse.ArgumentParser(
         prog="snapmap-midi",
         description="Compile a MIDI file into a playable in-game music map.",
+        allow_abbrev=False,
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    c = sub.add_parser("compile", help="compile a .mid into a map")
+    c = sub.add_parser("compile", help="compile a .mid into a map", allow_abbrev=False)
     c.add_argument("midi")
     _add_shared(c)
     c.add_argument("--button", default="snapmap-midi-song")
@@ -172,7 +197,9 @@ def main(argv=None) -> int:
     )
     c.set_defaults(func=_compile)
 
-    a = sub.add_parser("audition", help="build a map that plays candidate sounds")
+    a = sub.add_parser(
+        "audition", help="build a map that plays candidate sounds", allow_abbrev=False
+    )
     a.add_argument("category", nargs="?", default="ins_noise")
     _add_shared(a)
     a.add_argument("--gap", type=int, default=DEFAULT_GAP_MS)

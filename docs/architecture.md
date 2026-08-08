@@ -81,6 +81,26 @@ drawn. Resolution is two-step: narrow to the family, then pick the sound whose n
 is nearest the note's, preferring the same pitch class in another octave over a nearer
 absolute pitch that would be out of key.
 
+#### Reading a pitch out of a name is ambiguous
+
+A sound spells its note at the end of its name, and `b` is both a note and a flat marker. So
+`play_fluteb4` reads two ways:
+
+| Split | Reads as | Right? |
+|---|---|---|
+| `play_flute` + `b4` | B4 | yes |
+| `play_flut` + `eb4` | E-flat 4 | no — but the pattern cannot tell |
+
+Nothing in the name settles it. **The instrument stem does**, so pitch is resolved against the
+palette rather than by pattern: the stem is chosen per category as the prefix that lets the
+most names parse, and the note is read from what follows it.
+
+This is not hypothetical. Matching the pattern alone read every wind `b` as a flat a tritone
+away, and because the misreads collided with the genuine flats, `ins_flute` ended up holding
+36 sounds for 39 names with B absent entirely. `play_clave1` likewise read as a pitched E off
+the `e` in "clave". A name the palette knows and gives no pitch to is unpitched and is not
+then guessed at; only a name the palette has never seen falls back to the pattern.
+
 Reads are cached per source, because both the compiler and the audition builder ask for the
 palette and a multi-layer compile used to re-parse it per layer.
 
@@ -157,6 +177,17 @@ music.
 The ids are fixed rather than allocated because `doorsAndCaps` refers to the caps by id, and
 because keeping them where an engine-saved map puts them keeps the document comparable to
 one.
+
+It also carries **sixteen persistent integers** in its `variables` block. Those are not user
+content that a fresh map legitimately has none of: every engine-saved map to hand carries
+exactly sixteen, byte-identical, with the same default names and bounds, while every other
+variable kind varies from map to map. That makes them part of the format. A stage authored
+without them matched no engine-produced sample.
+
+`allocCount` is emitted as zeros. Which slot counts which kind is **not** established — a
+saved map with eighteen booleans carries the eighteen at index 2, not where the key order
+would suggest — so the template claims nothing beyond "no names have been handed out", which
+is true of a map with no user variables in it.
 
 Building a map from nothing was previously called impractical, on the grounds that the
 editor generates cap entities and populates the reference tables when it SAVES and does not
