@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 
@@ -127,16 +128,134 @@ def test_clone_preserves_the_concrete_class(minimal_map):
 # ---- layering ----
 
 
-def test_core_does_not_import_the_music_layer():
-    """The core stays independently promotable: a future non-music tool must
-    be able to depend on it without dragging a MIDI compiler along."""
-    banned = re.compile(
-        r"^\s*(from|import)\s+(snapmap_midi\.)?"
-        r"(midi|gm|timeline|compile|voices|events|palette|audition|cli)\b",
-        re.M,
-    )
-    for f in (_PRODUCT_ROOT / "rawmap").rglob("*.py"):
-        assert not banned.search(f.read_text(encoding="utf-8")), f
+# The subsystem stack, lowest first. A package may import from itself and from
+# anything BELOW it, never from anything above. `paths` is deliberately absent:
+# it imports nothing internal, so it is a leaf every layer may use.
+_LAYERS = ["rawmap", "sound", "music"]
+
+#: Product-surface modules, which sit above every subsystem.
+_SURFACE = ["compile", "audition", "cli"]
+
+
+_PACKAGE = "snapmap_midi"
+
+
+def imported_modules(source: str, package: tuple) -> set:
+    """Every module `source` imports, as absolute dotted names.
+
+    Parsed rather than pattern-matched. A regex over import LINES is the
+    obvious way to do this and it silently missed most of the real forms --
+    `from snapmap_midi import music` (the style this very package uses for
+    `paths`), a name in an import list, and every relative import. A guard
+    that cannot see the codebase's own idiom is not a guard.
+
+    `package` is the dotted package the source lives in, needed to resolve
+    relative imports to absolute names.
+    """
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            # import a.b.c [as d]
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                # from .x import y / from ..x import y
+                base = package[: len(package) - node.level + 1]
+                parts = base + ((node.module,) if node.module else ())
+            else:
+                parts = tuple((node.module or "").split("."))
+            module = ".".join(parts)
+            found.add(module)
+            # `from p import m` imports p.m when m is a submodule, and the
+            # name alone tells us nothing -- so record both readings.
+            found.update("%s.%s" % (module, alias.name) for alias in node.names)
+    return found
+
+
+def _reaches_upward(source: str, package: tuple, forbidden) -> set:
+    """The forbidden subsystems `source` imports, if any."""
+    hit = set()
+    for module in imported_modules(source, package):
+        for name in forbidden:
+            if module == "%s.%s" % (_PACKAGE, name) or module.startswith(
+                "%s.%s." % (_PACKAGE, name)
+            ):
+                hit.add(name)
+    return hit
+
+
+def _forbidden_above(layer_index: int) -> list:
+    """Everything the layer at `layer_index` is not allowed to import."""
+    return _LAYERS[layer_index + 1 :] + _SURFACE
+
+
+@pytest.mark.parametrize("index,layer", list(enumerate(_LAYERS)))
+def test_subsystem_imports_only_downward(index, layer):
+    """Each subsystem stays independently usable: `rawmap` must not drag in a
+    MIDI compiler, and `sound` must be usable to place sounds by hand with no
+    music layer present.
+
+    This is the layering that makes the packages meaningful rather than
+    decorative. Promoting `rawmap/` to its own distribution should be a
+    directory move, and that stays true only if it is proven.
+    """
+    forbidden = _forbidden_above(index)
+    files = list((_PRODUCT_ROOT / layer).rglob("*.py"))
+    assert files, "layer %r has no modules; the layout moved" % layer
+    for f in files:
+        package = (_PACKAGE,) + f.relative_to(_PRODUCT_ROOT).parts[:-1]
+        upward = _reaches_upward(f.read_text(encoding="utf-8"), package, forbidden)
+        assert not upward, "%s imports upward into %s" % (f, sorted(upward))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from snapmap_midi.music.midi import parse_notes",
+        "import snapmap_midi.music.midi",
+        "import snapmap_midi.music.midi as m",
+        "from snapmap_midi import music",
+        "from snapmap_midi import paths, music",
+        "from snapmap_midi import music as m",
+        "from ..music import gm",
+        "from ..music.gm import DRUM_MAP",
+        "from snapmap_midi import compile",
+        "from snapmap_midi.compile import compile_to_rawmap",
+        "def f():\n    from snapmap_midi import music",
+    ],
+)
+def test_the_layering_guard_catches_every_import_form(line):
+    """The guard has to be checked against real upward imports, or it passes
+    because it sees nothing rather than because there is nothing to see.
+
+    Its predecessor missed five of these eleven, including the two forms this
+    package actually writes.
+    """
+    package = (_PACKAGE, "rawmap")
+    assert _reaches_upward(line, package, _forbidden_above(0)), "not caught: %r" % line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from snapmap_midi.rawmap.codec import serialize",
+        "from snapmap_midi import paths",
+        "from .refs import add_entity_refs",
+        "import json",
+        "from typing import Optional",
+    ],
+)
+def test_the_layering_guard_allows_downward_and_sideways(line):
+    """The other half: a guard that flags everything is no more use than one
+    that flags nothing."""
+    package = (_PACKAGE, "rawmap")
+    assert not _reaches_upward(line, package, _forbidden_above(0)), "false alarm: %r" % line
+
+
+def test_every_subsystem_package_exists():
+    """A renamed or deleted package would make the scan above vacuous."""
+    for layer in _LAYERS:
+        assert (_PRODUCT_ROOT / layer / "__init__.py").is_file(), layer
 
 
 def test_product_does_not_import_the_host():

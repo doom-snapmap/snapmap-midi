@@ -34,14 +34,20 @@ decaying sound needs no slot held open, so it is immune. Only the sustained path
 
 ## The byte-gate honesty rule
 
-Two tests compare compiler output against a recorded artifact, byte for byte. Each is paired
-with structural assertions on the statistics summary, so a failure tells you *what* moved
-rather than only *that* something did.
+Three tests compare compiler output against a recorded artifact, byte for byte. Each is
+paired with structural assertions on the statistics summary, so a failure tells you *what*
+moved rather than only *that* something did.
 
 | Gate | Covers | Runs |
 |---|---|---|
+| from-scratch | a full compile with no inputs: shipped palette, authored stage, synthesized timeline | everywhere |
 | hermetic | a full compile against a synthetic in-code baseline | everywhere |
-| groove | the timeline API against an arrangement verified in game | only with game data configured |
+| groove | the timeline API against an arrangement verified in game | only with a saved map configured |
+
+The from-scratch gate is the widest of the three, because the default path now builds the
+whole map. It is the only one that would notice the stage itself changing — a cap losing its
+rotation, the player start moving out of reach of the switch, a reference table sized
+differently. Every one of those is silent in a structural assertion and fatal in game.
 
 ### Bytes moving while structure holds is a regression
 
@@ -67,12 +73,14 @@ Sometimes output genuinely should change. When it does, the bar is:
 A commit that updates a fixture and nothing else is not a fix. It is the record of a
 regression being overwritten, and it removes the only evidence that anything changed.
 
-### Why the hermetic gate matters most
+### Why the gates that need nothing matter most
 
-It needs no game data, so it runs in CI, on a fresh clone, and on a contributor's machine
-with nothing configured. During the extraction that produced this repository it was the
-single piece of evidence that a rename and a whole-tree reformat had changed no behaviour —
-because it was the one gate that survived leaving its original repository.
+Two of the three need no configuration, so they run in CI, on a fresh clone, and on a
+contributor's machine with nothing set up. During the extraction that produced this
+repository the hermetic gate was the single piece of evidence that a rename and a whole-tree
+reformat had changed no behaviour — because it was the one gate that survived leaving its
+original repository. The from-scratch gate was added for the same reason: the default path
+must be covered by something that always runs.
 
 Keep it that way. A gate that only runs on the maintainer's machine is a gate that is not
 running.

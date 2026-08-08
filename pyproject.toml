@@ -26,14 +26,19 @@ dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["snapmap_midi", "snapmap_midi.rawmap"]
+packages = [
+    "snapmap_midi",
+    "snapmap_midi.rawmap",
+    "snapmap_midi.sound",
+    "snapmap_midi.music",
+]
 
 [tool.setuptools.package-data]
 snapmap_midi = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["gamedata: needs game-derived input; skipped when unconfigured"]
+markers = ["savedmap: needs a saved baseline map; skipped when unconfigured"]
 
 [tool.ruff]
 line-length = 100

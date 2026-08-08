@@ -15,12 +15,13 @@ from snapmap_midi import paths
 from snapmap_midi.rawmap.codec import deserialize
 from snapmap_midi.rawmap.document import SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import PRODUCT_PALETTE_REFS
-from snapmap_midi.timeline import (
+from snapmap_midi.rawmap.template import TIMELINE_INHERIT
+from snapmap_midi.sound.timeline import (
     DEFAULT_CHANNEL,
     add_button,
     author_sound_timeline,
     chord,
-    find_timeline,
+    ensure_timeline,
     melody,
     set_events,
 )
@@ -64,9 +65,9 @@ def test_set_events_returns_timeline_id_and_count(minimal_timeline_map):
     doc = _doc(minimal_timeline_map)
     tid = set_events(doc, [("play_pianoc4", 0), ("play_pianod4", 300)])
     assert isinstance(tid, str) and tid
-    events = find_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
-        "item[0]"
-    ]["events"]
+    events = ensure_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"][
+        "entityEvents"
+    ]["item[0]"]["events"]
     assert events["num"] == 2
     assert events["item[0]"]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
     assert events["item[1]"]["eventTime"] == 300
@@ -76,17 +77,120 @@ def test_chord_layering_in_one_timeline(minimal_timeline_map):
     doc = _doc(minimal_timeline_map)
     events = chord(["play_pianoc4", "play_pianoe4", "play_pianog4"], 0) + [(KICK, 0)]
     set_events(doc, events)
-    items = find_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
+    items = ensure_timeline(doc)["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
         "item[0]"
     ]["events"]
     assert items["num"] == 4
     assert all(items["item[%d]" % i]["eventTime"] == 0 for i in range(4))
 
 
-def test_missing_timeline_is_an_error(minimal_map):
+def test_missing_timeline_is_authored_not_an_error(minimal_map):
+    """This used to raise and tell the caller to go find a baseline map with a
+    timeline in it. A timeline is describable from nothing, so it is written
+    instead."""
     doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
-    with pytest.raises(ValueError):
-        find_timeline(doc)
+    assert doc.find_timeline() is None
+    timeline = ensure_timeline(doc)
+    assert timeline["entityDef"]["className"] == "idTarget_Timeline"
+    assert timeline["entityDef"]["inherit"] == TIMELINE_INHERIT
+    # One empty group, so the first event has somewhere to go.
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    assert groups["num"] == 1 and groups["item[0]"]["events"]["num"] == 0
+
+
+def test_timeline_is_authored_only_once(minimal_map):
+    """A document that already has one keeps the one it has, so adding sounds
+    to a map someone saved never grows a second scheduler."""
+    doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
+    first = ensure_timeline(doc)
+    assert ensure_timeline(doc) is first
+    timelines = [
+        e
+        for e in doc.data["entities"]
+        if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    ]
+    assert len(timelines) == 1
+
+
+def test_authored_timeline_registers_in_every_table(minimal_map):
+    """A timeline the engine cannot find in `instanceEntities` is a timeline
+    that does not exist as far as the map is concerned."""
+    doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
+    timeline = ensure_timeline(doc)
+    uid = timeline["uniqueId"]
+    assert uid in doc.data["instanceEntities"]["values"]
+    assert len(doc.data["references"]["entityEntRefs"]["keyValues"]) >= uid + 2
+
+
+def test_the_stage_carries_the_engines_persistent_integers(minimal_map):
+    """Sixteen persistent integers are part of the format, not someone's
+    editor history: every engine-saved map to hand carries exactly sixteen,
+    byte-identical, while every other variable kind varies between maps.
+
+    A blank map authored without them matched no engine-produced sample, and
+    the from-scratch golden had that divergence frozen into it where no test
+    could notice.
+    """
+    from snapmap_midi.rawmap.template import PERSISTENT_INTEGERS, blank_map
+
+    variables = blank_map()["variables"]
+    slots = variables["persistentInteger"]
+    assert len(slots) == PERSISTENT_INTEGERS == 16
+    assert [s["info"]["name"] for s in slots] == ["Persistent Integer %d" % i for i in range(16)]
+    assert all(s["initialValue"] == 0 for s in slots)
+    assert all(
+        s["bounds"] == {"maxRange": 10000, "minRange": -10000, "~type": "idRange < int >"}
+        for s in slots
+    )
+    # Everything else is genuinely empty -- a fresh map has no user variables.
+    for kind, value in variables.items():
+        if kind in ("allocCount", "persistentInteger", "~type"):
+            continue
+        assert value == [], "%s should be empty in a blank map" % kind
+
+
+def test_a_stage_can_be_authored_without_a_scheduler(minimal_map):
+    """`rawmap` is a general map library, not a music one. A caller that wants
+    the room and intends to author its own timeline gets exactly that."""
+    from snapmap_midi.rawmap.template import blank_map
+
+    stage = blank_map(with_timeline=False)
+    classes = [(e.get("entityDef") or {}).get("className") for e in stage["entities"]]
+    assert "idTarget_Timeline" not in classes
+    assert classes.count("idSnapMapCapEntity") == 2
+    # The tables still describe exactly what is there.
+    assert stage["instanceEntities"]["values"] == [e["uniqueId"] for e in stage["entities"]]
+    assert stage["instanceEntities"]["keyValues"] == [0, 3, 3]
+
+    doc = SnapMapDocument(data=stage, palette_refs=PRODUCT_PALETTE_REFS)
+    timeline = doc.add_timeline()
+    assert timeline["uniqueId"] == 62  # the id the template reserves for it
+    assert doc.data["instanceEntities"]["values"][-1] == 62
+
+
+def test_a_timeline_names_the_instance_that_owns_it(minimal_map):
+    """The self-reference is `<instance>_<module>/<inherit>_<id>`. The module
+    stem already varied with the owning instance while the index said 0
+    regardless, naming a module/instance pair that does not exist."""
+    minimal_map["instances"].append({"moduleName": "maps/modules/test/second.decl"})
+    minimal_map["instanceEntities"]["keyValues"] = [0, 0, 0, 0]
+    doc = SnapMapDocument(data=minimal_map, palette_refs=PRODUCT_PALETTE_REFS)
+    timeline = doc.add_timeline(owning_instance=1)
+    reference = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
+        "item[0]"
+    ]["entity"]
+    assert reference.startswith("1_second/")
+
+
+def test_compiling_with_no_baseline_at_all(minimal_map):
+    """The headline of the change: bytes out, nothing in."""
+    raw = author_sound_timeline([("play_pianoc4", 0), (KICK, 400)], button_name="no-baseline")
+    obj = deserialize(raw)
+    classes = [(e.get("entityDef") or {}).get("className") for e in obj["entities"]]
+    assert "idTarget_Timeline" in classes
+    assert "idInteractable" in classes  # the switch that plays it
+    assert "idSnapMapGameEntity_ComboStart" in classes  # somewhere to spawn
+    assert classes.count("idSnapMapCapEntity") == 2  # both portals sealed
 
 
 def test_add_button_authors_its_reference_slots(minimal_timeline_map):
@@ -104,7 +208,7 @@ def test_add_button_authors_its_reference_slots(minimal_timeline_map):
 
 def test_no_button_when_name_is_none(minimal_timeline_map):
     raw = author_sound_timeline(
-        json.dumps(minimal_timeline_map).encode(), [("play_pianoc4", 0)], button_name=None
+        [("play_pianoc4", 0)], json.dumps(minimal_timeline_map).encode(), button_name=None
     )
     classes = [(e.get("entityDef") or {}).get("className") for e in deserialize(raw)["entities"]]
     assert "idInteractable" not in classes
@@ -112,8 +216,8 @@ def test_no_button_when_name_is_none(minimal_timeline_map):
 
 def test_roundtrip_preserves_events(minimal_timeline_map):
     raw = author_sound_timeline(
-        json.dumps(minimal_timeline_map).encode(),
         [("play_pianoc4", 0), ("play_pianoe4", 250)],
+        json.dumps(minimal_timeline_map).encode(),
         button_name=None,
     )
     obj = deserialize(raw)
@@ -132,15 +236,15 @@ def test_roundtrip_preserves_events(minimal_timeline_map):
 # ---- byte gate (needs the real baseline and the committed artifact) ----
 
 
-@pytest.mark.gamedata
+@pytest.mark.savedmap
 def test_reproduces_proven_groove_byte_identical():
-    # This one needs a third input beyond the two the gamedata marker checks.
+    # This one needs a second input beyond the saved map the marker checks.
     # Skip on it explicitly rather than dereferencing None: a partial
     # configuration should degrade, not crash.
     fixture = paths.groove_fixture()
     if fixture is None:
         pytest.skip("no groove_fixture configured (see snapmap_midi.paths)")
     raw = author_sound_timeline(
-        paths.baseline_map().read_bytes(), _groove_events(), button_name="claude-groove-button"
+        _groove_events(), paths.baseline_map().read_bytes(), button_name="claude-groove-button"
     )
     assert raw == fixture.read_bytes(), "API output diverged from the artifact proven in game"

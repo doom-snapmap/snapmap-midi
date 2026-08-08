@@ -4,9 +4,9 @@ A note is a scheduled sound-start event. Polyphony is several events at the
 same time; layering is several instruments interleaved in one list. A switch
 wired to an on-use listener triggers the whole thing.
 
-The map must already contain a timeline entity. That class is special and not
-placeable from the palette, so authoring fills an existing one rather than
-synthesizing it -- which is why a baseline map is a required input.
+Nothing here needs a map to start from. A document that already carries a
+timeline keeps the one it has; one that does not gets a freshly authored
+timeline entity, and a caller with no document at all gets a blank stage.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from __future__ import annotations
 import json
 from typing import Iterable, Optional
 
-from snapmap_midi.events import LAYERED_CHANNEL
-from snapmap_midi.events import start as _start_event
 from snapmap_midi.rawmap.codec import serialize
 from snapmap_midi.rawmap.document import SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import (
@@ -23,20 +21,20 @@ from snapmap_midi.rawmap.palette_refs import (
     PRODUCT_PALETTE_REFS,
     SWITCH_INHERIT,
 )
+from snapmap_midi.rawmap.template import blank_map
+from snapmap_midi.sound.events import LAYERED_CHANNEL
+from snapmap_midi.sound.events import start as _start_event
 
 DEFAULT_CHANNEL = LAYERED_CHANNEL
 
-TIMELINE_CLASS = "idTarget_Timeline"
+# The timeline's own class name is NOT restated here. It lives in
+# rawmap/template.py, which is what authors the entity; a second copy would be
+# a second thing to keep true.
 SWITCH_CLASS = "idInteractable"
 LISTENER_CLASS = "idSnapMapListener_Simple"
 
 
 # ---- event construction ----
-
-
-def note(shader: str, time_ms: int, channel: str = DEFAULT_CHANNEL):
-    """A single scheduled sound."""
-    return (shader, int(time_ms), channel)
 
 
 def chord(shaders: Iterable[str], time_ms: int, channel: str = DEFAULT_CHANNEL):
@@ -52,18 +50,26 @@ def melody(shaders: Iterable[str], step_ms: int, start_ms: int = 0, channel: str
 # ---- map mutation ----
 
 
-def find_timeline(doc: SnapMapDocument) -> dict:
-    """The first timeline entity, or raise."""
-    for e in doc.data["entities"]:
-        if (e.get("entityDef") or {}).get("className") == TIMELINE_CLASS:
-            return e
-    raise ValueError("no timeline entity in this map; use a baseline that contains one")
+def ensure_timeline(doc: SnapMapDocument) -> dict:
+    """The document's timeline entity, authoring one if it has none.
+
+    This was `find_timeline`, and it used to raise -- the message told you to
+    go and find a baseline map that contained a timeline. That requirement is
+    gone: a timeline is describable from nothing, so the honest response to a
+    document without one is to write one rather than send the caller away.
+
+    It is not called `find_timeline` any more because it no longer only
+    finds. `SnapMapDocument.find_timeline` is the pure query that returns None
+    -- two functions a line apart answering to the same name with opposite
+    contracts, one of them mutating, is a trap.
+    """
+    return doc.ensure_timeline()
 
 
 def set_events(doc: SnapMapDocument, events) -> str:
     """Schedule (shader, time_ms[, channel]) tuples. Returns the timeline id."""
     events = list(events)
-    timeline = find_timeline(doc)
+    timeline = ensure_timeline(doc)
     group = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]["item[0]"]
     items = {}
     for i, event in enumerate(events):
@@ -132,14 +138,21 @@ def add_button(
 
 
 def author_sound_timeline(
-    baseline, events, button_name: Optional[str] = "snapmap-midi-button"
+    events, baseline=None, button_name: Optional[str] = "snapmap-midi-button"
 ) -> bytes:
-    """Baseline plus events to finished map bytes.
+    """Events to finished map bytes.
+
+    `baseline` is optional and exists only for callers who want their sounds
+    added to a map they already have. Omit it and the events are staged in a
+    blank room authored from nothing, which is the ordinary case.
 
     Pass button_name=None to leave the timeline untriggered, for callers that
     fire it some other way.
     """
-    data = baseline if isinstance(baseline, dict) else json.loads(baseline)
+    if baseline is None:
+        data = blank_map()
+    else:
+        data = baseline if isinstance(baseline, dict) else json.loads(baseline)
     doc = SnapMapDocument(data=data, palette_refs=PRODUCT_PALETTE_REFS)
     timeline_id = set_events(doc, events)
     if button_name:
