@@ -170,6 +170,10 @@ def _chrome(monkeypatch, install=True, **kwargs):
     """A chrome on a fake window, installed the way pywebview installs it."""
     api = _FakeWin32(**kwargs)
     monkeypatch.setattr(chrome_module, "_win32", lambda: api)
+    # The facade is deliberately portable so these Win32 behavior tests can
+    # run in Ubuntu CI too.  Make the simulated platform explicit instead of
+    # accidentally depending on the host that executes the suite.
+    monkeypatch.setattr(chrome_module, "supported", lambda: True)
     window = _Window()
     chrome = WindowChrome(window)
     if install:
