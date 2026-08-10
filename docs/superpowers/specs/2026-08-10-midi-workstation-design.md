@@ -108,29 +108,32 @@ A canvas is preferred over one DOM element per note.
   piano-key ruler and every note named from C-1 through G9.
 - Notes: original pitch and duration, colored consistently by MIDI channel,
   with 4 px rounded corners and high-DPI Segoe UI labels when space permits.
-- Active notes: every note intersected by the playhead's output-timestamp
-  position receives the same restrained bright glow, including simultaneous
-  notes and overlaps across channels.
-- Paused hover: only the note rectangle under the pointer glows; seeking
-  temporarily suppresses hover feedback.
+- Note hover: only the note rectangle under the pointer receives a restrained
+  bright glow. Hover remains available during playback, pause, and seeking;
+  the playhead does not change note colors.
 - Muted tracks: hidden or heavily dimmed.
 - Selected track: full opacity; other tracks remain visible at lower opacity.
 - Playhead: accent-colored vertical stroke, always above notes and grid.
 - Playback scrolling: automatic horizontal following owns time navigation,
   while vertical wheel navigation remains live across the full roll, including
-  over the disabled horizontal scrollbar. Scroll and playback changes are
-  coalesced into one canvas paint per animation frame.
+  over the disabled horizontal scrollbar. The line sweeps across each visible
+  passage and advances the viewport after crossing its leading threshold.
 
 One exponential slider expands the time axis from 100% to 6400%, while pitch
 rows grow to a capped 3x. The different caps allow close horizontal inspection
 without turning each key into the height of the viewport. Zoom preserves the
 blue playhead's screen position so the notes, grid, and ruler expand around the
-current song position. During playback, the playhead sweeps to the left-third
-anchor and the notes, grid, and ruler then scroll continuously beneath it. One
-position value drives both the active-note test and the blue playhead so the
-glow begins exactly when the line reaches each note. At inspection sizes, notes
-carry pitch names. The piano roll remains read-only; note editing is outside
-this product.
+current song position. During playback, the playhead sweeps through the visible
+passage; following returns it near the left third only when the viewport advances.
+At inspection sizes, notes carry pitch names. The piano roll remains read-only;
+note editing is outside this product.
+
+The implementation separates the static roll from the playhead and hover overlays.
+Whole-song overview uses a bounded full-height raster cache for cheap vertical
+scrolling; inspection zoom queries pitch/time buckets and paints only overlapping
+events. Tiny overview notes are batched without labels, timing geometry and theme
+colors are cached, and backing canvases cap at 2x display density. These are visual
+levels of detail only and never change note pitch, timing, channel, or export.
 
 ## Conversion settings inspector
 

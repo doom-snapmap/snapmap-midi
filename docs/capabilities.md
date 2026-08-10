@@ -112,15 +112,16 @@ The workstation is one persistent surface: a unified channel list, a read-only f
 piano roll, one global Play/Pause transport, a draggable sweeping playhead, and a nonblocking
 Conversion inspector. The roll has synchronized pitch/time axes, native two-dimensional
 scrolling, playhead-anchored zoom, source-tempo-aware grid divisions, selectable visual meter,
-rounded high-resolution note labels, synchronized active-note glow, paused note hover, and
-playback following. Every simultaneous note under the playhead brightens from the same output
-timestamp that positions the line. Playback coalesces automatic following and wheel-driven
-scrolling into one canvas paint per animation frame, and vertical wheel input remains active
-over the disabled horizontal scrollbar. A persistent draggable divider trades width between
-the channel list and roll while preserving useful minimums for both. Percussion stays with the
-other channels. Every channel can use Automatic mapping, one of the 12 pitched instrument sets,
-or any exact sound in all 24 categories and all 890 shipped palette names. Export writes the map
-and a settings file beside the song, so the next session opens where this one stopped.
+rounded high-resolution note labels, pointer-only note glow during both playback and pause, and
+section-based playback following. The static roll, animated playhead, and hover feedback are
+separate layers. Whole-song overview scrolling reuses a bounded raster cache; inspection zoom
+queries only notes overlapping the visible pitch and time ranges. Vertical wheel input remains
+active over the disabled horizontal scrollbar. A persistent draggable divider trades width
+between the channel list and roll while preserving useful minimums for both. Percussion stays
+with the other channels. Every channel can use Automatic mapping, one of the 12 pitched
+instrument sets, or any exact sound in all 24 categories and all 890 shipped palette names.
+Export writes the map and a settings file beside the song, so the next session opens where this
+one stopped.
 
 It needs pywebview, which is an ordinary dependency on Windows and the `[ui]` extra
 everywhere else. [`ui.md`](ui.md) covers the complete workstation and the settings document

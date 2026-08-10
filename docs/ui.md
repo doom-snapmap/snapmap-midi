@@ -155,8 +155,9 @@ parts of one viewport. Vertical scrolling moves pitches while the piano keys rem
 the left. Horizontal scrolling moves through the song while the measure ruler remains fixed
 at the top. At higher zoom levels, note blocks show their pitch name when there is enough
 room. Note blocks use the same 4 px corner language as Snapmap Plus controls. Labels are drawn
-at the display's native pixel ratio with high-quality smoothing, geometric text rendering,
-normal kerning, and full-contrast Segoe UI text rather than faded canvas glyphs.
+at up to 2x display density with high-quality smoothing, geometric text rendering, normal
+kerning, and full-contrast Segoe UI text rather than faded canvas glyphs. Capping the backing
+canvas at 2x retains crisp text without spending 4x or 9x the pixels on unusually dense displays.
 
 The control-plane Zoom slider uses a musical, exponential range from a 100% whole-song
 overview to 6400% horizontal inspection. Increasing it makes pitch rows and note blocks
@@ -172,13 +173,15 @@ cannot be moved, resized, created, or deleted here; those edits belong in the MI
 that authored the source file.
 
 One accent-colored playhead spans the ruler and visible note surface. During playback it
-sweeps across the first part of a zoomed song, then remains anchored about one third of the
-way across while the notes, grid, and ruler scroll continuously underneath it. The sounding
-events and the playhead use the same output-timestamp position and millisecond-to-screen
-transform. Every note whose time range contains that position brightens slightly, so chords
-and overlapping channels illuminate together exactly as the blue line reaches them. When
-playback is paused, the note block under the pointer uses the same restrained glow for visual
-inspection; seeking suppresses that hover state until the drag ends. To seek:
+sweeps across a zoomed passage. When it reaches the following threshold, the time viewport
+advances and places the playhead back near the first third, then the line resumes sweeping.
+This section-based following avoids repainting the whole static song surface for every audio
+frame. The line still uses Web Audio's output timestamp and the same millisecond-to-screen
+transform as seeking, so its position stays synchronized with what is audible.
+
+Note color is independent of playback. The single note block under the pointer uses a restrained
+glow while the song is playing or paused, and remains highlighted during a seek drag; the blue
+line does not light notes as it crosses them. To seek:
 
 - drag the transport scrubber;
 - click anywhere in the piano roll; or
@@ -193,9 +196,12 @@ While the song is playing, the bottom horizontal scrollbar is covered by a disti
 track: it does not highlight, click, or drag while automatic playback following owns the time
 viewport. The right vertical scrollbar stays enabled because pitch navigation does not
 conflict with playback following. The mouse wheel continues to move vertically even when its
-pointer is over the disabled horizontal track. Playback and native scrolling share one canvas
-paint per animation frame, keeping pitch navigation responsive in dense arrangements. Pausing
-immediately restores the horizontal scrollbar.
+pointer is over the disabled horizontal track. Native scroll events are coalesced into one queued
+paint, keeping pitch navigation responsive in dense arrangements. The static grid and notes are
+separate from the animated playhead and hover layers. At whole-song overview the static surface
+is rasterized once within a fixed memory budget, so vertical scrolling copies only the visible
+slice. At inspection zoom the renderer queries a pitch-and-time index and draws only events
+overlapping the viewport. Pausing immediately restores the horizontal scrollbar.
 
 ## Previewing the song
 

@@ -245,19 +245,35 @@ current conversion may request. The same settings document feeds both the previe
 and `compile_to_rawmap`.
 
 Javascript owns presentation and transport: it virtualizes the full 0-127 pitch range and
-song duration behind native scrollbars, draws only the visible viewport plus synchronized
-pitch and measure rulers, converts MIDI ticks through the supplied tempo map, moves and
-auto-follows the single playhead against Web Audio's output timestamp rather than its
-ahead-of-output scheduling clock, schedules decoded buffers with a rolling look-ahead, and
-forwards settings changes to the bridge. Each canvas draw computes that output position once;
-the same value selects every event whose half-open time interval contains it and positions the
-playhead, preventing a separate animation clock from drifting away from active-note glow.
-Paused hover hit-testing reuses the rendered note rectangles and is disabled during seeking.
-The playback animation owns canvas painting while audio runs: programmatic auto-follow and
-wheel-driven native scroll events update viewport state but do not enqueue a second frame.
-Direct paints cancel any outstanding idle draw request. The disabled horizontal-scrollbar
-cover retains pointer interception for click and drag, while its non-passive wheel handler
-forwards vertical deltas to the pitch viewport.
+song duration behind native scrollbars, draws synchronized pitch and measure rulers, converts
+MIDI ticks through the supplied tempo map, moves and auto-follows the single playhead against
+Web Audio's output timestamp rather than its ahead-of-output scheduling clock, schedules
+decoded buffers with a rolling look-ahead, and forwards settings changes to the bridge.
+
+Rendering is split by update frequency. The base canvas holds pitch rows, timing lines, notes,
+labels, and channel emphasis; separate pointer-transparent canvases hold the moving playhead and
+the one hovered note. A playback animation therefore clears and paints only the overlays until
+the viewport actually changes. Note glow is pointer-only and remains available while playing;
+the playhead never starts an all-events active-note scan.
+
+The preview events are normalized once into 128 pitch buckets sorted by start time. Each bucket
+also stores prefix maximum end times, allowing two binary searches to reject events outside the
+visible time range before geometry is built. At 100% whole-song overview, the full static roll is
+rasterized once when its high-DPI allocation fits a fixed 16-million-pixel budget; vertical wheel
+scrolling then blits the visible crop. At inspection zoom, only indexed events overlapping the
+visible pitches and time range are drawn. Tiny overview notes are batched as simple paths, while
+rounded blocks, outlines, and labels are reserved for geometry large enough to show them.
+
+Theme values, normalized tempo changes, timing-line geometry, and unchanged rulers are cached.
+Tempo lookup is binary, grid density is bounded by viewport pixels instead of a fixed thousands-
+of-ticks loop, and canvas backing density is capped at 2x. Current-time text updates at its visible
+tenth-second precision and the native scrubber at roughly 30 Hz. Scroll and pointer requests are
+still coalesced through one pending animation frame. The disabled horizontal-scrollbar cover
+retains pointer interception for click and drag, while its non-passive wheel handler forwards
+vertical deltas to the pitch viewport. Playback follows in sections: the line sweeps through the
+passage and advances the viewport only after crossing its leading threshold, avoiding a static
+canvas repaint on every audio frame.
+
 Zoom captures the playhead's viewport coordinate before resizing and restores that coordinate
 against the new time scale. The draggable pane separator stores only the preferred channel
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the

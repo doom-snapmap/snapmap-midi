@@ -308,13 +308,16 @@ def test_the_workspace_and_notes_use_snapmap_plus_rounding_and_crisp_text():
     assert (
         "function fillNoteBlock(context, x, y, width, height, radius, color, alpha, glowing)" in _JS
     )
-    assert re.search(r"fillNoteBlock\(\s*context,\s*startX,\s*eventY,\s*eventWidth,", _JS)
+    assert re.search(
+        r"fillNoteBlock\(\s*context,\s*geometry\.x,\s*geometry\.y,\s*geometry\.width,",
+        _JS,
+    )
     assert "context.fillRect(startX, eventY" not in _JS
     assert "context.imageSmoothingQuality = 'high'" in _JS
     assert "context.fontKerning = 'normal'" in _JS
     assert "context.textRendering = 'geometricPrecision'" in _JS
     assert "context.font = '600 ' + labelSize + 'px \"Segoe UI\"" in _JS
-    assert "context.measureText(label).width <= eventWidth - 8" in _JS
+    assert "context.measureText(record.label).width <= geometry.width - 8" in _JS
 
 
 def test_the_channel_roll_divider_resizes_both_panes_accessibly():
@@ -370,12 +373,12 @@ def test_playhead_dragging_pans_and_playback_locks_only_the_horizontal_scrollbar
     )
 
 
-def test_playback_coalesces_scroll_redraws_and_preserves_vertical_wheel_input():
+def test_scroll_redraws_are_coalesced_and_preserve_vertical_wheel_input():
     assert "var DRAW_FRAME = null" in _JS
     assert "cancelAnimationFrame(DRAW_FRAME)" in _JS
     assert "DRAW_FRAME = requestAnimationFrame(function ()" in _JS
     assert "function handleRollScroll()" in _JS
-    assert "if (!AUDIO.playing) { queueDraw(); }" in _JS
+    assert re.search(r"function handleRollScroll\(\)\s*\{\s*queueDraw\(\);\s*\}", _JS)
     assert "addEventListener('scroll', handleRollScroll)" in _JS
     assert "function lockedWheelPixels(event, viewport)" in _JS
     assert "event.deltaMode === 1" in _JS
@@ -421,32 +424,77 @@ def test_zoomed_playback_follows_the_sweeping_playhead():
     assert "viewport.scrollLeft = clamp(x - anchor" in _JS
     assert "ROLL.contentWidth - ROLL.viewportWidth" in _JS
     assert "function contentXAtTime(timeMs)" in _JS
-    assert "var startX = contentXAtTime(eventStart)" in _JS
+    assert "var startX = contentXAtTime(record.start)" in _JS
     assert "var playheadX = contentXAtTime(position)" in _JS
     assert "function audibleContextTime()" in _JS
     assert "AUDIO.context.getOutputTimestamp()" in _JS
     assert "audibleContextTime() - AUDIO.anchorTime" in _JS
 
 
-def test_playback_and_hover_glow_use_the_same_note_geometry_as_the_playhead():
+def test_note_glow_is_hover_only_and_the_playhead_stays_independent():
     position = (
         "var position = positionOverride === undefined ? currentPosition() : positionOverride"
     )
-    active = "var active = AUDIO.playing && position >= eventStart && position < eventEnd"
-    playhead = "var playheadX = contentXAtTime(position) - viewport.scrollLeft"
+    hovered = "var hovered = hoveredRenderEvent(el('pianoRoll'))"
+    playhead = "var playheadX = contentXAtTime(position)"
     assert position in _JS
-    assert active in _JS
+    assert hovered in _JS
     assert playhead in _JS
-    assert _JS.index(position) < _JS.index(active) < _JS.index(playhead)
-    assert "var glowing = active || hovered" in _JS
+    assert _JS.index(hovered) < _JS.index(playhead) < _JS.index(position)
+    assert "var active = AUDIO.playing" not in _JS
+    assert "var glowing = active || hovered" not in _JS
     assert "context.shadowColor = color" in _JS
     assert "context.shadowBlur = 7" in _JS
     assert "context.globalAlpha = 0.16" in _JS
-    assert "var hoverPoint = !AUDIO.playing && !SEEK_DRAG ? pianoRollPointer(canvas) : null" in _JS
-    assert "hoverPoint.x >= startX && hoverPoint.x <= startX + eventWidth" in _JS
-    assert "hoverPoint.y >= eventY && hoverPoint.y <= eventY + eventHeight" in _JS
+    assert "var point = pianoRollPointer(canvas)" in _JS
+    assert "point.x >= geometry.x && point.x <= geometry.x + geometry.width" in _JS
+    assert "point.y >= geometry.y && point.y <= geometry.y + geometry.height" in _JS
+    assert re.search(
+        r"function updateNotePointer\(event\).*?NOTE_POINTER = .*?;\s*queueDraw\(\);",
+        _JS,
+        re.DOTALL,
+    )
     assert "canvas.addEventListener('pointermove', updateNotePointer)" in _JS
     assert "canvas.addEventListener('pointerleave', clearNotePointer)" in _JS
+
+
+def test_the_playhead_and_hover_use_lightweight_overlay_canvases():
+    for control in ("pianoRollOverlay", "timeRulerOverlay"):
+        assert 'id="%s"' % control in _HTML
+        assert "sizeCanvas(el('%s')" % control in _JS
+    assert re.search(
+        r"\.roll-overlay\s*\{[^}]*z-index:\s*4;[^}]*pointer-events:\s*none",
+        _CSS,
+    )
+    assert "function drawRollOverlays(position, palette)" in _JS
+    assert "if (RENDER.surfaceDirty) { drawStaticRoll(lines, palette); }" in _JS
+    assert "drawRollOverlays(position, palette)" in _JS
+    assert _JS.index("if (RENDER.surfaceDirty)") < _JS.rindex("drawRollOverlays(position, palette)")
+
+
+def test_dense_roll_rendering_is_indexed_cached_and_level_of_detail_aware():
+    assert "prefixEnds" in _JS
+    assert "function lowerBound(values, target)" in _JS
+    assert "function upperBoundRecords(records, target)" in _JS
+    assert "function visibleRenderEvents(scrollLeft, scrollTop, width, height)" in _JS
+    assert "recordsOverlapping(index.buckets[127 - row]" in _JS
+    assert "var OVERVIEW_CACHE_PIXEL_BUDGET = 16000000" in _JS
+    assert "function canCacheOverview()" in _JS
+    assert "RENDER.overviewValid && RENDER.overviewCanvas" in _JS
+    assert "context.drawImage(" in _JS
+    assert "var detailed = ROLL.rowHeight >= 12 && ROLL.zoom > 140" in _JS
+    assert "batch.blocks.forEach(function (geometry)" in _JS
+    assert "context.rect(geometry.x, geometry.y, geometry.width, geometry.height)" in _JS
+
+
+def test_rendering_caps_pixel_cost_and_throttles_nonvisual_transport_updates():
+    assert "var MAX_CANVAS_PIXEL_RATIO = 2" in _JS
+    assert "Math.ceil(ROLL.viewportWidth / Math.max(1, minimumPixels)) + 2" in _JS
+    assert "markerAt(tempoRenderIndex(), tick, 'tick')" in _JS
+    assert "markerAt(tempoRenderIndex(), timeMs, 'time_ms')" in _JS
+    assert "RENDER.lineTimingSource === timing" in _JS
+    assert "RENDER.transportTenth !== tenth" in _JS
+    assert "now - RENDER.scrubberPaintAt >= 33" in _JS
 
 
 def test_global_preview_is_wired_to_explicit_local_audio_setup():
