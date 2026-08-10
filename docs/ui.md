@@ -29,7 +29,7 @@ The application has no Channels, Drums, Tuning, or Export tabs. The persistent s
 | 10  Percussion  [sound] [M] | | moving and draggable playhead             |
 | ...                         |                                            |
 +-----------------------------+--------------------------------------------+
-| warnings / audio setup                                                    |
+| [notifications]        Grid [1/8]  Time signature [4/4]  Zoom [---] 100%   |
 +--------------------------------------------------------------------------+
 | status: notes, peak voices, long sustains, song length                    |
 +--------------------------------------------------------------------------+
@@ -55,7 +55,7 @@ The menu bar keeps infrequent commands out of the note surface.
 
 The main shortcuts are `Ctrl+I` to import, `Ctrl+E` to export, `Ctrl+R` to reopen, `Ctrl+,`
 for Conversion settings, `Space` to play or pause, and `Home` to return to zero. Press
-`Escape` to close an open menu or the Conversion inspector.
+`Escape` to close an open menu, the Conversion inspector, or the Notifications inspector.
 
 Drag an unused part of the top menu bar to move the window. The menu labels and window
 buttons remain clickable rather than acting as drag handles. The invisible edge grips use
@@ -68,13 +68,41 @@ the channel list and piano roll. It does not open a tuning wizard and it does no
 user approve guessed settings before seeing the song.
 
 Safe compiler defaults are applied immediately. If the converted arrangement approaches a
-SnapMap engine limit, a warning appears below the workspace and opens the Conversion
-inspector when clicked.
+SnapMap engine limit, the warning-colored Notifications control shows a count in the bottom
+control plane. Opening it shows every warning without covering the channel list.
 
 Opening another song clears channel sound choices and percussion-key overrides, because
 channel numbers in two files do not mean the same parts. General conversion limits, output
 location, button name, and optional baseline remain session preferences. A valid sidecar
 beside the new MIDI is then applied.
+
+## Control plane and notifications
+
+A persistent control plane sits between the workspace and the status bar. It is reserved
+for workstation-level controls, so quality-of-life tools do not shrink the transport or add
+tabs. Its left control is the icon-only **Notifications** button, drawn with the same square
+button treatment as Play/Pause. **Grid**, **Time signature**, and **Zoom** are grouped on the
+right as view controls for the piano roll.
+
+When warnings exist, the button uses the shared warning color and carries their count.
+Clicking it opens a nonblocking inspector at the right side of the workstation. Every
+warning is shown in full in its own row; faint separators match the channel list. Clicking
+the button again, its close button, or `Escape` closes the inspector. With no warnings, the
+same inspector reports that the current conversion has none.
+
+Notifications and Conversion share the side-panel position and are mutually exclusive.
+Opening either one closes the other. The optional audio-setup banner remains separate
+because it is an actionable setup state rather than a conversion warning.
+
+Grid choices are `1`, `1/2`, `1/4`, `1/8`, `1/16`, and `1/32`. They select the musical note
+value used for faint vertical subdivisions. The marks use the MIDI file's real tempo map, so
+they remain aligned when tempo changes. This is a read-only workstation: changing Grid does
+not quantize, move, or resize a note.
+
+Time signature starts from the source MIDI and offers common simple and compound meters.
+It groups the ruler into numbered measures and moves the stronger bar lines. Changing it is
+a visual override only; it does not rewrite the file's time-signature events or change
+playback timing.
 
 ## Channels and the complete sound palette
 
@@ -107,23 +135,48 @@ precedence over the percussion map.
 
 ## The piano roll and sweeping playhead
 
-Time runs left to right and MIDI pitch runs bottom to top. Notes are colored consistently by
-channel. C notes are labeled, black-key rows are shaded, and the time grid adapts to the
-length of the complete song.
+Time runs left to right and MIDI pitch runs bottom to top. The vertical surface is always the
+complete MIDI range, note 0 (C-1) through note 127 (G9), rather than a crop derived from the
+current song. Every pitch row has a note name in the piano-key column, black keys and rows are
+visually distinct, and the axis remains fixed when a channel is muted or retimbred. On first
+open, the vertical scrollbar centers the range actually used by the arrangement; every other
+pitch remains reachable above or below it.
+
+The time ruler, piano keys, note surface, and native scrollbars are separate synchronized
+parts of one viewport. Vertical scrolling moves pitches while the piano keys remain fixed at
+the left. Horizontal scrolling moves through the song while the measure ruler remains fixed
+at the top. At higher zoom levels, note blocks show their pitch name when there is enough
+room.
+
+The control-plane Zoom slider uses a musical, exponential range from a 100% whole-song
+overview to 6400% horizontal inspection. Increasing it makes pitch rows and note blocks
+taller, spreads the song across substantially more horizontal space, and therefore makes the
+playhead travel the correspondingly larger distance at the same musical speed. Pitch height
+tops out at 3x so horizontal inspection can continue without reducing the viewport to one or
+two enormous keys. Zoom preserves the current viewport center.
 
 The piano roll is a visualization and transport surface, not a composition editor. Notes
 cannot be moved, resized, created, or deleted here; those edits belong in the MIDI program
 that authored the source file.
 
-One accent-colored playhead spans the ruler and entire note surface. During playback it
-sweeps continuously across the song. To seek:
+One accent-colored playhead spans the ruler and visible note surface. During playback it
+sweeps across the first part of a zoomed song, then remains anchored about one third of the
+way across while the notes, grid, and ruler scroll continuously underneath it. The sounding
+event and the playhead use the same millisecond-to-screen transform. To seek:
 
 - drag the transport scrubber;
 - click anywhere in the piano roll; or
 - drag the playhead across the piano roll.
 
 Seeking while the song is playing pauses scheduling during the drag and resumes from the new
-position when released. `Home` returns to the beginning.
+position when released. Dragging the playhead into either horizontal edge continuously pans
+the timeline in that direction, so a seek is not limited to the currently visible passage.
+`Home` returns to the beginning.
+
+While the song is playing, the bottom horizontal scrollbar is covered by a distinct disabled
+track: it does not highlight, click, or drag while automatic playback following owns the time
+viewport. The right vertical scrollbar stays enabled because pitch navigation does not
+conflict with playback following. Pausing immediately restores the horizontal scrollbar.
 
 ## Previewing the song
 
@@ -154,9 +207,10 @@ and schedules them with a rolling look-ahead.
 
 ## Conversion settings
 
-**Options > Conversion Settings...**, `Ctrl+,`, the Conversion toolbar button, and warning
-messages all open the same nonblocking inspector over the right side of the workstation.
-There is no import-time tuning popup.
+**Options > Conversion Settings...**, `Ctrl+,`, and the Conversion toolbar button open the
+same nonblocking inspector over the right side of the workstation. There is no import-time
+tuning popup. Conversion warnings remain available from the Notifications control while
+settings are adjusted.
 
 Sliders are paired with exact numeric fields where a bounded number is meaningful:
 

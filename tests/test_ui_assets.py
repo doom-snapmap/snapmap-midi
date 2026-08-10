@@ -258,6 +258,88 @@ def test_the_playhead_and_scrubber_both_seek_the_whole_song():
     assert "scrubber.addEventListener('input'" in _JS
 
 
+def test_the_piano_roll_is_a_full_range_synchronized_scrollable_surface():
+    for control in (
+        "pianoRollViewport",
+        "pianoRollExtent",
+        "pianoRoll",
+        "pitchRuler",
+        "timeRuler",
+    ):
+        assert 'id="%s"' % control in _HTML
+    assert "for (var pitch = 0; pitch <= 127; pitch += 1)" in _JS
+    assert "context.fillText(noteName(pitch)" in _JS
+    assert "128 * ROLL.rowHeight" in _JS
+    assert "viewport.scrollTop" in _JS
+    assert "viewport.scrollLeft" in _JS
+    assert "el('pianoRollViewport').addEventListener('scroll', queueDraw)" in _JS
+    assert re.search(r"\.roll-viewport\s*\{[^}]*overflow:\s*auto", _CSS)
+    assert re.search(r"#pianoRoll\s*\{[^}]*position:\s*sticky", _CSS)
+
+
+def test_piano_black_keys_and_the_scrollbar_corner_finish_the_rulers():
+    assert "context.fillRect(isBlack ? 16" not in _JS
+    assert "context.moveTo(isBlack ? 16" not in _JS
+    assert "context.fillRect(0, y, width, ROLL.rowHeight)" in _JS
+    assert re.search(
+        r"\.roll-pane::after\s*\{[^}]*top:\s*0;[^}]*left:\s*72px;[^}]*right:\s*0;"
+        r"[^}]*height:\s*31px;[^}]*border-bottom:\s*1px solid var\(--border2\)",
+        _CSS,
+    )
+    assert "context.moveTo(0, height - 0.5)" not in _JS
+
+
+def test_playhead_dragging_pans_and_playback_locks_only_the_horizontal_scrollbar():
+    assert 'id="horizontalScrollLock"' in _HTML
+    assert "function canvasSeekScrollSpeed(clientX)" in _JS
+    assert "requestAnimationFrame(continueCanvasSeekScroll)" in _JS
+    assert "viewport.scrollLeft = clamp(before + speed" in _JS
+    assert "setPosition(positionFromClientX(SEEK_DRAG.clientX), false)" in _JS
+    assert "function renderHorizontalScrollLock()" in _JS
+    assert "var height = Math.max(0, viewport.offsetHeight - viewport.clientHeight)" in _JS
+    assert "var width = Math.max(0, viewport.offsetWidth - viewport.clientWidth)" in _JS
+    assert "var locked = AUDIO.playing && height > 0" in _JS
+    assert "lock.style.right = width + 'px'" in _JS
+    assert re.search(
+        r"\.horizontal-scroll-lock\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*6;"
+        r"[^}]*left:\s*72px;[^}]*bottom:\s*0;[^}]*background:\s*var\(--scrollDisabled\);"
+        r"[^}]*cursor:\s*default;[^}]*pointer-events:\s*auto",
+        _CSS,
+    )
+
+
+def test_roll_grid_meter_and_zoom_are_view_controls_in_the_control_plane():
+    for control in ("gridResolution", "timeSignature", "rollZoom", "rollZoomValue"):
+        assert 'id="%s"' % control in _HTML
+    for resolution in ("1", "2", "4", "8", "16", "32"):
+        assert 'option value="%s"' % resolution in _HTML
+    for meter in ("2/4", "3/4", "4/4", "5/4", "6/8", "7/8", "9/8", "12/8"):
+        assert 'option value="%s"' % meter in _HTML
+    assert 'id="rollZoom" min="0" max="60"' in _HTML
+    assert "ticksPerBeat * 4 / ROLL.gridDenominator" in _JS
+    assert "ticksPerBeat * 4 / ROLL.meterDenominator * ROLL.meterNumerator" in _JS
+    assert "timeAtTick(tick)" in _JS
+    assert "Math.pow(2, stops / 10) * 100" in _JS
+    assert "Math.min(3, 1 + Math.log(timeScale) / Math.LN2 * 0.4)" in _JS
+    assert "ROLL.rowHeight = baseRowHeight * pitchScale" in _JS
+    assert "ROLL.contentWidth = Math.max(width, width * timeScale)" in _JS
+    assert "ROLL.contentHeight = Math.max(height, 128 * ROLL.rowHeight)" in _JS
+
+
+def test_zoomed_playback_follows_the_sweeping_playhead():
+    assert "function revealPlayhead(position, following)" in _JS
+    assert "if (AUDIO.playing) { revealPlayhead(position, true); }" in _JS
+    assert "var anchor = ROLL.viewportWidth * 0.32" in _JS
+    assert "viewport.scrollLeft = clamp(x - anchor" in _JS
+    assert "ROLL.contentWidth - ROLL.viewportWidth" in _JS
+    assert "function contentXAtTime(timeMs)" in _JS
+    assert "var startX = contentXAtTime(event.start)" in _JS
+    assert "var playheadX = contentXAtTime(position)" in _JS
+    assert "function audibleContextTime()" in _JS
+    assert "AUDIO.context.getOutputTimestamp()" in _JS
+    assert "audibleContextTime() - AUDIO.anchorTime" in _JS
+
+
 def test_global_preview_is_wired_to_explicit_local_audio_setup():
     assert 'id="audioBanner"' in _HTML
     assert 'id="slotAudio"' in _HTML
@@ -288,6 +370,34 @@ def test_conversion_limits_stay_in_a_nonblocking_inspector():
     ):
         assert 'id="%s"' % control in _HTML
     assert "api().reset_tuning(" in _JS
+
+
+def test_warnings_live_in_the_bottom_control_plane_and_notification_inspector():
+    for control in (
+        "controlPlane",
+        "notificationsBtn",
+        "notificationBadge",
+        "notificationsInspector",
+        "notificationsSummary",
+        "notificationList",
+        "closeNotifications",
+    ):
+        assert 'id="%s"' % control in _HTML
+    assert 'role="toolbar"' in _HTML
+    assert "warnBar" not in _HTML
+    assert "warnBar" not in _JS
+    assert "warnbar" not in _CSS
+    assert "warnings.forEach(function (message)" in _JS
+    assert "warnings[0]" not in _JS
+    assert ".transport-play, .control-button" in _CSS
+    assert re.search(r"function openInspector\(\)\s*\{\s*closeNotifications\(\);", _JS)
+    assert re.search(r"function openNotifications\(\)\s*\{\s*closeInspector\(\);", _JS)
+    assert "else if (NOTIFICATIONS_OPEN) { closeNotifications(); }" in _JS
+    assert "el('notificationsBtn').addEventListener('click', toggleNotifications)" in _JS
+    assert re.search(
+        r"\.notification-row\s*\{[^}]*border-bottom:\s*1px solid var\(--border\)",
+        _CSS,
+    )
 
 
 def test_the_window_s_assets_are_declared_against_the_ui_package():

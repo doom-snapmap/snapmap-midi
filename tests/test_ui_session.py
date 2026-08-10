@@ -179,6 +179,40 @@ def test_preview_manifest_is_the_resolved_song_with_original_pitches():
     assert manifest["sounds"] == sorted({event["sound"] for event in manifest["events"]})
     assert all(0 <= event["pitch"] <= 127 for event in manifest["events"])
     assert all("cut" in event for event in manifest["events"])
+    assert manifest["timing"]["ticks_per_beat"] == 480
+    assert manifest["timing"]["tempo_changes"][0] == {
+        "tick": 0,
+        "time_ms": 0.0,
+        "tempo": 500_000,
+    }
+    assert manifest["timing"]["time_signatures"][0]["numerator"] == 4
+
+
+def test_preview_manifest_carries_source_tempo_and_meter_changes(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=3, denominator=4, time=0),
+            mido.MetaMessage("set_tempo", tempo=600_000, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.MetaMessage("set_tempo", tempo=300_000, time=0),
+        ],
+    )
+
+    timing = Session(midi=midi).preview_manifest()["timing"]
+
+    assert timing["duration_ticks"] == 480
+    assert timing["tempo_changes"] == [
+        {"tick": 0, "time_ms": 0.0, "tempo": 600_000},
+        {"tick": 480, "time_ms": 600.0, "tempo": 300_000},
+    ]
+    assert timing["time_signatures"][0] == {
+        "tick": 0,
+        "time_ms": 0.0,
+        "numerator": 3,
+        "denominator": 4,
+    }
 
 
 def test_preview_manifest_uses_an_exact_channel_sound_without_losing_note_positions():

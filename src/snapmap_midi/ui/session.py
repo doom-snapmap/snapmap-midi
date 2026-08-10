@@ -99,6 +99,61 @@ def _apply_caps(sustained, levers) -> None:
             note.end = note.start + cap
 
 
+def _timing_manifest(mid_path) -> dict:
+    """Return the source MIDI clock as absolute tick/time change points.
+
+    The piano roll is read-only, but its ruler still has to speak in bars and
+    note values rather than inventing evenly spaced seconds.  A compact tempo
+    map lets the browser place those musical divisions accurately even when a
+    file changes tempo, without asking it to parse MIDI itself.
+
+    MIDI defines 120 BPM and 4/4 when a file omits the corresponding metadata.
+    Markers at the same tick replace one another so a normal tick-zero tempo or
+    signature does not leave a redundant default entry in the payload.
+    """
+    import mido
+
+    mid = mido.MidiFile(str(mid_path), clip=True)
+    ticks_per_beat = int(mid.ticks_per_beat)
+    tick = 0
+    elapsed_s = 0.0
+    tempo = 500_000
+    tempos = [{"tick": 0, "time_ms": 0.0, "tempo": tempo}]
+    signatures = [{"tick": 0, "time_ms": 0.0, "numerator": 4, "denominator": 4}]
+
+    def record(markers, marker):
+        if markers[-1]["tick"] == marker["tick"]:
+            markers[-1] = marker
+        else:
+            markers.append(marker)
+
+    for message in mido.merge_tracks(mid.tracks):
+        delta = int(message.time)
+        elapsed_s += mido.tick2second(delta, ticks_per_beat, tempo)
+        tick += delta
+        time_ms = round(elapsed_s * 1000, 6)
+        if message.type == "set_tempo":
+            tempo = int(message.tempo)
+            record(tempos, {"tick": tick, "time_ms": time_ms, "tempo": tempo})
+        elif message.type == "time_signature":
+            record(
+                signatures,
+                {
+                    "tick": tick,
+                    "time_ms": time_ms,
+                    "numerator": int(message.numerator),
+                    "denominator": int(message.denominator),
+                },
+            )
+
+    return {
+        "ticks_per_beat": ticks_per_beat,
+        "duration_ticks": tick,
+        "tempo_changes": tempos,
+        "time_signatures": signatures,
+    }
+
+
 def _advice(destination: Path) -> str:
     """How to reach a map that has just been written to `destination`.
 
@@ -387,6 +442,7 @@ class Session:
                 "sounds": sorted({event["sound"] for event in events}),
                 "release_s": levers["release_s"],
                 "hard_stop": levers["hard_stop"],
+                "timing": _timing_manifest(self._doc["midi"]),
             }
 
     def _report(self, stats) -> dict:

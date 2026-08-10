@@ -17,6 +17,19 @@
   ];
   var NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   var BLACK_KEYS = { 1: true, 3: true, 6: true, 8: true, 10: true };
+  var ROLL = {
+    zoom: 100,
+    gridDenominator: 8,
+    meterNumerator: 4,
+    meterDenominator: 4,
+    songKey: '',
+    pendingInitialScroll: false,
+    contentWidth: 1,
+    contentHeight: 1,
+    rowHeight: 9,
+    viewportWidth: 1,
+    viewportHeight: 1
+  };
 
   var STATE = {
     settings: null,
@@ -35,6 +48,7 @@
   var TRACK_KEY = '';
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
+  var NOTIFICATIONS_OPEN = false;
   var DRAW_QUEUED = false;
   var SEEK_DRAG = null;
   var SCRUB_DRAG = null;
@@ -63,6 +77,7 @@
   function channels() { return (STATE.analysis && STATE.analysis.channels) || []; }
   function previewEvents() { return (STATE.preview && STATE.preview.events) || []; }
   function tuning() { return (STATE.settings && STATE.settings.tuning) || {}; }
+  function warningMessages() { return (STATE.stats && STATE.stats.warnings) || []; }
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
   function baseName(path) { return String(path || '').replace(/^.*[\\/]/, ''); }
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
@@ -353,90 +368,313 @@
 
   /* ----------------------------------------------------------- piano roll */
 
-  function canvasGeometry() {
-    var events = previewEvents();
-    var pitches = events.map(function (event) { return Number(event.pitch); }).filter(function (pitch) { return isFinite(pitch); });
-    var low = pitches.length ? Math.max(0, Math.min.apply(null, pitches) - 2) : 36;
-    var high = pitches.length ? Math.min(127, Math.max.apply(null, pitches) + 2) : 84;
-    if (high - low < 24) {
-      var extra = 24 - (high - low);
-      low = Math.max(0, low - Math.floor(extra / 2));
-      high = Math.min(127, low + 24);
-      low = Math.max(0, high - 24);
+  function audibleContextTime() {
+    if (!AUDIO.context) { return 0; }
+    var clock = AUDIO.context.currentTime;
+    if (typeof AUDIO.context.getOutputTimestamp === 'function' && window.performance) {
+      var stamp = AUDIO.context.getOutputTimestamp();
+      if (stamp && isFinite(stamp.contextTime) && isFinite(stamp.performanceTime)) {
+        clock = stamp.contextTime + Math.max(0, performance.now() - stamp.performanceTime) / 1000;
+      }
+    } else {
+      clock -= Number(AUDIO.context.outputLatency || AUDIO.context.baseLatency || 0);
     }
-    return { low: low, high: high, top: 30, keys: 48, right: 8, bottom: 8 };
-  }
-
-  function resizeCanvas() {
-    var canvas = el('pianoRoll');
-    if (!canvas || !canvas.parentNode || canvas.parentNode.hidden) { return; }
-    var rect = canvas.getBoundingClientRect();
-    var ratio = window.devicePixelRatio || 1;
-    var width = Math.max(1, Math.round(rect.width * ratio));
-    var height = Math.max(1, Math.round(rect.height * ratio));
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-    }
-    drawPianoRoll();
+    return clock;
   }
 
   function currentPosition() {
     if (!AUDIO.playing || !AUDIO.context) { return AUDIO.position; }
     return clamp(
-      AUDIO.anchorPosition + (AUDIO.context.currentTime - AUDIO.anchorTime) * 1000,
+      AUDIO.anchorPosition + Math.max(0, audibleContextTime() - AUDIO.anchorTime) * 1000,
       0,
       (STATE.preview && STATE.preview.duration_ms) || 0
     );
   }
 
-  function gridStep(duration, width) {
-    var candidates = [1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000];
-    for (var index = 0; index < candidates.length; index += 1) {
-      if (duration / candidates[index] <= Math.max(2, width / 90)) { return candidates[index]; }
+  function timingManifest() {
+    return (STATE.preview && STATE.preview.timing) || {
+      ticks_per_beat: 480,
+      duration_ticks: 0,
+      tempo_changes: [{ tick: 0, time_ms: 0, tempo: 500000 }],
+      time_signatures: [{ tick: 0, time_ms: 0, numerator: 4, denominator: 4 }]
+    };
+  }
+
+  function parseMeter(value) {
+    var parts = String(value || '4/4').split('/');
+    return {
+      numerator: Math.max(1, Number(parts[0]) || 4),
+      denominator: Math.max(1, Number(parts[1]) || 4)
+    };
+  }
+
+  function syncRollSong() {
+    var key = hasSong() ? String(STATE.settings.midi) : '';
+    if (key === ROLL.songKey) { return; }
+    ROLL.songKey = key;
+    ROLL.pendingInitialScroll = !!key;
+    el('pianoRollViewport').scrollLeft = 0;
+    el('pianoRollViewport').scrollTop = 0;
+    if (!key) { return; }
+
+    var signatures = timingManifest().time_signatures || [];
+    var source = signatures.length ? signatures[0] : { numerator: 4, denominator: 4 };
+    var value = String(source.numerator) + '/' + String(source.denominator);
+    var select = el('timeSignature');
+    if (!select.querySelector('option[value="' + value + '"]')) {
+      var option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
     }
-    return candidates[candidates.length - 1];
+    select.value = value;
+    ROLL.meterNumerator = Number(source.numerator) || 4;
+    ROLL.meterDenominator = Number(source.denominator) || 4;
+  }
+
+  function sizeCanvas(canvas, width, height) {
+    var ratio = window.devicePixelRatio || 1;
+    var pixelWidth = Math.max(1, Math.round(width * ratio));
+    var pixelHeight = Math.max(1, Math.round(height * ratio));
+    canvas.style.width = Math.max(1, width) + 'px';
+    canvas.style.height = Math.max(1, height) + 'px';
+    if (canvas.width !== pixelWidth) { canvas.width = pixelWidth; }
+    if (canvas.height !== pixelHeight) { canvas.height = pixelHeight; }
+  }
+
+  function activePitchCenter() {
+    var pitches = previewEvents().map(function (event) { return Number(event.pitch); })
+      .filter(function (pitch) { return isFinite(pitch) && pitch >= 0 && pitch <= 127; });
+    if (!pitches.length) { return 60; }
+    return (Math.min.apply(null, pitches) + Math.max.apply(null, pitches)) / 2;
+  }
+
+  function resizeCanvas() {
+    var viewport = el('pianoRollViewport');
+    if (!viewport || el('workspace').hidden || viewport.clientWidth < 1 || viewport.clientHeight < 1) { return; }
+
+    var oldWidth = Math.max(1, ROLL.contentWidth);
+    var oldHeight = Math.max(1, ROLL.contentHeight);
+    var centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / oldWidth;
+    var centerY = (viewport.scrollTop + viewport.clientHeight / 2) / oldHeight;
+    var timeScale = ROLL.zoom / 100;
+    var pitchScale = Math.min(3, 1 + Math.log(timeScale) / Math.LN2 * 0.4);
+    var provisionalWidth = Math.max(1, viewport.clientWidth);
+    var provisionalHeight = Math.max(1, viewport.clientHeight);
+    var baseRowHeight = Math.max(9, provisionalHeight / 128);
+    var extent = el('pianoRollExtent');
+
+    extent.style.width = Math.ceil(provisionalWidth * timeScale) + 'px';
+    extent.style.height = Math.ceil(128 * baseRowHeight * pitchScale) + 'px';
+
+    var width = Math.max(1, viewport.clientWidth);
+    var height = Math.max(1, viewport.clientHeight);
+    baseRowHeight = Math.max(9, height / 128);
+    ROLL.viewportWidth = width;
+    ROLL.viewportHeight = height;
+    ROLL.rowHeight = baseRowHeight * pitchScale;
+    ROLL.contentWidth = Math.max(width, width * timeScale);
+    ROLL.contentHeight = Math.max(height, 128 * ROLL.rowHeight);
+    extent.style.width = Math.ceil(ROLL.contentWidth) + 'px';
+    extent.style.height = Math.ceil(ROLL.contentHeight) + 'px';
+
+    sizeCanvas(el('pianoRoll'), width, height);
+    sizeCanvas(el('timeRuler'), width, 31);
+    sizeCanvas(el('pitchRuler'), 72, height);
+
+    if (ROLL.pendingInitialScroll) {
+      var pitch = activePitchCenter();
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = clamp(
+        (127 - pitch + 0.5) * ROLL.rowHeight - height / 2,
+        0,
+        Math.max(0, ROLL.contentHeight - height)
+      );
+      ROLL.pendingInitialScroll = false;
+    } else {
+      viewport.scrollLeft = clamp(centerX * ROLL.contentWidth - width / 2, 0, Math.max(0, ROLL.contentWidth - width));
+      viewport.scrollTop = clamp(centerY * ROLL.contentHeight - height / 2, 0, Math.max(0, ROLL.contentHeight - height));
+    }
+    renderHorizontalScrollLock();
+    drawPianoRoll();
+  }
+
+  function timeAtTick(tick) {
+    var timing = timingManifest();
+    var changes = timing.tempo_changes || [];
+    var marker = changes.length ? changes[0] : { tick: 0, time_ms: 0, tempo: 500000 };
+    for (var index = 1; index < changes.length && Number(changes[index].tick) <= tick; index += 1) {
+      marker = changes[index];
+    }
+    return Number(marker.time_ms) + (tick - Number(marker.tick)) * Number(marker.tempo) / 1000 / Number(timing.ticks_per_beat || 480);
+  }
+
+  function tickAtTime(timeMs) {
+    var timing = timingManifest();
+    var changes = timing.tempo_changes || [];
+    var marker = changes.length ? changes[0] : { tick: 0, time_ms: 0, tempo: 500000 };
+    for (var index = 1; index < changes.length && Number(changes[index].time_ms) <= timeMs; index += 1) {
+      marker = changes[index];
+    }
+    return Number(marker.tick) + (timeMs - Number(marker.time_ms)) * 1000 * Number(timing.ticks_per_beat || 480) / Number(marker.tempo || 500000);
+  }
+
+  function contentXAtTime(timeMs) {
+    var duration = Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1);
+    return clamp(Number(timeMs) || 0, 0, duration) / duration * ROLL.contentWidth;
+  }
+
+  function eachVisibleTick(step, callback) {
+    if (!isFinite(step) || step <= 0) { return; }
+    var duration = Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1);
+    var viewport = el('pianoRollViewport');
+    var startMs = viewport.scrollLeft / ROLL.contentWidth * duration;
+    var endMs = (viewport.scrollLeft + ROLL.viewportWidth) / ROLL.contentWidth * duration;
+    var startTick = Math.max(0, tickAtTime(startMs));
+    var endTick = Math.max(startTick, tickAtTime(endMs));
+    var stride = Math.max(1, Math.ceil((endTick - startTick) / step / 4000));
+    var actualStep = step * stride;
+    var first = Math.max(0, Math.floor(startTick / actualStep) * actualStep);
+    for (var tick = first; tick <= endTick + actualStep; tick += actualStep) {
+      callback(tick, contentXAtTime(timeAtTick(tick)) - viewport.scrollLeft);
+    }
+  }
+
+  function timingLines() {
+    var ticksPerBeat = Number(timingManifest().ticks_per_beat) || 480;
+    var gridTicks = ticksPerBeat * 4 / ROLL.gridDenominator;
+    var barTicks = ticksPerBeat * 4 / ROLL.meterDenominator * ROLL.meterNumerator;
+    var lines = { grid: [], bars: [] };
+    var lastGridX = -Infinity;
+    var lastBarX = -Infinity;
+
+    eachVisibleTick(gridTicks, function (_tick, x) {
+      if (x >= -1 && x <= ROLL.viewportWidth + 1 && x - lastGridX >= 4) {
+        lines.grid.push(x);
+        lastGridX = x;
+      }
+    });
+    eachVisibleTick(barTicks, function (tick, x) {
+      if (x >= -1 && x <= ROLL.viewportWidth + 1 && x - lastBarX >= 18) {
+        lines.bars.push({ x: x, number: Math.round(tick / barTicks) + 1 });
+        lastBarX = x;
+      }
+    });
+    return lines;
+  }
+
+  function prepareContext(canvas) {
+    var ratio = window.devicePixelRatio || 1;
+    var context = canvas.getContext('2d');
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    return context;
+  }
+
+  function drawPitchRuler() {
+    var canvas = el('pitchRuler');
+    var context = prepareContext(canvas);
+    var width = 72;
+    var height = ROLL.viewportHeight;
+    var scrollTop = el('pianoRollViewport').scrollTop;
+    var border = css('--border');
+    var border2 = css('--border2');
+    var white = css('--keyWhite');
+    var whiteText = css('--keyWhiteText');
+    var black = css('--keyBlack');
+    var blackText = css('--keyBlackText');
+    var fontSize = clamp(ROLL.rowHeight - 2, 7, 11);
+
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = css('--panel2');
+    context.fillRect(0, 0, width, height);
+    context.font = fontSize + 'px Consolas, monospace';
+    context.textAlign = 'right';
+    context.textBaseline = 'middle';
+    for (var pitch = 0; pitch <= 127; pitch += 1) {
+      var y = (127 - pitch) * ROLL.rowHeight - scrollTop;
+      if (y + ROLL.rowHeight < 0 || y > height) { continue; }
+      var isBlack = !!BLACK_KEYS[pitch % 12];
+      context.fillStyle = isBlack ? black : white;
+      context.fillRect(0, y, width, ROLL.rowHeight);
+      context.strokeStyle = pitch % 12 === 0 ? border2 : border;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, Math.round(y) + 0.5);
+      context.lineTo(width, Math.round(y) + 0.5);
+      context.stroke();
+      context.fillStyle = isBlack ? blackText : whiteText;
+      context.fillText(noteName(pitch), width - 5, y + ROLL.rowHeight / 2);
+    }
+    context.strokeStyle = border2;
+    context.beginPath();
+    context.moveTo(width - 0.5, 0);
+    context.lineTo(width - 0.5, height);
+    context.stroke();
+  }
+
+  function drawTimeRuler(lines, playheadX) {
+    var canvas = el('timeRuler');
+    var context = prepareContext(canvas);
+    var width = ROLL.viewportWidth;
+    var height = 31;
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = css('--panel2');
+    context.fillRect(0, 0, width, height);
+    context.strokeStyle = css('--rollGrid');
+    lines.grid.forEach(function (x) {
+      context.beginPath(); context.moveTo(Math.round(x) + 0.5, 20); context.lineTo(Math.round(x) + 0.5, height); context.stroke();
+    });
+    context.font = '10px Consolas, monospace';
+    context.textAlign = 'left';
+    context.textBaseline = 'middle';
+    lines.bars.forEach(function (bar) {
+      context.strokeStyle = css('--rollBeat');
+      context.beginPath(); context.moveTo(Math.round(bar.x) + 0.5, 0); context.lineTo(Math.round(bar.x) + 0.5, height); context.stroke();
+      context.fillStyle = css('--muted');
+      context.fillText(String(bar.number), Math.max(4, bar.x + 4), 10);
+    });
+    if (playheadX >= -1 && playheadX <= width + 1) {
+      context.strokeStyle = css('--accent');
+      context.lineWidth = 2;
+      context.beginPath(); context.moveTo(playheadX, 0); context.lineTo(playheadX, height); context.stroke();
+      context.fillStyle = css('--accent');
+      context.beginPath(); context.moveTo(playheadX - 5, 0); context.lineTo(playheadX + 5, 0); context.lineTo(playheadX, 7); context.closePath(); context.fill();
+    }
+  }
+
+  function noteTextColor(hex) {
+    var match = /^#([0-9a-f]{6})$/i.exec(String(hex));
+    if (!match) { return '#ffffff'; }
+    var value = parseInt(match[1], 16);
+    var brightness = ((value >> 16) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000;
+    return brightness > 155 ? '#17181b' : '#ffffff';
   }
 
   function drawPianoRoll(positionOverride) {
     DRAW_QUEUED = false;
     var canvas = el('pianoRoll');
     if (!canvas || canvas.width <= 1 || canvas.height <= 1 || canvas.hidden) { return; }
-    var ratio = window.devicePixelRatio || 1;
-    var width = canvas.width / ratio;
-    var height = canvas.height / ratio;
-    var context = canvas.getContext('2d');
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    var width = ROLL.viewportWidth;
+    var height = ROLL.viewportHeight;
+    var viewport = el('pianoRollViewport');
+    var context = prepareContext(canvas);
     context.clearRect(0, 0, width, height);
 
-    var geometry = canvasGeometry();
     var duration = Math.max(1, (STATE.preview && STATE.preview.duration_ms) || 1);
-    var plotWidth = Math.max(1, width - geometry.keys - geometry.right);
-    var pitchCount = geometry.high - geometry.low + 1;
-    var plotHeight = Math.max(1, height - geometry.top - geometry.bottom);
-    var pitchHeight = plotHeight / pitchCount;
     var background = css('--field');
-    var panel = css('--panel2');
     var border = css('--border');
     var border2 = css('--border2');
-    var muted = css('--muted');
     var text = css('--text');
     var accent = css('--accent');
 
     context.fillStyle = background;
     context.fillRect(0, 0, width, height);
-    context.fillStyle = panel;
-    context.fillRect(0, 0, width, geometry.top);
-    context.fillRect(0, geometry.top, geometry.keys, plotHeight);
-
-    context.font = '10px Consolas, monospace';
-    context.textBaseline = 'middle';
-    for (var pitch = geometry.low; pitch <= geometry.high; pitch += 1) {
-      var row = geometry.high - pitch;
-      var y = geometry.top + row * pitchHeight;
+    for (var pitch = 0; pitch <= 127; pitch += 1) {
+      var y = (127 - pitch) * ROLL.rowHeight - viewport.scrollTop;
+      if (y + ROLL.rowHeight < 0 || y > height) { continue; }
       if (BLACK_KEYS[pitch % 12]) {
-        context.fillStyle = panel;
-        context.fillRect(geometry.keys, y, plotWidth, pitchHeight);
+        context.fillStyle = css('--rollBlack');
+        context.fillRect(0, y, width, ROLL.rowHeight);
       }
       context.strokeStyle = pitch % 12 === 0 ? border2 : border;
       context.lineWidth = 1;
@@ -444,60 +682,60 @@
       context.moveTo(0, Math.round(y) + 0.5);
       context.lineTo(width, Math.round(y) + 0.5);
       context.stroke();
-      if (pitch % 12 === 0 && pitchHeight >= 5) {
-        context.fillStyle = muted;
-        context.fillText(noteName(pitch), 5, y + pitchHeight / 2);
-      }
     }
 
-    var step = gridStep(duration, plotWidth);
-    for (var time = 0; time <= duration; time += step) {
-      var x = geometry.keys + time / duration * plotWidth;
-      context.strokeStyle = time === 0 ? border2 : border;
-      context.beginPath();
-      context.moveTo(Math.round(x) + 0.5, geometry.top);
-      context.lineTo(Math.round(x) + 0.5, height);
-      context.stroke();
-      context.fillStyle = muted;
-      context.fillText(formatTime(time), x + 4, geometry.top / 2);
-    }
+    var lines = timingLines();
+    context.strokeStyle = css('--rollGrid');
+    lines.grid.forEach(function (x) {
+      context.beginPath(); context.moveTo(Math.round(x) + 0.5, 0); context.lineTo(Math.round(x) + 0.5, height); context.stroke();
+    });
+    context.strokeStyle = css('--rollBeat');
+    lines.bars.forEach(function (bar) {
+      context.beginPath(); context.moveTo(Math.round(bar.x) + 0.5, 0); context.lineTo(Math.round(bar.x) + 0.5, height); context.stroke();
+    });
 
     var events = previewEvents();
     for (var index = 0; index < events.length; index += 1) {
       var event = events[index];
       if (event.pitch === null || event.pitch === undefined) { continue; }
       var eventPitch = Number(event.pitch);
-      if (eventPitch < geometry.low || eventPitch > geometry.high) { continue; }
-      var startX = geometry.keys + event.start / duration * plotWidth;
-      var endX = geometry.keys + Math.max(event.end, event.start + duration / plotWidth * 2) / duration * plotWidth;
-      var eventY = geometry.top + (geometry.high - eventPitch) * pitchHeight + 1;
-      var eventHeight = Math.max(2, pitchHeight - 2);
+      if (eventPitch < 0 || eventPitch > 127) { continue; }
+      var startX = contentXAtTime(event.start) - viewport.scrollLeft;
+      var endX = contentXAtTime(Math.max(event.end, event.start + duration / ROLL.contentWidth * 2)) - viewport.scrollLeft;
+      var eventY = (127 - eventPitch) * ROLL.rowHeight - viewport.scrollTop + 1;
+      var eventHeight = Math.max(2, ROLL.rowHeight - 2);
+      if (endX < 0 || startX > width || eventY + eventHeight < 0 || eventY > height) { continue; }
       context.globalAlpha = SELECTED_CHANNEL === null || SELECTED_CHANNEL === event.channel ? 0.88 : 0.25;
-      context.fillStyle = channelColor(event.channel);
+      var color = channelColor(event.channel);
+      context.fillStyle = color;
       context.fillRect(startX, eventY, Math.max(2, endX - startX), eventHeight);
       if (SELECTED_CHANNEL === event.channel) {
         context.strokeStyle = text;
         context.lineWidth = 0.7;
         context.strokeRect(startX + 0.5, eventY + 0.5, Math.max(1, endX - startX - 1), Math.max(1, eventHeight - 1));
       }
+      if (ROLL.rowHeight >= 14 && endX - startX >= 25 && startX >= 0) {
+        context.fillStyle = noteTextColor(color);
+        context.font = Math.min(10, eventHeight - 3) + 'px Consolas, monospace';
+        context.textAlign = 'left';
+        context.textBaseline = 'middle';
+        context.fillText(noteName(eventPitch), startX + 4, eventY + eventHeight / 2);
+      }
     }
     context.globalAlpha = 1;
 
     var position = positionOverride === undefined ? currentPosition() : positionOverride;
-    var playheadX = geometry.keys + clamp(position, 0, duration) / duration * plotWidth;
-    context.strokeStyle = accent;
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(playheadX, 0);
-    context.lineTo(playheadX, height);
-    context.stroke();
-    context.fillStyle = accent;
-    context.beginPath();
-    context.moveTo(playheadX - 5, 0);
-    context.lineTo(playheadX + 5, 0);
-    context.lineTo(playheadX, 7);
-    context.closePath();
-    context.fill();
+    var playheadX = contentXAtTime(position) - viewport.scrollLeft;
+    if (playheadX >= -1 && playheadX <= width + 1) {
+      context.strokeStyle = accent;
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(playheadX, 0);
+      context.lineTo(playheadX, height);
+      context.stroke();
+    }
+    drawPitchRuler();
+    drawTimeRuler(lines, playheadX);
   }
 
   function queueDraw() {
@@ -506,19 +744,58 @@
     requestAnimationFrame(function () { drawPianoRoll(); });
   }
 
-  function positionFromCanvas(event) {
+  function positionFromClientX(clientX) {
     var canvas = el('pianoRoll');
     var rect = canvas.getBoundingClientRect();
-    var geometry = canvasGeometry();
-    var width = Math.max(1, rect.width - geometry.keys - geometry.right);
-    var x = clamp(event.clientX - rect.left - geometry.keys, 0, width);
-    return x / width * ((STATE.preview && STATE.preview.duration_ms) || 0);
+    var x = clamp(clientX - rect.left + el('pianoRollViewport').scrollLeft, 0, ROLL.contentWidth);
+    return x / ROLL.contentWidth * ((STATE.preview && STATE.preview.duration_ms) || 0);
   }
 
-  function setPosition(position) {
+  function positionFromCanvas(event) { return positionFromClientX(event.clientX); }
+
+  function revealPlayhead(position, following) {
+    var viewport = el('pianoRollViewport');
+    if (ROLL.contentWidth <= ROLL.viewportWidth) { return; }
+    var x = contentXAtTime(position);
+    if (following) {
+      var anchor = ROLL.viewportWidth * 0.32;
+      viewport.scrollLeft = clamp(x - anchor, 0, ROLL.contentWidth - ROLL.viewportWidth);
+    } else if (x < viewport.scrollLeft || x > viewport.scrollLeft + ROLL.viewportWidth) {
+      viewport.scrollLeft = clamp(x - ROLL.viewportWidth / 2, 0, ROLL.contentWidth - ROLL.viewportWidth);
+    }
+  }
+
+  function setPosition(position, reveal) {
     var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
     AUDIO.position = clamp(Number(position) || 0, 0, duration);
+    if (reveal !== false) { revealPlayhead(AUDIO.position, false); }
     renderPosition(AUDIO.position);
+  }
+
+  function canvasSeekScrollSpeed(clientX) {
+    var rect = el('pianoRoll').getBoundingClientRect();
+    var edge = Math.min(56, rect.width * 0.14);
+    if (clientX < rect.left + edge) {
+      return -Math.min(28, Math.max(1, (rect.left + edge - clientX) / edge * 28));
+    }
+    if (clientX > rect.right - edge) {
+      return Math.min(28, Math.max(1, (clientX - (rect.right - edge)) / edge * 28));
+    }
+    return 0;
+  }
+
+  function continueCanvasSeekScroll() {
+    if (!SEEK_DRAG) { return; }
+    var viewport = el('pianoRollViewport');
+    var speed = canvasSeekScrollSpeed(SEEK_DRAG.clientX);
+    if (speed) {
+      var before = viewport.scrollLeft;
+      viewport.scrollLeft = clamp(before + speed, 0, ROLL.contentWidth - ROLL.viewportWidth);
+      if (viewport.scrollLeft !== before) {
+        setPosition(positionFromClientX(SEEK_DRAG.clientX), false);
+      }
+    }
+    SEEK_DRAG.frame = requestAnimationFrame(continueCanvasSeekScroll);
   }
 
   function beginCanvasSeek(event) {
@@ -526,19 +803,22 @@
     event.preventDefault();
     var wasPlaying = AUDIO.playing;
     pausePlayback();
-    SEEK_DRAG = { pointer: event.pointerId, resume: wasPlaying };
+    SEEK_DRAG = { pointer: event.pointerId, resume: wasPlaying, clientX: event.clientX, frame: null };
     el('pianoRoll').setPointerCapture(event.pointerId);
-    setPosition(positionFromCanvas(event));
+    setPosition(positionFromCanvas(event), false);
+    SEEK_DRAG.frame = requestAnimationFrame(continueCanvasSeekScroll);
   }
 
   function moveCanvasSeek(event) {
     if (!SEEK_DRAG || SEEK_DRAG.pointer !== event.pointerId) { return; }
-    setPosition(positionFromCanvas(event));
+    SEEK_DRAG.clientX = event.clientX;
+    setPosition(positionFromCanvas(event), false);
   }
 
   function endCanvasSeek(event) {
     if (!SEEK_DRAG || SEEK_DRAG.pointer !== event.pointerId) { return; }
     var resume = SEEK_DRAG.resume;
+    if (SEEK_DRAG.frame !== null) { cancelAnimationFrame(SEEK_DRAG.frame); }
     SEEK_DRAG = null;
     try { el('pianoRoll').releasePointerCapture(event.pointerId); } catch (_error) { /* already released */ }
     if (resume) { startPlayback(); }
@@ -772,7 +1052,20 @@
     el('totalTime').textContent = formatTime(duration);
     el('scrubber').max = String(duration);
     el('scrubber').value = String(clamp(position, 0, duration));
+    if (AUDIO.playing) { revealPlayhead(position, true); }
     drawPianoRoll(position);
+  }
+
+  function renderHorizontalScrollLock() {
+    var viewport = el('pianoRollViewport');
+    var lock = el('horizontalScrollLock');
+    var height = Math.max(0, viewport.offsetHeight - viewport.clientHeight);
+    var width = Math.max(0, viewport.offsetWidth - viewport.clientWidth);
+    var locked = AUDIO.playing && height > 0 && ROLL.contentWidth > ROLL.viewportWidth;
+    lock.hidden = !locked;
+    if (!locked) { return; }
+    lock.style.height = height + 'px';
+    lock.style.right = width + 'px';
   }
 
   function renderTransportState() {
@@ -781,6 +1074,7 @@
     el('scrubber').disabled = !playable;
     el('playGlyph').innerHTML = AUDIO.playing ? '&#10074;&#10074;' : '&#9654;';
     el('transportPlay').setAttribute('aria-label', AUDIO.playing ? 'Pause' : 'Play');
+    renderHorizontalScrollLock();
     updateMenuState();
   }
 
@@ -886,14 +1180,36 @@
   }
 
   function openInspector() {
+    closeNotifications();
     INSPECTOR_OPEN = true;
     el('conversionInspector').hidden = false;
+    el('conversionBtn').setAttribute('aria-expanded', 'true');
     syncInspector();
   }
 
   function closeInspector() {
     INSPECTOR_OPEN = false;
     el('conversionInspector').hidden = true;
+    el('conversionBtn').setAttribute('aria-expanded', 'false');
+  }
+
+  function openNotifications() {
+    closeInspector();
+    NOTIFICATIONS_OPEN = true;
+    el('notificationsInspector').hidden = false;
+    el('notificationsBtn').setAttribute('aria-expanded', 'true');
+    renderWarnings();
+  }
+
+  function closeNotifications() {
+    NOTIFICATIONS_OPEN = false;
+    el('notificationsInspector').hidden = true;
+    el('notificationsBtn').setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleNotifications() {
+    if (NOTIFICATIONS_OPEN) { closeNotifications(); }
+    else { openNotifications(); }
   }
 
   function bindPair(rangeId, numberId, key, decimal) {
@@ -912,7 +1228,6 @@
     el('conversionBtn').addEventListener('click', openInspector);
     el('menuConversion').addEventListener('click', function () { closeMenus(); openInspector(); });
     el('closeInspector').addEventListener('click', closeInspector);
-    el('warnBar').addEventListener('click', openInspector);
     bindPair('maxSpeakersRange', 'maxSpeakersNumber', 'max_speakers', false);
     bindPair('maxPolyRange', 'maxPolyNumber', 'max_poly', false);
     bindPair('releaseRange', 'releaseNumber', 'release_s', true);
@@ -1129,12 +1444,43 @@
   }
 
   function renderWarnings() {
-    var warnings = (STATE.stats && STATE.stats.warnings) || [];
-    var bar = el('warnBar');
-    bar.hidden = warnings.length === 0;
-    bar.textContent = warnings.length
-      ? warnings[0] + (warnings.length > 1 ? '  +' + (warnings.length - 1) + ' more' : '')
-      : '';
+    var warnings = warningMessages();
+    var count = warnings.length;
+    var button = el('notificationsBtn');
+    var badge = el('notificationBadge');
+    var list = el('notificationList');
+    var label = count + ' warning notification' + (count === 1 ? '' : 's');
+
+    button.classList.toggle('has-notifications', count > 0);
+    button.setAttribute('aria-label', count ? label : 'Notifications, no warnings');
+    button.title = count ? label : 'Notifications';
+    badge.hidden = count === 0;
+    badge.textContent = count > 99 ? '99+' : String(count);
+    el('notificationsSummary').textContent = count ? label : 'No warnings';
+
+    list.textContent = '';
+    if (!count) {
+      var empty = document.createElement('div');
+      empty.className = 'notification-empty';
+      empty.textContent = 'No warnings for the current conversion.';
+      list.appendChild(empty);
+      return;
+    }
+    warnings.forEach(function (message) {
+      var row = document.createElement('div');
+      row.className = 'notification-row';
+      row.setAttribute('role', 'listitem');
+      var mark = document.createElement('span');
+      mark.className = 'notification-mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = '!';
+      var copy = document.createElement('div');
+      copy.className = 'notification-copy';
+      copy.textContent = String(message);
+      row.appendChild(mark);
+      row.appendChild(copy);
+      list.appendChild(row);
+    });
   }
 
   function renderStatus() {
@@ -1152,11 +1498,15 @@
 
   function render() {
     var song = hasSong();
+    syncRollSong();
     el('emptyState').hidden = song;
     el('workspace').hidden = !song;
     el('songName').textContent = song ? baseName(STATE.settings.midi) : '';
     el('menuExport').disabled = !song;
     el('exportBtn').disabled = !song;
+    el('gridResolution').disabled = !song;
+    el('timeSignature').disabled = !song;
+    el('rollZoom').disabled = !song;
     if (song) { renderTracks(); }
     renderTransportState();
     renderPosition(currentPosition());
@@ -1175,6 +1525,7 @@
     var editing = target && target.closest && target.closest('input, select, textarea');
     if (event.key === 'Escape') {
       if (OPEN_MENU) { closeMenus(); }
+      else if (NOTIFICATIONS_OPEN) { closeNotifications(); }
       else if (INSPECTOR_OPEN) { closeInspector(); }
       return;
     }
@@ -1213,12 +1564,33 @@
     canvas.addEventListener('pointermove', moveCanvasSeek);
     canvas.addEventListener('pointerup', endCanvasSeek);
     canvas.addEventListener('pointercancel', endCanvasSeek);
+    el('pianoRollViewport').addEventListener('scroll', queueDraw);
+    el('gridResolution').addEventListener('change', function () {
+      ROLL.gridDenominator = Math.max(1, Number(this.value) || 8);
+      queueDraw();
+    });
+    el('timeSignature').addEventListener('change', function () {
+      var meter = parseMeter(this.value);
+      ROLL.meterNumerator = meter.numerator;
+      ROLL.meterDenominator = meter.denominator;
+      queueDraw();
+    });
+    el('rollZoom').addEventListener('input', function () {
+      var stops = clamp(Number(this.value) || 0, 0, 60);
+      ROLL.zoom = Math.pow(2, stops / 10) * 100;
+      var label = Math.round(ROLL.zoom) + '%';
+      el('rollZoomValue').textContent = label;
+      this.setAttribute('aria-valuetext', label);
+      resizeCanvas();
+    });
   }
 
   function init() {
     initMenus();
     initTheme();
     initInspector();
+    el('notificationsBtn').addEventListener('click', toggleNotifications);
+    el('closeNotifications').addEventListener('click', closeNotifications);
     initTransport();
     initChrome();
     el('menuImport').addEventListener('click', importMidi);
@@ -1231,7 +1603,7 @@
     el('exportBtn').addEventListener('click', exportMap);
     document.addEventListener('keydown', shortcut);
     window.addEventListener('resize', debounce(resizeCanvas, 40));
-    if (window.ResizeObserver) { new ResizeObserver(resizeCanvas).observe(el('pianoRoll')); }
+    if (window.ResizeObserver) { new ResizeObserver(resizeCanvas).observe(document.querySelector('.roll-pane')); }
     render();
     if (api()) { setTimeout(boot, 0); }
   }

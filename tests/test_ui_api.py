@@ -466,6 +466,7 @@ def test_preview_manifest_crosses_the_bridge_as_one_global_song():
     assert result["ok"] is True
     assert result["preview"]["events"]
     assert result["preview"]["duration_ms"] > 0
+    assert result["preview"]["timing"]["ticks_per_beat"] == 480
 
 
 def test_global_preview_fetches_only_the_samples_the_current_song_uses(monkeypatch):

@@ -28,8 +28,8 @@ The application has one persistent workspace:
 4. A piano-roll surface on the right. Time runs horizontally, pitch vertically,
    notes are colored by channel, and a high-contrast playhead sweeps across the
    complete surface during playback.
-5. A compact status/warning strip. Warnings open the conversion inspector in
-   context instead of sending the user to another page.
+5. A compact bottom control plane above the status bar. Notifications opens a
+   dedicated inspector; Grid, Time signature, and Zoom control the roll view.
 
 There are no Channels, Drums, Tuning, or Export tabs. Export is a File-menu and
 toolbar action. Percussion is not a separate workspace.
@@ -101,17 +101,22 @@ live audio nodes at once.
 The piano roll is a rendered visualization optimized for thousands of notes.
 A canvas is preferred over one DOM element per note.
 
-- Horizontal axis: milliseconds across the whole song, with adaptive time/bar
-  grid marks.
-- Vertical axis: the occupied MIDI pitch range with a small margin and C-note
-  labels.
+- Horizontal axis: the complete song behind a native scrollbar. The ruler and
+  grid use the source tempo map to place note-value subdivisions and measures.
+- Vertical axis: all 128 MIDI pitches behind a native scrollbar, with a fixed
+  piano-key ruler and every note named from C-1 through G9.
 - Notes: original pitch and duration, colored consistently by MIDI channel.
 - Muted tracks: hidden or heavily dimmed.
 - Selected track: full opacity; other tracks remain visible at lower opacity.
 - Playhead: accent-colored vertical stroke, always above notes and grid.
 
-The first implementation fits the complete song and occupied pitch range. Zoom
-and note editing are outside this redesign.
+One exponential slider expands the time axis from 100% to 6400%, while pitch
+rows grow to a capped 3x. The different caps allow close horizontal inspection
+without turning each key into the height of the viewport. Zoom preserves its
+center. During playback, the playhead sweeps to the left-third anchor and the
+notes, grid, and ruler then scroll continuously beneath it. At inspection sizes,
+notes carry pitch names. The piano roll remains read-only; note editing is
+outside this product.
 
 ## Conversion settings inspector
 
@@ -137,6 +142,29 @@ The inspector slides in from the right over the same workspace:
 Every control applies immediately after validation and refreshes statistics,
 warnings, note visibility where thinning applies, and the next preview. A
 **Restore defaults** action resets the whole conversion section.
+
+## Bottom control plane and notifications
+
+The warning sentence is not printed across the bottom of the workspace. That
+space is a persistent control plane for workstation-level quality-of-life
+tools. Its left control is an icon-only Notifications button with the same
+31-by-29 pixel bordered treatment as global Play/Pause. A warning-colored
+triangle and compact count badge communicate state without competing with the
+song surface.
+
+Notifications opens a nonblocking right-side inspector in the same position as
+Conversion; opening one closes the other. The inspector shows the complete
+warning array, one message per row, with the channel list's faint separators.
+It has an explicit close button, toggles from its control-plane button, closes
+with `Escape`, and shows a quiet empty state when the current conversion has no
+warnings. The audio-setup banner remains separate because it starts a user
+action rather than reporting a conversion condition.
+
+Grid, Time signature, and Zoom sit at the control plane's right edge. Grid
+offers whole through thirty-second-note visual divisions. Time signature starts
+from the source file and changes numbered bar grouping as a visual override.
+Neither control alters playback or source events. Zoom changes both axes so the
+keys, measure ruler, grid, notes, playhead, and scrollbar travel remain aligned.
 
 ## Import and audio setup
 
@@ -188,7 +216,9 @@ characterful typography is confined to MIDI's own numeric notation.
 | percussion included         | one full-height sweeping playhead          |
 | full palette per row        | drag anywhere in time to seek              |
 +-----------------------------+--------------------------------------------+
-| contextual warning + compact engine status                               |
+| [notifications]        Grid [1/8]  Time signature [4/4]  Zoom [---] 100%   |
++--------------------------------------------------------------------------+
+| compact engine status                                                     |
 +--------------------------------------------------------------------------+
 ```
 

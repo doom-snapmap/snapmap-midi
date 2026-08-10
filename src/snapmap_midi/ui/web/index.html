@@ -9,7 +9,8 @@
 <body>
 <!-- Track rows and category controls are built from the Python payload. The
      fixed markup is the one-screen workstation shell: desktop menus, global
-     transport, piano roll, conversion inspector, and status slots. -->
+     transport, piano roll, side inspectors, bottom control plane, and status
+     slots. -->
 <div class="app">
 
   <div class="menubar">
@@ -68,7 +69,7 @@
     <span class="transport-time mono" id="currentTime">0:00.0</span>
     <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Song position" disabled>
     <span class="transport-time mono" id="totalTime">0:00.0</span>
-    <button type="button" class="tool-button" id="conversionBtn" title="Conversion settings">Conversion</button>
+    <button type="button" class="tool-button" id="conversionBtn" title="Conversion settings" aria-controls="conversionInspector" aria-expanded="false">Conversion</button>
     <button type="button" class="tool-button primary" id="exportBtn" disabled>Export</button>
   </div>
 
@@ -86,7 +87,15 @@
       <div class="track-list" id="trackList"></div>
     </section>
     <section class="roll-pane" aria-label="Converted song piano roll">
-      <canvas id="pianoRoll" tabindex="0" aria-label="Piano roll and draggable playback position"></canvas>
+      <div class="roll-corner" aria-hidden="true"></div>
+      <canvas class="time-ruler" id="timeRuler" aria-hidden="true"></canvas>
+      <canvas class="pitch-ruler" id="pitchRuler" aria-hidden="true"></canvas>
+      <div class="roll-viewport" id="pianoRollViewport">
+        <div class="roll-extent" id="pianoRollExtent">
+          <canvas id="pianoRoll" tabindex="0" aria-label="Full MIDI piano roll. Scroll to navigate and click or drag to seek."></canvas>
+        </div>
+      </div>
+      <div class="horizontal-scroll-lock" id="horizontalScrollLock" aria-hidden="true" hidden></div>
       <div class="roll-help">Click or drag to seek</div>
     </section>
   </main>
@@ -95,7 +104,43 @@
     Audio preview is not set up. Set up audio to hear the converted song.
   </button>
 
-  <button type="button" class="warnbar" id="warnBar" hidden></button>
+  <div class="control-plane" id="controlPlane" role="toolbar" aria-label="Workstation controls">
+    <button type="button" class="control-button notification-button" id="notificationsBtn" aria-label="Notifications" aria-controls="notificationsInspector" aria-expanded="false" title="Notifications">
+      <svg class="warning-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 3.25 21 20H3L12 3.25Z"></path>
+        <path d="M12 8.5v5.25"></path>
+        <circle cx="12" cy="17" r=".85"></circle>
+      </svg>
+      <span class="notification-badge mono" id="notificationBadge" hidden>0</span>
+    </button>
+    <span class="control-spacer"></span>
+    <label class="plane-field" for="gridResolution"><span>Grid</span>
+      <select id="gridResolution" title="Visual grid resolution">
+        <option value="1">1</option>
+        <option value="2">1/2</option>
+        <option value="4">1/4</option>
+        <option value="8" selected>1/8</option>
+        <option value="16">1/16</option>
+        <option value="32">1/32</option>
+      </select>
+    </label>
+    <label class="plane-field" for="timeSignature"><span>Time signature</span>
+      <select id="timeSignature" title="Visual measure grouping">
+        <option value="2/4">2/4</option>
+        <option value="3/4">3/4</option>
+        <option value="4/4" selected>4/4</option>
+        <option value="5/4">5/4</option>
+        <option value="6/8">6/8</option>
+        <option value="7/8">7/8</option>
+        <option value="9/8">9/8</option>
+        <option value="12/8">12/8</option>
+      </select>
+    </label>
+    <label class="zoom-control" for="rollZoom">
+      <span>Zoom</span><span class="mono zoom-value" id="rollZoomValue">100%</span>
+      <input type="range" id="rollZoom" min="0" max="60" value="0" step="1" aria-valuetext="100%" title="Piano roll zoom">
+    </label>
+  </div>
 
   <aside class="inspector" id="conversionInspector" aria-label="Conversion settings" hidden>
     <div class="inspector-head">
@@ -131,6 +176,16 @@
       </div>
     </div>
     <div class="inspector-foot"><button type="button" class="btn" id="restoreDefaults">Restore defaults</button></div>
+  </aside>
+
+  <aside class="inspector notifications-inspector" id="notificationsInspector" aria-label="Notifications" hidden>
+    <div class="inspector-head">
+      <div><strong>Notifications</strong><div class="muted" id="notificationsSummary">No warnings</div></div>
+      <button type="button" class="close-button" id="closeNotifications" aria-label="Close notifications">&#10005;</button>
+    </div>
+    <div class="inspector-body notifications-body">
+      <div class="notification-list" id="notificationList" role="list"></div>
+    </div>
   </aside>
 
   <div class="statusbar">

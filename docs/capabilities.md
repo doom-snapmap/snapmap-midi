@@ -108,12 +108,14 @@ accepts these arguments:
 | `midi` | path | none | open on this song |
 | `--settings` | path | none | open with these settings |
 
-The workstation is one persistent surface: a unified channel list, a read-only piano roll,
-one global Play/Pause transport, a draggable sweeping playhead, and a nonblocking Conversion
-inspector. Percussion stays with the other channels. Every channel can use Automatic mapping,
-one of the 12 pitched instrument sets, or any exact sound in all 24 categories and all 890
-shipped palette names. Export writes the map and a settings file beside the song, so the next
-session opens where this one stopped.
+The workstation is one persistent surface: a unified channel list, a read-only full-range
+piano roll, one global Play/Pause transport, a draggable sweeping playhead, and a nonblocking
+Conversion inspector. The roll has synchronized pitch/time axes, native two-dimensional
+scrolling, coordinated zoom, source-tempo-aware grid divisions, selectable visual meter, and
+playback following. Percussion stays with the other channels. Every channel can use Automatic
+mapping, one of the 12 pitched instrument sets, or any exact sound in all 24 categories and
+all 890 shipped palette names. Export writes the map and a settings file beside the song, so
+the next session opens where this one stopped.
 
 It needs pywebview, which is an ordinary dependency on Windows and the `[ui]` extra
 everywhere else. [`ui.md`](ui.md) covers the complete workstation and the settings document

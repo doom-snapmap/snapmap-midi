@@ -92,7 +92,10 @@ cannot distinguish one stray note from a phrase that lives outside the available
 The current workstation's piano roll instead draws the effective events returned by
 `Session.preview_manifest`: after sound resolution, duration caps, polyphony thinning, and
 speaker allocation. That makes the visible notes agree with what Play and Export actually
-use. JavaScript owns only the responsive screen coordinate transform.
+use. The manifest also carries a compact source timing map: ticks per beat, absolute tempo
+change points, and time-signature change points. That lets the browser draw musical note
+divisions and measures against the same millisecond axis as the converted events, including
+files that change tempo, without parsing MIDI in JavaScript.
 
 ### `sound/palette.py` — the sound index
 
@@ -239,11 +242,15 @@ it, which speaker voice it receives, when reuse cuts it off, and which cached sa
 current conversion may request. The same settings document feeds both the preview manifest
 and `compile_to_rawmap`.
 
-Javascript owns presentation and transport: it draws the returned events onto a responsive
-canvas, converts time and MIDI pitch to screen coordinates, moves the single playhead,
-schedules decoded buffers with a rolling look-ahead, and forwards settings changes to the
-bridge. It names no palette family or sound in source. The grouped 24-category catalog comes
-from `sound/palette.py`, so the shipped palette stays the only source of truth.
+Javascript owns presentation and transport: it virtualizes the full 0-127 pitch range and
+song duration behind native scrollbars, draws only the visible viewport plus synchronized
+pitch and measure rulers, converts MIDI ticks through the supplied tempo map, moves and
+auto-follows the single playhead against Web Audio's output timestamp rather than its
+ahead-of-output scheduling clock, schedules decoded buffers with a rolling look-ahead, and
+forwards settings changes to the bridge. Grid, meter, and zoom are view state and never enter
+the conversion settings document. JavaScript names no palette family or sound in source. The
+grouped 24-category catalog comes from `sound/palette.py`, so the shipped palette stays the
+only source of truth.
 
 ## The authoring core
 

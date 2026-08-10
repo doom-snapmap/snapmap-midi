@@ -44,7 +44,7 @@ resolution path.
 - [x] Keep the Snapmap Plus token block, native frame, window controls, and
   theme behavior unchanged.
 - [x] Build the one-screen workspace: transport, unified track column, piano
-  roll, warning/status strip, and empty state.
+  roll, bottom control plane, status bar, and empty state.
 - [x] Remove every per-channel and per-drum Play button.
 - [x] Put Import, Export, audio setup, and conversion settings in traditional
   menus and a minimal transport toolbar.
@@ -69,8 +69,8 @@ resolution path.
 - [x] Show MIDI note names beside the bass threshold.
 - [x] Show decaying/category behavior as categorical rows rather than sliders.
 - [x] Add Restore defaults and immediate validated application.
-- [x] Open the inspector from warnings and the Options menu without navigating
-  away from the workstation.
+- [x] Open the inspector from the Conversion toolbar control and Options menu
+  without navigating away from the workstation.
 
 ## 6. Integrate, document, and verify
 
@@ -85,3 +85,57 @@ resolution path.
   live window. The application is left open for user-led acceptance with a
   personal MIDI file: menus, assignments, full-song playback, seeking,
   inspector controls, and export.
+
+## 7. Add the notifications control plane
+
+- [x] Remove the collapsed warning sentence above the status bar.
+- [x] Reserve that row as a persistent toolbar for workstation-level controls.
+- [x] Add the warning-shaped Notifications button using the Play/Pause control
+  geometry and a compact warning-count badge.
+- [x] Add a mutually exclusive right-side Notifications inspector.
+- [x] Render every warning in full, separated by the channel list's faint row
+  borders, with close, toggle, and `Escape` behavior.
+
+## 8. Build the navigable musical note surface
+
+- [x] Replace song-derived pitch cropping with a fixed 0-127 MIDI surface and
+  label every piano-key row.
+- [x] Add synchronized fixed pitch and measure rulers around native horizontal
+  and vertical scrollbars.
+- [x] Carry the MIDI tempo and time-signature map into the preview manifest.
+- [x] Add visual whole through thirty-second-note Grid choices and common meter
+  overrides with stronger numbered measure lines.
+- [x] Add an exponential 100-6400% time Zoom control with capped 3x pitch
+  scaling that preserves viewport context.
+- [x] Keep the sweeping playhead proportional at every zoom and advance the
+  horizontal viewport automatically during playback.
+- [x] Update asset/session tests and all user, contributor, architecture, and
+  design documentation, then run the complete validation suite.
+
+## 9. Correct deep zoom and playback following
+
+- [x] Replace the shallow 4x linear limit with a 64x exponential horizontal
+  range while keeping piano-key height usable.
+- [x] Route notes, seeking, and the playhead through one absolute-time screen
+  transform.
+- [x] Replace edge-triggered page jumps with continuous left-third playback
+  following so the sounding passage remains under the sweeper.
+- [x] Re-run focused and complete validation.
+
+## 10. Finish the piano and scrollbar rulers
+
+- [x] Render black keys across the complete 72px pitch ruler without exposing
+  an unintended panel-colored strip.
+- [x] Extend the time-ruler divider across the vertical scrollbar gutter while
+  keeping the scrollbar itself inside the note-surface row.
+- [x] Re-run focused and complete validation.
+
+## 11. Complete playhead drag and playback scrollbar states
+
+- [x] Paint the time-ruler boundary exactly once across the canvas and scrollbar
+  gutter so its thickness cannot change at the corner.
+- [x] Auto-pan horizontally while a captured playhead drag remains inside either
+  edge zone.
+- [x] Cover the native horizontal scrollbar with a noninteractive disabled track
+  during playback without blocking the vertical pitch scrollbar.
+- [x] Re-run focused and complete validation.

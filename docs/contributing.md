@@ -149,8 +149,11 @@ The shared design contract comes from Snapmap Plus: the light and dark tokens, S
 Consolas roles, 30 px menu bar, fields, buttons, status bar, toast, brand asset, window
 controls, and eight resize grips must stay exact. `tests/test_ui_assets.py` pins those
 primitives. The traditional File/Playback/Options/View menus, unified track list, canvas
-piano roll, global transport, and Conversion inspector extend that language; they do not
-redefine it. Do not reintroduce tabs or per-row Play controls.
+piano roll, global transport, bottom control plane, and side inspectors extend that language;
+they do not redefine it. The roll's full MIDI axis, synchronized rulers, tempo-aware grid,
+native scrolling, zoom, and playback follow are one coordinate system; a change to one must
+retain the asset-contract tests for all of them. Do not reintroduce tabs or per-row Play
+controls.
 
 Audio previews are optional and local. Use the synthetic fixtures for ordinary decoder and
 cache work. Running `snapmap-midi extract` against a real install writes roughly 450 MB under
