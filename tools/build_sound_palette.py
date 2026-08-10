@@ -11,9 +11,9 @@ category, in declaration order — identifiers, not audio, and the same kind of
 data the General MIDI drum table has always carried inline. Shipping them is
 what lets a fresh install compile a song without anyone extracting anything.
 
-Order is preserved because the audition command plays a category in
-declaration order and prints an index against each entry; re-sorting would
-silently renumber every legend anyone has written down.
+Order is preserved because palette review maps and curated ear-label legends
+index each category in declaration order; re-sorting would silently renumber
+every legend anyone has written down.
 """
 
 from __future__ import annotations

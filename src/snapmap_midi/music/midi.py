@@ -70,6 +70,7 @@ def parse_notes(
     note_index=None,
     channel_mutes=None,
     drum_key_overrides=None,
+    channel_sounds=None,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -96,9 +97,11 @@ def parse_notes(
     drum_overrides = drum_overrides or {}
     drum_key_overrides = drum_key_overrides or {}
     channel_families = channel_families or {}
+    channel_sounds = channel_sounds or {}
     channel_mutes = channel_mutes or frozenset()
     no_sustain = set(decaying_families or ())
     low_cut, low_family = low_split or (0, None)
+    sound_categories = palette.sound_categories()
 
     # clip=True clamps out-of-range data bytes rather than refusing the file.
     mid = mido.MidiFile(str(mid_path), clip=True)
@@ -119,7 +122,25 @@ def parse_notes(
         elif msg.type == "note_on" and msg.velocity > 0:
             if msg.channel in channel_mutes:
                 continue
-            if msg.channel == DRUM_CHANNEL and drums_on:
+            exact_sound = channel_sounds.get(msg.channel)
+            chosen_family = channel_families.get(msg.channel)
+            if exact_sound is not None:
+                shader = exact_sound
+                family = sound_categories.get(shader, "exact")
+                # Explicitly assigned ambience is potentially looping and must
+                # be stopped. Known sustained instruments keep their ordinary
+                # scheduling; short effects and percussion keep their tails.
+                sustained = (
+                    family in SUSTAINED or family.startswith("amb_")
+                ) and family not in no_sustain
+            elif chosen_family is not None:
+                # A pitched family selected for channel 10 is still a pitched
+                # instrument. The explicit track choice wins over automatic
+                # percussion detection, so drums need no separate workspace.
+                family = chosen_family
+                shader = palette.decl_for(family, msg.note, index)
+                sustained = family in SUSTAINED and family not in no_sustain
+            elif msg.channel == DRUM_CHANNEL and drums_on:
                 # The per-key choice is the user's and is final. `drum_overrides`
                 # is keyed by resolved shader and exists to retimbre what the
                 # TABLE picked, so applying it after a per-key override would
@@ -133,8 +154,6 @@ def parse_notes(
             else:
                 family = gm_to_family(program.get(msg.channel, 0))
                 family = family_overrides.get(family, family)
-                if msg.channel in channel_families:
-                    family = channel_families[msg.channel]
                 if low_family and msg.note < low_cut:
                     family = low_family
                 shader = palette.decl_for(family, msg.note, index)
@@ -147,13 +166,20 @@ def parse_notes(
             pending = active.get((msg.channel, msg.note))
             if pending:
                 started, shader, sustained, family = pending.pop(0)
-                notes.append(Note(started, now, shader, sustained, msg.channel, family))
+                note = Note(started, now, shader, sustained, msg.channel, family)
+                # Note's declared field order is a byte-level compatibility
+                # contract. Dataclasses without slots may still carry this UI
+                # annotation without changing that ordered schema.
+                note.pitch = msg.note
+                notes.append(note)
 
     end = int(elapsed * 1000)
-    for (channel, _pitch), pending in active.items():
+    for (channel, pitch), pending in active.items():
         for started, shader, sustained, family in pending:
             # Still sounding when the file ended; hold it rather than drop it.
-            notes.append(Note(started, end, shader, sustained, channel, family))
+            note = Note(started, end, shader, sustained, channel, family)
+            note.pitch = pitch
+            notes.append(note)
 
     stats = {"drums_on": drums_on, "dropped": dropped, "duration_s": round(elapsed, 2)}
     return notes, stats

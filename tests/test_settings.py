@@ -240,6 +240,23 @@ def test_ins_string_is_refused_like_any_other_silent_family():
         _patch({"channels": {"0": {"family": "ins_string"}}})
 
 
+def test_a_channel_may_choose_any_exact_sound_in_the_shipped_palette():
+    sound = palette.sounds_in_category("amb_air")[0]
+    doc = _patch({"channels": {"0": {"sound": sound}}})
+    assert doc["channels"]["0"] == {"family": None, "sound": sound, "muted": False}
+
+
+def test_an_exact_sound_outside_the_shipped_palette_is_refused():
+    with pytest.raises(settings.SettingsError, match="not a sound"):
+        _patch({"channels": {"0": {"sound": "play_not_a_real_snapmap_sound"}}})
+
+
+def test_a_channel_cannot_choose_a_family_and_an_exact_sound_together():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    with pytest.raises(settings.SettingsError, match="not both"):
+        _patch({"channels": {"0": {"family": "ins_piano", "sound": sound}}})
+
+
 def test_a_channel_outside_the_sixteen_is_refused():
     with pytest.raises(settings.SettingsError, match="channel"):
         settings.validate({**settings.defaults(), "channels": {"16": {}}})
@@ -343,13 +360,24 @@ def test_an_optional_lever_takes_null_or_a_positive_number(lever):
         _patch({"tuning": {lever: 0}})
 
 
-def test_a_cap_on_a_family_nobody_can_choose_is_refused():
-    """`family_caps` is keyed by family name and read with `.get`, so a name
-    that is not a family is a cap that reads as set and never matches."""
-    with pytest.raises(settings.SettingsError, match="ins_noise"):
-        _patch({"tuning": {"family_caps": {"ins_noise": 400}}})
-    with pytest.raises(settings.SettingsError, match="ins_string"):
-        _patch({"tuning": {"decaying_families": ["ins_string"]}})
+def test_sound_behavior_accepts_every_real_palette_category_and_refuses_unknown_ones():
+    """Exact sound assignments retain their category, including unpitched
+    ambience and effects, so behavior controls must accept all 24 categories."""
+    doc = _patch(
+        {
+            "tuning": {
+                "family_caps": {"ins_noise": 400},
+                "decaying_families": ["ins_string"],
+            }
+        }
+    )
+    assert doc["tuning"]["family_caps"] == {"ins_noise": 400}
+    assert doc["tuning"]["decaying_families"] == ["ins_string"]
+
+    with pytest.raises(settings.SettingsError, match="no_such_category"):
+        _patch({"tuning": {"family_caps": {"no_such_category": 400}}})
+    with pytest.raises(settings.SettingsError, match="no_such_category"):
+        _patch({"tuning": {"decaying_families": ["no_such_category"]}})
 
 
 def test_decaying_families_has_to_be_a_list_of_names():
@@ -477,6 +505,16 @@ def test_a_muted_channel_with_an_instrument_appears_in_both():
     )
     assert kwargs["channel_families"] == {2: "ins_flute"}
     assert kwargs["channel_mutes"] == {2}
+
+
+def test_exact_channel_sounds_reach_the_compiler_with_integer_channel_keys():
+    sound = palette.sounds_in_category("ins_noise")[0]
+    kwargs = settings.to_compile_kwargs(
+        _patch({"channels": {"9": {"sound": sound, "muted": True}}})
+    )
+    assert kwargs["channel_sounds"] == {9: sound}
+    assert kwargs["channel_families"] == {}
+    assert kwargs["channel_mutes"] == {9}
 
 
 @pytest.mark.parametrize("mode,expected", [("auto", "auto"), ("on", True), ("off", False)])

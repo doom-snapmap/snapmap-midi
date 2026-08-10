@@ -23,6 +23,7 @@ import mido
 from snapmap_midi.compile import compile_to_rawmap
 from snapmap_midi.music.gm import DRUM_MAP
 from snapmap_midi.music.midi import parse_notes
+from snapmap_midi.sound import palette
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TINY_MIDI = FIXTURES / "tiny.mid"
@@ -131,6 +132,37 @@ def test_an_empty_mute_set_parses_exactly_what_no_mute_set_parses():
     """The lever has to be inert when nobody has pulled it: the window passes
     it on every compile, including the first one before anything is chosen."""
     assert parse_notes(TINY_MIDI, channel_mutes=set())[0] == parse_notes(TINY_MIDI)[0]
+
+
+# ---- unified track sound assignment ----
+
+
+def test_an_exact_sound_wins_and_keeps_the_written_midi_pitch(tmp_path):
+    mid = _write_midi(tmp_path, [(0, 48), (0, 72)], programs={0: 0})
+    sound = palette.sounds_in_category("amb_air")[0]
+    notes, stats = parse_notes(
+        mid,
+        drums=False,
+        channel_families={0: "ins_violin"},
+        channel_sounds={0: sound},
+    )
+    assert stats["dropped"] == 0
+    assert {note.shader for note in notes} == {sound}
+    assert {note.fam for note in notes} == {"amb_air"}
+    assert [note.pitch for note in notes] == [48, 72]
+    assert all(note.sustained for note in notes)
+
+
+def test_a_pitched_family_selected_on_the_drum_channel_bypasses_the_kit(tmp_path):
+    mid = _write_midi(tmp_path, [(9, 36), (9, 38)])
+    index = palette.build_note_index()
+    notes, _ = parse_notes(mid, drums=True, channel_families={9: "ins_piano"}, note_index=index)
+    assert [note.shader for note in notes] == [
+        palette.decl_for("ins_piano", 36, index),
+        palette.decl_for("ins_piano", 38, index),
+    ]
+    assert all(note.fam == "ins_piano" for note in notes)
+    assert {note.shader for note in notes}.isdisjoint(set(DRUM_MAP.values()))
 
 
 # ---- per-drum-key sounds ----

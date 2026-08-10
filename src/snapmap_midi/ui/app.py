@@ -1,14 +1,14 @@
-"""Opening the control window, and failing usefully when it will not open.
+"""Opening the MIDI workstation, and failing usefully when it will not open.
 
 pywebview is the whole of the window. It hosts the markup under `web/` in the
 platform's own browser engine and hands the bridge to Javascript as
 `window.pywebview.api`. Nothing is served and nothing listens: the markup is
-loaded from the filesystem by path, so the window has no address and no port
-and cannot be reached from anywhere but this process.
+loaded through a `file:///` URI, so the window has no address and no port and
+cannot be reached from anywhere but this process.
 
-Both imports it needs happen inside `run` rather than at the top of the module.
-pywebview is declared for Windows only, and the bridge reaches the whole
-library through it; at module scope either one would make importing this
+Every import it needs happens inside `run` rather than at the top of the
+module. pywebview is declared for Windows only, and the bridge reaches the
+whole library through it; at module scope either one would make importing this
 package -- which `snapmap-midi compile` does not need at all -- fail on a
 machine that is never going to open a window.
 """
@@ -47,6 +47,17 @@ def web_root() -> Path:
     return Path(__file__).resolve().parent / "web"
 
 
+def web_url() -> str:
+    """The local entry point as a file URI, not a path pywebview will serve.
+
+    pywebview treats a plain local path as a request to start a Bottle server
+    on a random loopback port. An explicit `file:///` URI goes straight to
+    WebView2 instead, preserves the relative CSS and Javascript links, and
+    keeps the window true to its no-listener security contract.
+    """
+    return (web_root() / "index.html").as_uri()
+
+
 def run(midi=None, settings=None) -> int:
     """Open the window and return the exit code the command line should use.
 
@@ -67,16 +78,23 @@ def run(midi=None, settings=None) -> int:
     try:
         import webview
     except ImportError:
-        print("the control window needs pywebview, which is not installed")
+        print("the MIDI workstation needs pywebview, which is not installed")
         print('  pip install "snapmap-midi[ui]"')
         return 2
 
     from snapmap_midi.ui.api import Bridge
+    from snapmap_midi.ui.chrome import WindowChrome
 
     bridge = Bridge(midi=midi, settings_path=settings)
+    # An ORDINARY window, and then the frame comes off it -- see `ui/chrome.py`.
+    # `frameless=True` here would be one argument instead of two lines and it is
+    # measurably the wrong one: it drops WS_THICKFRAME, WS_SYSMENU and
+    # WS_MINIMIZEBOX, so the window cannot be resized, cannot be minimised from
+    # its own taskbar button, has no Aero Snap, and covers the taskbar when
+    # maximised.
     window = webview.create_window(
         TITLE,
-        str(web_root() / "index.html"),
+        web_url(),
         js_api=bridge,
         width=WIDTH,
         height=HEIGHT,
@@ -88,11 +106,17 @@ def run(midi=None, settings=None) -> int:
     # pickers report that there is nothing to open a dialog on, which is also
     # how they stay testable with no browser engine present.
     bridge.attach(window)
+    # Handed over the same way and for the same reason. The chrome installs
+    # itself on the window's `shown` event, so this line only has to happen
+    # before `start()`; what it buys is the page being able to drag, resize,
+    # minimise, maximise and close a window that no longer has a title bar to do
+    # any of that with.
+    bridge.attach_chrome(WindowChrome(window))
 
     try:
         webview.start()
     except Exception as exc:
-        print("the control window could not open (%s)" % exc)
+        print("the MIDI workstation could not open (%s)" % exc)
         print("  install the Microsoft Edge WebView2 runtime, then try again")
         return 2
     return 0

@@ -168,6 +168,47 @@ def test_opening_a_second_song_keeps_the_tuning_the_button_and_the_folder(tmp_pa
     assert doc["tuning"]["max_speakers"] == 8
 
 
+# ---- workstation preview manifest ----
+
+
+def test_preview_manifest_is_the_resolved_song_with_original_pitches():
+    session = Session(midi=TINY_MIDI)
+    manifest = session.preview_manifest()
+    assert manifest["duration_ms"] > 0
+    assert manifest["events"]
+    assert manifest["sounds"] == sorted({event["sound"] for event in manifest["events"]})
+    assert all(0 <= event["pitch"] <= 127 for event in manifest["events"])
+    assert all("cut" in event for event in manifest["events"])
+
+
+def test_preview_manifest_uses_an_exact_channel_sound_without_losing_note_positions():
+    session = Session(midi=TINY_MIDI)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply({"channels": {"0": {"sound": sound}}})
+    events = [event for event in session.preview_manifest()["events"] if event["channel"] == 0]
+    assert events
+    assert {event["sound"] for event in events} == {sound}
+    assert {event["family"] for event in events} == {"amb_air"}
+    assert all(event["sustained"] for event in events)
+
+
+def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_speakers": 1}})
+    events = [event for event in session.preview_manifest()["events"] if event["channel"] == 3]
+    cut = [event for event in events if event["cut"]]
+    assert len(events) == 3
+    assert len(cut) == 2
+    assert all(event["end"] == event["start"] for event in cut)
+
+
+def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_poly": 1}})
+    events = [event for event in session.preview_manifest()["events"] if event["channel"] == 3]
+    assert [event["pitch"] for event in events] == [67]
+
+
 # ---- opening a settings document ----
 
 
@@ -460,14 +501,15 @@ def test_muting_everything_says_nothing_will_play():
     assert _warnings(session)[0] == "Nothing will play: all 3 channels are muted."
 
 
-def test_an_unmapped_drum_key_is_named_along_with_the_tab_that_fixes_it(tmp_path):
+def test_an_unmapped_drum_key_names_the_unified_track_choices_that_fix_it(tmp_path):
     """`DRUM_MAP` drops the exotic keys rather than guessing at them, so this is
-    the ordinary way a file loses notes. The key number is what lets someone
-    find that row in the picker."""
+    the ordinary way a file loses notes. Percussion has no separate tab now, so
+    the warning points to the channel assignment and advanced sidecar override."""
     session = Session(midi=_kit(tmp_path, extra_key=60))
-    warning = [w for w in _warnings(session) if "Drums tab" in w][0]
+    warning = [w for w in _warnings(session) if "Percussion keys" in w][0]
     assert warning.startswith("2 notes have no sound and will not play.")
-    assert "Drum keys 60 are unmapped" in warning
+    assert "Percussion keys 60 are unmapped" in warning
+    assert "instrument set or exact sound" in warning
 
     session.apply({"drum_keys": {"60": "play_clave1"}})
     assert not any("no sound" in w for w in _warnings(session))

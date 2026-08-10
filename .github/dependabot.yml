@@ -1,5 +1,5 @@
-# Two dependency surfaces here: the SHA-pinned GitHub Actions, and pip -- `mido` is a real
-# runtime dependency of a MIDI compiler, so it is worth watching as well as the workflows.
+# Two dependency surfaces here: the SHA-pinned GitHub Actions, and pip -- the MIDI parser and
+# desktop UI host are runtime dependencies, so they are worth watching alongside the workflows.
 #
 # When an action publishes a new release Dependabot opens a PR updating the pinned commit SHA
 # (and its version comment), so the pins stay both immutable and up to date.

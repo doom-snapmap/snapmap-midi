@@ -143,7 +143,16 @@ def test_startup_answers_in_one_call():
     makes the first frame correct rather than what makes it quick."""
     payload = Bridge(midi=TINY_MIDI).startup()
     assert payload["ok"] is True
-    assert set(payload) >= {"ok", "settings", "analysis", "catalog", "rulers", "stats"}
+    assert set(payload) >= {
+        "ok",
+        "settings",
+        "analysis",
+        "catalog",
+        "rulers",
+        "stats",
+        "audio",
+        "window",
+    }
     assert [c["channel"] for c in payload["analysis"]["channels"]] == [0, 1, 9]
     assert payload["rulers"]["9"] is None
     assert payload["stats"]["notes"]
@@ -160,6 +169,43 @@ def test_startup_with_no_song_says_so_without_failing():
     assert payload["stats"] is None
     assert payload["rulers"] == {}
     assert payload["catalog"]["families"]
+
+
+def test_startup_reports_audio_without_extracting_it(monkeypatch):
+    """Opening the editor may inspect the cache and must never build it.
+
+    Extraction takes tens of seconds and writes hundreds of megabytes. It is a
+    button, not a side effect of asking for the first frame.
+    """
+    from snapmap_midi.audio import library
+
+    state = {
+        "ready": False,
+        "count": 12,
+        "expected": 890,
+        "install": "D:/Steam/DOOM",
+        "cache_dir": "C:/cache",
+    }
+    monkeypatch.setattr(library, "status", lambda: dict(state))
+    monkeypatch.setattr(
+        library,
+        "extract",
+        lambda: pytest.fail("startup extracted audio without an explicit request"),
+    )
+    assert Bridge().startup()["audio"] == state
+
+
+def test_audio_status_failure_does_not_take_down_the_editor(monkeypatch):
+    from snapmap_midi.audio import library
+
+    def broken():
+        raise OSError("cache cannot be read")
+
+    monkeypatch.setattr(library, "status", broken)
+    payload = Bridge().startup()
+    assert payload["ok"] is True
+    assert payload["audio"]["ready"] is False
+    assert payload["audio"]["error"] == "cache cannot be read"
 
 
 def test_opening_on_a_bad_path_still_opens(tmp_path):
@@ -248,6 +294,20 @@ def test_every_family_in_the_catalog_carries_the_range_the_ruler_draws():
         assert (family["lowest"], family["highest"]) == palette.family_range(family["name"], index)
 
 
+def test_the_workstation_catalog_contains_the_entire_shipped_sound_palette():
+    catalog = Bridge().catalog()
+    assert [group["name"] for group in catalog["sound_groups"]] == palette.categories()
+    offered = [sound["name"] for group in catalog["sound_groups"] for sound in group["sounds"]]
+    assert offered == palette.all_sounds()
+    assert catalog["sound_count"] == len(offered) == 890
+
+
+def test_sound_groups_mark_which_categories_can_follow_midi_pitch():
+    catalog = Bridge().catalog()
+    pitched = {group["name"] for group in catalog["sound_groups"] if group["pitched"]}
+    assert pitched == set(palette.pitched_families())
+
+
 def test_the_catalog_names_the_drum_sounds_and_what_they_sound_like():
     """The names lie: `play_noise_crash` is a shaker and `play_noise_tom` is a
     knock on a wooden door. A picker showing only names sends people to the tom
@@ -297,6 +357,163 @@ def test_opening_a_song_carries_a_fresh_catalog_with_it():
     assert payload["catalog"]["families"] == bridge.catalog()["families"]
 
 
+# ---- local audio preview ----
+
+
+def test_a_cached_sound_crosses_the_bridge_as_a_playable_data_uri(monkeypatch):
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(library, "expected_names", lambda: ["play_one"])
+    monkeypatch.setattr(library, "read_wav", lambda name: b"RIFF" if name == "play_one" else None)
+    assert Bridge().preview_sound("play_one") == {
+        "ok": True,
+        "sound": "play_one",
+        "data_uri": "data:audio/wav;base64,UklGRg==",
+    }
+
+
+def test_a_sound_outside_the_palette_is_refused_before_the_cache_is_read(monkeypatch):
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(library, "expected_names", lambda: ["play_one"])
+    monkeypatch.setattr(
+        library,
+        "read_wav",
+        lambda name: pytest.fail("an unknown palette name reached the cache"),
+    )
+    result = Bridge().preview_sound("../elsewhere")
+    assert result["ok"] is False
+    assert "shipped palette" in result["error"]
+
+
+def test_an_unextracted_sound_explains_the_one_step_that_is_missing(monkeypatch):
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(library, "expected_names", lambda: ["play_one"])
+    monkeypatch.setattr(library, "read_wav", lambda name: None)
+    result = Bridge().preview_sound("play_one")
+    assert result["ok"] is False
+    assert "set up audio preview" in result["error"]
+
+
+def test_a_channel_preview_resolves_the_same_sound_as_the_compiler(monkeypatch):
+    from snapmap_midi.audio import library
+
+    family = "ins_piano"
+    note = 60
+    expected = palette.decl_for(family, note, palette.build_note_index())
+    assert expected is not None
+    monkeypatch.setattr(library, "expected_names", lambda: [expected])
+    monkeypatch.setattr(library, "read_wav", lambda name: b"RIFF")
+    result = Bridge().preview_note(family, note)
+    assert result["ok"] is True
+    assert result["sound"] == expected
+
+
+@pytest.mark.parametrize("note", [-1, 128, 60.5, True, "not-a-note"])
+def test_a_preview_note_has_to_be_a_midi_note(note):
+    result = Bridge().preview_note("ins_piano", note)
+    assert result["ok"] is False
+    assert result["error"]
+
+
+def test_audio_extraction_is_the_explicit_bridge_call(monkeypatch):
+    from snapmap_midi.audio import library
+
+    state = {
+        "ready": True,
+        "count": 2,
+        "expected": 2,
+        "install": "D:/DOOM",
+        "cache_dir": "C:/cache",
+        "written": 2,
+        "skipped": 0,
+        "failed": [],
+    }
+    calls = []
+
+    def extract():
+        calls.append(True)
+        return dict(state)
+
+    monkeypatch.setattr(library, "extract", extract)
+    assert Bridge().extract_audio() == {"ok": True, "audio": state}
+    assert calls == [True]
+
+
+def test_an_incomplete_extraction_names_failure_without_breaking_the_bridge(monkeypatch):
+    from snapmap_midi.audio import library
+
+    state = {
+        "ready": False,
+        "count": 1,
+        "expected": 2,
+        "install": "D:/DOOM",
+        "cache_dir": "C:/cache",
+        "written": 1,
+        "skipped": 0,
+        "failed": ["play_two"],
+    }
+    monkeypatch.setattr(library, "extract", lambda: dict(state))
+    result = Bridge().extract_audio()
+    assert result["ok"] is False
+    assert result["audio"] == state
+    assert "1 sound could" in result["error"]
+
+
+def test_preview_manifest_crosses_the_bridge_as_one_global_song():
+    result = Bridge(midi=TINY_MIDI).preview_manifest()
+    assert result["ok"] is True
+    assert result["preview"]["events"]
+    assert result["preview"]["duration_ms"] > 0
+
+
+def test_global_preview_fetches_only_the_samples_the_current_song_uses(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    used = bridge.preview_manifest()["preview"]["sounds"]
+    requested = used[:2]
+    reads = []
+
+    def read_wav(name):
+        reads.append(name)
+        return b"RIFF"
+
+    monkeypatch.setattr(library, "read_wav", read_wav)
+    result = bridge.preview_samples(requested + requested[:1])
+    assert result["ok"] is True
+    assert list(result["samples"]) == requested
+    assert set(result["samples"].values()) == {"data:audio/wav;base64,UklGRg=="}
+    assert reads == requested
+    assert result["missing"] == []
+
+
+def test_global_preview_refuses_a_palette_sound_the_current_song_does_not_use(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    used = set(bridge.preview_manifest()["preview"]["sounds"])
+    outside = next(sound for sound in palette.all_sounds() if sound not in used)
+    monkeypatch.setattr(
+        library,
+        "read_wav",
+        lambda name: pytest.fail("an out-of-song sound reached the audio cache"),
+    )
+    result = bridge.preview_samples([outside])
+    assert result["ok"] is False
+    assert "not used by the current converted song" in result["error"]
+
+
+def test_global_preview_reports_missing_used_samples_without_failing_the_bridge(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    used = bridge.preview_manifest()["preview"]["sounds"][:2]
+    monkeypatch.setattr(library, "read_wav", lambda name: None)
+    assert bridge.preview_samples(used) == {"ok": True, "samples": {}, "missing": used}
+
+
 # ---- settings ----
 
 
@@ -307,6 +524,22 @@ def test_settings_apply_as_a_patch_and_answer_with_the_whole_document():
     assert payload["ok"] is True
     assert payload["settings"]["channels"]["0"] == {"family": "ins_marimba", "muted": True}
     assert bridge.get_settings()["settings"] == payload["settings"]
+
+
+def test_restore_conversion_defaults_keeps_the_song_and_track_assignments():
+    bridge = Bridge(midi=TINY_MIDI)
+    sound = palette.sounds_in_category("ins_noise")[0]
+    bridge.apply_settings(
+        {
+            "channels": {"0": {"sound": sound}},
+            "tuning": {"max_speakers": 4, "hard_stop": True},
+        }
+    )
+    result = bridge.reset_tuning()
+    assert result["ok"] is True
+    assert result["settings"]["midi"] == TINY_MIDI
+    assert result["settings"]["channels"]["0"]["sound"] == sound
+    assert result["settings"]["tuning"] == settings_module.defaults()["tuning"]
 
 
 def test_a_family_that_cannot_play_a_pitch_is_refused_and_changes_nothing():

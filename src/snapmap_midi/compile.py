@@ -57,6 +57,7 @@ def compile_to_rawmap(
     note_index=None,
     channel_mutes: Optional[set] = None,
     drum_key_overrides: Optional[dict] = None,
+    channel_sounds: Optional[dict] = None,
 ):
     """Compile a MIDI file into finished map bytes plus a statistics summary.
 
@@ -86,6 +87,7 @@ def compile_to_rawmap(
         note_index=note_index,
         channel_mutes=channel_mutes,
         drum_key_overrides=drum_key_overrides,
+        channel_sounds=channel_sounds,
     )
     decaying = [n for n in notes if not n.sustained]
     sustained = [n for n in notes if n.sustained]

@@ -22,9 +22,10 @@ output or copyrighted game content — not into code, not into comments, not int
 fixture. If you learned something by reading the game's data, describe the finding and write
 your own implementation of it.
 
-**No game data, ever.** No `.decl` files. No saved maps. No audio. Sound *names* do ship —
-they are identifiers, not content, and the line is drawn in [`game-data.md`](game-data.md).
-CI enforces the rest and will fail the pull request.
+**No game data, ever.** No `.decl` files. No saved maps. No committed audio. Sound *names* do
+ship — they are identifiers, not content — and a local preview cache may be generated under
+the user's application-data folder, never inside the checkout. The line is drawn in
+[`game-data.md`](game-data.md). CI enforces it and will fail the pull request.
 
 **One change per pull request.** A rename bundled with a behaviour change makes both harder
 to review and makes a byte-gate movement ambiguous.
@@ -32,7 +33,7 @@ to review and makes a byte-gate movement ambiguous.
 ## 2. Setup
 
 Python 3.12 or newer. Nothing to find or configure — pip fetches the two runtime
-dependencies. `mido` reads MIDI files. `pywebview` is the control window and is declared for
+dependencies. `mido` reads MIDI files. `pywebview` is the MIDI workstation and is declared for
 Windows only, so on Linux or macOS add the `[ui]` extra to the install line below if you are
 working on the window. The suite does not need it: `ui/api.py` and `ui/session.py` import
 pywebview nowhere, and `ui/app.py` imports it inside a function, which is what keeps the
@@ -73,6 +74,10 @@ including the PowerShell execution-policy fix. Every command in this guide works
 You need none. The sound palette ships with the package and maps are authored from nothing,
 so a fresh clone compiles real songs and runs the whole suite green.
 
+The four `gamedata`-marked audio tests are the exception in the literal sense: they run only
+when a real install can be found and otherwise skip. All bank parsing, decoding, cache and UI
+behaviour is covered with synthetic data and needs no game.
+
 Four tests compile *against* a saved map, to prove that path still works for people adding
 music to a level they already have. They carry the `savedmap` marker and skip when none is
 configured. **Seeing them skip is normal and not a failure.**
@@ -95,7 +100,9 @@ fully configured contributor.
 python -m pytest
 ```
 
-Expect `379 passed, 4 skipped` on a clone with nothing configured.
+Four `savedmap` tests skip when no saved-map artifacts are configured. Four `gamedata` tests
+also skip when no DOOM install is available. Those skips are expected; avoid pinning the
+overall pass count here because every added regression test changes it.
 
 ### What the byte gates mean
 
@@ -124,18 +131,30 @@ The layering test is data-driven over the subsystem list, and it fails if a name
 missing rather than scanning an empty directory and passing vacuously. Its predecessor
 matched modules by bare name and would have gone quiet the moment they moved into packages.
 
-### Working on the control window
+### Working on the MIDI workstation
 
 Open `src/snapmap_midi/ui/web/index.html` in an ordinary browser. There is no bridge there,
 so the window shows its empty state rather than throwing — that is deliberate, because
 opening the file directly is how anybody iterating on the markup will look at it.
 
-Everything the window decides is decided in Python, including the pitch ruler's geometry,
-which arrives as percentages from `music/analysis.py`. **Do not move a calculation into
-`app.js` to save a round trip.** The reason it is on the Python side is that a wrong
-percentage there is a test failure and a wrong percentage in the browser is a picture nobody
-can check. The same rule bans a sound-family name appearing anywhere in the markup: the
-window gets its families from the bridge, which derives them from the palette.
+Everything that changes the conversion is decided in Python. The preview manifest already
+contains resolved sounds, original MIDI pitches, effective start/end times, sustained versus
+decaying behavior, and speaker-reuse cutoffs. JavaScript may convert those facts to canvas
+coordinates and Web Audio times; it must not resolve a family, reapply an engine limit, or
+invent a second note list. The same rule bans a sound-family or sound name from appearing in
+the markup: every picker option comes from the bridge catalog, which derives all 24
+categories and all 890 names from the palette.
+
+The shared design contract comes from Snapmap Plus: the light and dark tokens, Segoe UI and
+Consolas roles, 30 px menu bar, fields, buttons, status bar, toast, brand asset, window
+controls, and eight resize grips must stay exact. `tests/test_ui_assets.py` pins those
+primitives. The traditional File/Playback/Options/View menus, unified track list, canvas
+piano roll, global transport, and Conversion inspector extend that language; they do not
+redefine it. Do not reintroduce tabs or per-row Play controls.
+
+Audio previews are optional and local. Use the synthetic fixtures for ordinary decoder and
+cache work. Running `snapmap-midi extract` against a real install writes roughly 450 MB under
+the user's application-data folder, not the checkout; never turn that cache into a fixture.
 
 To see it running, `.venv/Scripts/python.exe -m snapmap_midi`. [`ui.md`](ui.md) describes
 what should be on screen.

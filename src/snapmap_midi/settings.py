@@ -61,7 +61,7 @@ _MAX_SPEAKERS = 128
 _MAX_RELEASE_S = 10.0
 
 _DRUM_MODES = ("auto", "on", "off")
-_CHANNEL_KEYS = frozenset({"family", "muted"})
+_CHANNEL_KEYS = frozenset({"family", "sound", "muted"})
 
 #: The tuning levers the window may set, with the values `compile_to_rawmap`
 #: uses when nobody sets them. `decaying_families` and `family_caps` are empty
@@ -208,7 +208,7 @@ def _known_family(family: str, what: str, families) -> str:
     )
 
 
-def _channels(section, families) -> dict:
+def _channels(section, families, sounds) -> dict:
     section = _mapping(section, "channels")
     out = {}
     for key, entry in section.items():
@@ -222,10 +222,24 @@ def _channels(section, families) -> dict:
         family = entry.get("family")
         if family is not None:
             _known_family(family, "channel %s" % channel, families)
-        out[channel] = {
+        sound = entry.get("sound")
+        if sound is not None and sound not in sounds:
+            raise SettingsError(
+                "channel %s: %r is not a sound in the shipped SnapMap speaker palette"
+                % (channel, sound)
+            )
+        if family is not None and sound is not None:
+            raise SettingsError(
+                "channel %s: choose a pitched family or one exact sound, not both" % channel
+            )
+        normalized = {
             "family": family,
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
         }
+        # Preserve the shape of old sidecars until an exact sound is selected.
+        if sound is not None:
+            normalized["sound"] = sound
+        out[channel] = normalized
     return out
 
 
@@ -354,18 +368,22 @@ def validate(doc) -> dict:
     # each time, for the same reason `build_note_index` is not cached, and
     # three sections need the same list.
     families = palette.pitched_families()
+    sounds = frozenset(palette.all_sounds())
 
     out = defaults(_optional_text(doc.get("midi"), "midi"))
     out["button"] = _text(doc.get("button", out["button"]), "button")
     out["out_dir"] = _optional_text(doc.get("out_dir"), "out_dir")
     out["baseline"] = _optional_text(doc.get("baseline"), "baseline")
-    out["channels"] = _channels(doc.get("channels", {}), families)
+    out["channels"] = _channels(doc.get("channels", {}), families, sounds)
     drums = doc.get("drums", out["drums"])
     if drums not in _DRUM_MODES:
         raise SettingsError("drums is %r; it has to be one of %s" % (drums, ", ".join(_DRUM_MODES)))
     out["drums"] = drums
     out["drum_keys"] = _drum_keys(doc.get("drum_keys", {}))
-    out["tuning"] = _tuning(doc.get("tuning", {}), families)
+    # Exact sounds retain their palette category as ``Note.fam``. Conversion
+    # behavior can therefore be tuned for every category, not only the twelve
+    # categories that contain pitched samples.
+    out["tuning"] = _tuning(doc.get("tuning", {}), palette.categories())
     return out
 
 
@@ -449,6 +467,11 @@ def to_compile_kwargs(doc) -> dict:
             int(channel): entry["family"]
             for channel, entry in channels.items()
             if entry["family"] is not None
+        },
+        "channel_sounds": {
+            int(channel): entry["sound"]
+            for channel, entry in channels.items()
+            if entry.get("sound") is not None
         },
         "channel_mutes": {int(channel) for channel, entry in channels.items() if entry["muted"]},
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},

@@ -35,6 +35,19 @@ The declaration those names were read out of is game content and is not in this 
 CI enforces that: a committed `.decl` fails the build, as does any JSON that looks like a
 map.
 
+### The optional preview cache is not shipped
+
+The MIDI workstation can decode song-preview audio from a copy of DOOM the user already owns.
+Those WAV files are created at runtime under `%LOCALAPPDATA%\snapmap-midi\sounds`; they are
+not downloaded, packaged, committed, or copied into an export. The cache is about 450 MB,
+is safe to delete, and survives package upgrades and uninstalls because it is user-derived
+data rather than part of the Python installation.
+
+No compile depends on it. With no game installed, the only missing capability is playing the
+complete converted song in the workstation. The sound pickers still expose all 890 names and
+export still writes references to the sounds the arrangement uses. See
+[`ui.md`](ui.md#previewing-the-song) for setup and cache behaviour.
+
 ### Regenerating the palette
 
 If your game version's sounds differ, regenerate from your own copy:
@@ -83,6 +96,7 @@ None of these is needed for ordinary use. They exist for people doing something 
 | `palette_decl` | read this declaration instead of the shipped palette | a game version whose sounds differ |
 | `baseline_map` | add the song to this saved map instead of authoring a blank one | you have a level and want music in it |
 | `groove_fixture` | the byte-identical regression artifact for the timeline API | one test, and it is not distributed |
+| `doom_install` | read preview audio from this game directory instead of searching Steam | a portable, moved, or second-machine install |
 
 Configure them with one environment variable, `SNAPMAP_MIDI_PATHS`, holding a JSON object.
 Inline:
@@ -99,7 +113,8 @@ SNAPMAP_MIDI_PATHS=/path/to/snapmap-midi-paths.json
 
 ```json
 {
-  "baseline_map": "D:/maps/my-level.json"
+  "baseline_map": "D:/maps/my-level.json",
+  "doom_install": "D:/SteamLibrary/steamapps/common/DOOM"
 }
 ```
 
@@ -126,6 +141,8 @@ from snapmap_midi import paths
 
 print(paths.rawmap_destination())  # where a compiled map will be written
 print(paths.baseline_map())  # None unless you configured one
+print(paths.doom_install())  # explicit preview override, or None when search should decide
+print(paths.sound_cache())  # where locally decoded previews live
 print(paths.baseline_configured())  # what the savedmap-marked tests ask
 ```
 

@@ -1,5 +1,5 @@
 {
-  "_note": "User ear-labels, written down while listening through each sound in game. role = intended musical use. ins_noise = noise-texture-heavy: usable hits are clap/hat/kick_tight; eq/full/long/med/crash are noise sweeps/risers (great for electronic/EDM FX), not acoustic-kit pieces. Acoustic snare/crash/toms live in ins_percussion (ben_ set), which is 54 sounds and none of them labelled yet. Adding to this file means hearing them: docs/ui.md has the recipe for a map that plays one category in declaration order, which is what the retired audition command used to build.",
+  "_note": "User ear-labels, written down while listening through each sound in game. role = intended musical use. ins_noise = noise-texture-heavy: usable hits are clap/hat/kick_tight; eq/full/long/med/crash are noise sweeps/risers (great for electronic/EDM FX), not acoustic-kit pieces. Acoustic snare/crash/toms live in ins_percussion (ben_ set), which is 54 sounds and none of them labelled yet. Adding to this file means hearing the samples first; docs/ui.md describes the optional local preview cache and Play controls.",
   "ins_noise": {
     "play_noise_clap": {
       "heard": "hands clapping together",

@@ -1,322 +1,226 @@
-# The control window
+# The MIDI workstation
 
-Choosing an instrument for each channel, remapping the drum kit, and seeing what a compile
-will produce before writing it. For the command line and every tuning lever see
-[`capabilities.md`](capabilities.md); for the engine limit the Tuning panel exists to work
-around see [`limits.md`](limits.md).
-
-The window decides nothing the command line cannot. Both read the same settings document, and
-`snapmap-midi compile song.mid --settings song.mid.snapmap.json` produces the bytes the
-window's Export button would have written. The window is where a choice gets made; the
-command line is where a choice already made gets replayed.
-
-## Opening it
+Run the application with no subcommand:
 
 ```bash
 snapmap-midi
 ```
 
-The name with nothing after it opens the window. To open on a song, or on a settings file
-you already have:
+The window is the normal way to choose sounds, hear the converted arrangement, tune the
+SnapMap engine limits, and export. `snapmap-midi compile song.mid` remains the headless path
+for scripts and for replaying a saved settings file.
 
-```bash
-snapmap-midi ui song.mid
-snapmap-midi ui song.mid --settings D:/songs/bach.mid.snapmap.json
+The workstation does not edit the source MIDI. It visualizes the notes already in the file
+and changes how those notes resolve to DOOM (2016) SnapMap sounds.
+
+## One screen, one song
+
+The application has no Channels, Drums, Tuning, or Export tabs. The persistent screen is:
+
+```text
++--------------------------------------------------------------------------+
+| snapmap-midi   File  Playback  Options  View                 _  []  X    |
++--------------------------------------------------------------------------+
+| [Play/Pause]  0:00.0  |---------- song position ----------|  Conversion |
++-----------------------------+--------------------------------------------+
+| Channels                    | time ruler                                  |
+| 01  Piano       [sound] [M] |   == notes ==                               |
+| 02  Violin      [sound] [M] |           == notes ==                       |
+| 10  Percussion  [sound] [M] | | moving and draggable playhead             |
+| ...                         |                                            |
++-----------------------------+--------------------------------------------+
+| warnings / audio setup                                                    |
++--------------------------------------------------------------------------+
+| status: notes, peak voices, long sustains, song length                    |
++--------------------------------------------------------------------------+
 ```
 
-`snapmap-midi compile song.mid` is unchanged and needs no window.
+All MIDI channels are peers in the left column. Percussion is not sent to a separate
+workspace. The right side is a read-only piano roll for the converted song.
 
-Where the package is installed but its scripts folder is not on `PATH`, the module form works
-the same: `python -m snapmap_midi`.
+The shell deliberately matches Snapmap Plus: the same light and dark colors, Segoe UI and
+Consolas type, 30 px menu bar, status bar, toast treatment, brand image, window controls,
+native resize behavior, and native Windows snapping.
 
-A bad path still opens. `snapmap-midi ui missing.mid` gives you a window that says what went
-wrong and an Open button, because a person who came for a window has no console to read a
-traceback in.
+## Traditional menus
 
-### What it needs installed
+The menu bar keeps infrequent commands out of the note surface.
 
-The window is pywebview hosting local markup in the platform's own browser engine. **On
-Windows it is an ordinary dependency and pip has already fetched it.** Everywhere else it is
-the `[ui]` extra:
+| Menu | Commands |
+|---|---|
+| **File** | Import MIDI, reopen the current file, export the map, exit |
+| **Playback** | play or pause the complete song, return to the start |
+| **Options** | open Conversion settings, set up local preview audio |
+| **View** | light theme, dark theme |
+
+The main shortcuts are `Ctrl+I` to import, `Ctrl+E` to export, `Ctrl+R` to reopen, `Ctrl+,`
+for Conversion settings, `Space` to play or pause, and `Home` to return to zero. Press
+`Escape` to close an open menu or the Conversion inspector.
+
+Drag an unused part of the top menu bar to move the window. The menu labels and window
+buttons remain clickable rather than acting as drag handles. The invisible edge grips use
+Windows' native resize loop, so Aero Snap and drag-to-maximize still work.
+
+## Importing a MIDI file
+
+Choose **File > Import MIDI...** or press `Ctrl+I`. Import analyzes the file and then fills
+the channel list and piano roll. It does not open a tuning wizard and it does not make the
+user approve guessed settings before seeing the song.
+
+Safe compiler defaults are applied immediately. If the converted arrangement approaches a
+SnapMap engine limit, a warning appears below the workspace and opens the Conversion
+inspector when clicked.
+
+Opening another song clears channel sound choices and percussion-key overrides, because
+channel numbers in two files do not mean the same parts. General conversion limits, output
+location, button name, and optional baseline remain session preferences. A valid sidecar
+beside the new MIDI is then applied.
+
+## Channels and the complete sound palette
+
+Every channel row shows its one-based MIDI channel number, source General MIDI program,
+sound assignment, and mute control. A percussion channel is labeled in the same list instead
+of moved to a Drums tab.
+
+Each sound picker has three kinds of choice:
+
+- **Automatic** uses the General MIDI program-to-family mapping. On an automatically
+  detected percussion channel it uses the General MIDI percussion map by note number.
+- **Pitched instrument set** maps every MIDI pitch to the closest available sound in one of
+  the 12 pitch-capable SnapMap categories.
+- **Exact sound** triggers the selected sound for every note on the channel. All 890 sounds
+  in all 24 shipped palette categories are available, including percussion, ambience,
+  effects, interface sounds, and the pitched samples themselves.
+
+An exact sound is intentionally exact: choosing one piano sample does not retune it across
+the keyboard. Choose the piano instrument set when the melody should follow MIDI pitch;
+choose one exact sound when every note should trigger that same SnapMap sound.
+
+Mute removes the channel from preview and export without forgetting its assignment. Click a
+channel row to emphasize that channel's notes on the piano roll; click it again to show all
+channels at equal emphasis.
+
+Advanced per-key percussion overrides remain valid in the settings sidecar. They are not a
+second instrument screen: Automatic percussion applies them before falling back to the
+built-in General MIDI drum map. A channel-level instrument set or exact sound takes
+precedence over the percussion map.
+
+## The piano roll and sweeping playhead
+
+Time runs left to right and MIDI pitch runs bottom to top. Notes are colored consistently by
+channel. C notes are labeled, black-key rows are shaded, and the time grid adapts to the
+length of the complete song.
+
+The piano roll is a visualization and transport surface, not a composition editor. Notes
+cannot be moved, resized, created, or deleted here; those edits belong in the MIDI program
+that authored the source file.
+
+One accent-colored playhead spans the ruler and entire note surface. During playback it
+sweeps continuously across the song. To seek:
+
+- drag the transport scrubber;
+- click anywhere in the piano roll; or
+- drag the playhead across the piano roll.
+
+Seeking while the song is playing pauses scheduling during the drag and resumes from the new
+position when released. `Home` returns to the beginning.
+
+## Previewing the song
+
+There is exactly one transport Play/Pause control. It plays the entire converted
+arrangement from the current position; pressing it again pauses without returning to zero.
+There are no per-channel or per-sound Play buttons.
+
+Preview uses the same resolved notes, sound assignments, duration caps, polyphony thinning,
+speaker allocation, voice stealing, hard stops, and releases as export. It is not the
+computer's General MIDI synthesizer. When a later note reuses a SnapMap speaker, preview
+hard-cuts the earlier note at that same point just as the exported timeline does.
+
+The package contains no audio. If the local cache is missing, the song can still be opened,
+configured, and exported. A nonblocking banner offers **Set up audio**; the same operation is
+available under **Options > Set Up Audio...** or from the command line:
 
 ```bash
-pip install "snapmap-midi[ui]"
+snapmap-midi extract
 ```
 
-That split is deliberate. The map loader this tool writes to is Windows-only, so a window on
-another platform has nowhere to hand its output; the extra exists for anyone who wants it
-anyway. If pywebview is missing, the window says so and names that command rather than
-printing an import error.
+Setup reads the user's own DOOM installation and decodes all 890 palette sounds to
+`%LOCALAPPDATA%\snapmap-midi\sounds`. The cache is about 450 MB, resumable, safe to delete,
+and never shipped, downloaded, embedded in a map, or committed to the repository.
 
-On a fresh Windows machine there is a second thing to install and it fails differently:
-pywebview imports perfectly cleanly without the **Microsoft Edge WebView2 runtime** and fails
-when the window tries to open. That message names the runtime, because a stack trace is not
-an answer for someone who had to be told to tick "Add python.exe to PATH".
+Playback does not send that whole cache to the window. For each conversion, Python returns
+only the WAV data for sounds the current song actually uses; Web Audio decodes those samples
+and schedules them with a rolling look-ahead.
 
-Nothing is served and nothing listens. The markup is loaded from the filesystem by path, so
-the window has no address and no port.
+## Conversion settings
 
-Where there is no display at all — CI, a container, a shell over a remote connection — a bare
-`snapmap-midi` prints the usage text instead of opening. `webview.start()` blocks until the
-window closes, and a window nobody can see never closes, so the alternative is a command that
-hangs forever having printed nothing.
+**Options > Conversion Settings...**, `Ctrl+,`, the Conversion toolbar button, and warning
+messages all open the same nonblocking inspector over the right side of the workstation.
+There is no import-time tuning popup.
 
-## The four panels
+Sliders are paired with exact numeric fields where a bounded number is meaningful:
 
-### Channels
+| Control | Shape | Effect |
+|---|---|---|
+| **Maximum speakers** | slider + integer, 1-128 | speaker voices available to each sustained channel layer |
+| **Limit maximum polyphony** | enable checkbox + slider + integer | keeps at most this many simultaneous notes in a layer, preferring higher notes |
+| **Hard stop notes** | checkbox | cuts at note-off instead of fading |
+| **Release** | slider + seconds field | note-off fade; disabled while Hard stop is on |
+| **Limit sustained-note duration** | enable checkbox + milliseconds pair | caps every sustained note |
+| **Limit bass-note duration** | enable checkbox + milliseconds pair | caps notes below the selected MIDI threshold |
+| **Below MIDI note** | integer + note name | defines bass for the preceding control |
 
-One row per channel that plays a note, in channel order. The row names the channel, the
-General MIDI instrument the file asked for, and how many notes it plays; then it offers an
-instrument, a mute, and the ruler described below.
+The **Sound behavior** section lists categories used by the current conversion. These are
+categorical choices rather than sliders:
 
-The instrument dropdown's first entry is **Automatic**, naming the family the General MIDI
-mapping would pick. It is selected until you choose something else, and choosing it again is
-the way back — without it, reopening the file would be the only way to undo a pick.
+- **Fire and forget** forces the category onto the decaying one-shot path, where no speaker
+  has to remain allocated for a later note-off.
+- **Sustain cap** gives that category its own maximum duration in milliseconds.
 
-**Only 12 of the palette's 24 categories can play a pitch, so only those 12 are offered.**
+Every accepted change immediately rebuilds statistics, warnings, the preview manifest, and
+the next playback. **Restore defaults** resets only conversion limits; it does not clear the
+song or channel sound assignments.
 
-| Family | Reach |
-|---|---|
-| `ins_piano` | 21–108 |
-| `ins_brass_bells` | 72–112 |
-| `ins_marimba` | 36–96 |
-| `ins_violin` | 55–100 |
-| `ins_flute` | 59–97 |
-| `ins_trumpet` | 52–87 |
-| `ins_guitar` | 40–82 |
-| `ins_horns` | 34–77 |
-| `ins_pulse`, `ins_sine`, `ins_square`, `ins_tri` | 36–67 |
+These controls exist for the sound-emitter behavior documented in
+[`limits.md`](limits.md). Sparse songs generally need no adjustment.
 
-Three of those — `ins_square`, `ins_tri` and `ins_brass_bells` — are unreachable by the
-automatic mapping. No General MIDI program resolves to any of them, so the picker is the only
-way to address them at all. That is most of the argument for having a picker.
+## Exporting
 
-**`ins_string` and `ins_synth` are not offered, and their names are why that has to be said
-out loud.** Both carry the `ins_` prefix; `ins_string` is even listed among the sustained
-families beside the violins. Neither holds a single sound with a pitch in its name.
-Route a channel to one and every note resolves to nothing, the part disappears, and the map
-still loads and plays — with no error anywhere, because nothing downstream can tell a family
-that had no sound from a part somebody muted on purpose. Splitting families by name prefix
-gets this exactly wrong. The list is derived from which categories actually have a pitch
-index, which is why it cannot be wrong.
+Choose **File > Export SnapMap...**, press `Ctrl+E`, or use the Export toolbar button. Export
+writes `rawmap.json` to the current output directory, which defaults to the loader directory
+`%LOCALAPPDATA%\snapmap-plus\`. The filename is fixed because that is the only filename the
+loader reads. The window reports when an existing map was replaced.
 
-Mute silences a channel without deleting anything. A muted note is a note you asked for, so
-it is not counted as `dropped` — that number is for notes the palette had no sound for, which
-is a different problem and worth reporting.
+The exported map does **not** contain the 890-sound audio library. It contains timeline
+references only to sounds used by the current converted arrangement. DOOM already owns the
+sound data and resolves those names when the map plays. The optional local audio cache is
+for workstation preview only.
 
-### Drums
-
-MIDI reserves channel 9 for percussion, where the note number picks an instrument rather than
-a pitch. The panel's one switch decides whether this file's channel 9 is a kit: **Automatic**
-uses the same heuristic the compiler does, and On and Off override it. Changing it re-reads
-the file, so the Channels row for channel 9 and the compile never describe different
-arrangements.
-
-Below that is one row per drum key the file actually uses — not all 128 — naming the key, its
-General MIDI percussion name, and the sound it will play. The default entry restores the
-built-in table's own answer for that key. A key the table has no sound for is marked, and a
-key with no sound plays nothing.
-
-**The picker offers 70 sounds: `ins_noise` plus `ins_percussion`, and nothing else.** The
-unpitched half of the palette is 365 sounds, and most of it is ambience, gore and interface
-noise. A pitched sound would play one fixed note under every hit. A looping ambience — the
-names ending `_lp` — is fired as a one-shot and never told to stop, so it holds its emitter
-open until the engine recycles the slot out from under something else. That recycling is the
-failure this tool schedules its whole output around ([`limits.md`](limits.md)), and a picker
-offering those sounds would have been its easiest source.
-
-**16 of the 70 carry an ear-label, and all 16 are in `ins_noise`.** The labels exist because
-the names lie: `play_noise_tom` is a knock on a wooden door, `play_noise_crash` is a shaker.
-A picker showing only names sends people to the tom for a tom. The other 54 sounds show their
-names, which is all anybody knows about them — see [below](#you-cannot-hear-a-sound-here) for
-why adding to that list is now a Python job.
-
-### Tuning
-
-Every lever here reduces how many sounds are live at the same moment, which is the only thing
-they have in common and the reason they exist. **Read [`limits.md`](limits.md) before
-touching any of them** — a sparse arrangement needs none, and a dense one usually needs one.
-
-Max speakers, release and hard stop are global. Max polyphony and cap sustain thin and
-truncate across the board. Bass pitch and bass cap target the low register, which is usually
-where the long notes are; they are two halves of one lever and are shown together for that
-reason.
-
-The lower half lists the families this song actually uses, each with a decaying switch and a
-cap. Moving a family to the decaying path is the strongest single move available: a decaying
-sound holds no emitter slot at all, so it is immune to the recycling limit outright. It also
-stops being stoppable, which is the trade.
-
-**`max_events` is not here and will not be.** The compiler implements it as
-`decaying_events[:max_events]`, which truncates the one-shot list in time order — the drums
-stop partway through the song and stay stopped. Behind a control that reads as a density
-limit that is a trap, so it stays a command-line flag where you have to type it on purpose.
-
-### Export
-
-The button label, the output folder and an optional baseline map, then the statistics, then
-Dry run and Export map.
-
-Dry run compiles without writing anything. It runs on every change anyway; the button is for
-when you want to be sure the numbers on screen are the numbers for what is on screen now.
-
-The statistics are the same ones `snapmap-midi compile` prints:
-
-| Number | What it tells you |
-|---|---|
-| notes, decaying, sustained | the shape of the arrangement |
-| dropped | notes the palette had no sound for — a real problem, not a tuning choice |
-| long sustains | notes held longer than a second, the ones exposed to the emitter limit |
-| peak voices / max speakers | how close the densest passage came to the ceiling |
-| events | total timeline events; dominated by one-shots, which are immune |
-
-`events` is listed last on purpose. It is the biggest number and the least informative one: a
-drum-heavy song can have an enormous event count and be nowhere near the limit, because every
-one of those one-shots holds no emitter slot. An earlier draft of this window warned on that
-number, which fired on songs that could not fail and stayed silent on the three-voice pad that
-would.
-
-Export writes `rawmap.json`, and it says whether it replaced a map that was already there.
-The loader reads exactly one file at one hardcoded path, so a button that writes it invites
-repeated use in a way a typed command did not. It also writes the settings sidecar beside the
-song, which is what makes the next session open on this one's choices — see
-[the settings sidecar](#the-settings-sidecar).
-
-## Warnings
-
-The strip under the panels carries problems rather than observations, and each one names a
-cause, the number that decides whether to care, and the lever that changes it. Nothing will
-play because every channel is muted. So many notes have no sound, and which drum keys are
-unmapped. So many sustained notes hold longer than a second. Which channel used every speaker
-it had, so its densest passages were thinned.
-
-**The thresholds are [`limits.md`](limits.md)'s, not invented here.** That is the whole
-reason this list is short. An earlier draft warned on total event count, which is dominated
-by decaying one-shots — the ones that hold no emitter slot and are immune — so it fired on
-drum-heavy songs that could not hit the limit and stayed silent on the three-voice pad that
-would.
-
-Channels you have muted are skipped. Telling you that a part you just silenced cannot reach
-its notes is noise about a decision already made.
-
-Past three affected channels the range sentences collapse into the worst one plus a count,
-ranked by how many notes are actually displaced. Sixteen near-identical sentences in a status
-bar is not information, and each row's ruler already carries its own detail.
-
-## Reading the pitch ruler
-
-Each melodic channel gets a strip. **Every strip uses the same axis, MIDI note 0 to 127**, so
-two rows can be compared by eye — a lead sitting an octave above the bass looks like it. The
-C-octave gridlines are labelled once beneath the list, in note names, because the warnings
-speak note names too and the window should have one vocabulary rather than two.
-
-Three things are drawn on it.
-
-**The cells are the channel's notes.** One per distinct pitch, and the opacity carries how
-often that pitch is played. That density is the point. A bar drawn from lowest to highest
-draws the same rectangle for two notes as for two thousand, so one stray low note makes a
-piano part look like it spans the keyboard; the strip shows where the part actually sits.
-
-**The hatched track behind them is the chosen family's reach** — the lowest and highest note
-that family has a sound for. It moves when you change the instrument.
-
-**Amber cells are notes outside that reach.** They are not lost notes. The resolver never
-fails outside a range: it prefers the same pitch class an octave away, and falls back to the
-nearest pitch it has when that class is absent entirely. So an amber cell is a note that will
-play, and will not be the note that was written. The sentence under the row says how many, out
-of how many.
-
-**A red outline around the track means the family shares no note with the channel at all.**
-That is a different thing from overhang and must not read as more of it. Zero overlap means
-every note in the part is transposed and the melody is gone, so it is drawn as a state rather
-than as a darker shade of a warning.
-
-The percussion channel has no ruler. Its lowest and highest are key numbers rather than
-pitches — on channel 9 a note number picks an instrument — so drawing them on a pitch axis
-would assert something false about what the channel plays. Its row shows the key count and how
-many of them are unmapped instead.
+Export also writes the current settings beside the MIDI. Open the song later and those
+choices return automatically. `snapmap-midi compile song.mid --settings
+song.mid.snapmap.json` reproduces them without opening the window.
 
 ## The settings sidecar
 
-Everything the window holds is one JSON document: the song, the switch label, the output
-folder, the per-channel instruments and mutes, the drum keys, and every tuning lever. Both
-surfaces read it, so one document drives either of them and produces the same bytes:
-
-```bash
-snapmap-midi ui song.mid --settings song.mid.snapmap.json
-snapmap-midi compile song.mid --settings song.mid.snapmap.json
-```
-
-**Where the file belongs is a convention, and `settings.sidecar_path` is the one place that
-spells it:** beside the song, named after it.
-
-```
-D:/songs/bach.mid
-D:/songs/bach.mid.snapmap.json
-```
-
-A convention rather than a Save As, because a dialog means two more error paths and a file
-you have to keep track of. The song is the thing you already have open, and a settings file
-that travels beside it is one nobody has to find again. The name is the song's
-whole filename with a suffix, not its stem — `bach.mid` and `bach.midi` are two different
-songs and would otherwise silently share one set of instruments.
-
-**Export writes it for you, and opening the song again applies it.** Those two are one
-feature: without them the window's choices lived only as long as the window, and an afternoon
-of picking instruments ended when you closed it. Export writes two files — `rawmap.json` into
-the output folder, and `song.mid.snapmap.json` beside the song — and the next time you open
-that song, in this window or with `--settings`, the choices are already there.
-
-Three things about it are deliberate:
-
-- **A sidecar that cannot be written does not fail the export.** The map is the deliverable.
-  A read-only folder or a song on a share that has gone away is not a reason to be told your
-  map failed while it is sitting on disk where the report says it is.
-- **A sidecar that cannot be read costs its settings and not the song.** This file is meant
-  to be hand-edited, so a broken one is an ordinary event — and refusing to open the song over
-  it would lock out exactly the person trying to fix it. The song opens on the defaults and
-  the answer carries the reason.
-- **The `midi` line in a sidecar is ignored when it is applied.** It was written by an earlier
-  session, and the file has since been copied, renamed, or handed to somebody else. The song
-  you opened is the song; everything else in the document is about how to play it.
-
-You can still write one yourself, by hand against the schema below or from Python:
-
-```python
-from snapmap_midi import settings
-
-doc = settings.merge(
-    settings.defaults("D:/songs/bach.mid"),
-    {"channels": {"0": {"family": "ins_marimba"}}, "tuning": {"max_speakers": 8}},
-)
-settings.save(doc, settings.sidecar_path("D:/songs/bach.mid"))
-```
-
-`save` validates before it opens anything, so an invalid document cannot reach the disk.
-Writing one would move the failure to the next session, against a file this tool wrote
-itself, with nothing to point at.
-
-**A flag you type wins over the file; the file wins over the built-in defaults.** Three
-sources in one order, and the order is the feature: a settings file is a decision made
-earlier and saved, a flag is a decision being made right now. An earlier draft had argparse's
-own defaults win, which meant `max_speakers: 8` in a file someone had deliberately loaded
-compiled at 32 with no flag anywhere on the command line.
-
-### The schema
+For `song.mid`, the sidecar is `song.mid.snapmap.json`. It is ordinary JSON and may be
+versioned with a project or edited by hand. A typical file is:
 
 ```json
 {
   "version": 1,
-  "midi": "song.mid",
+  "midi": "D:/music/song.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
   "baseline": null,
   "channels": {
-    "0": {"family": "ins_marimba", "muted": false},
-    "3": {"family": null, "muted": true}
+    "0": {"family": "ins_piano", "muted": false},
+    "1": {"family": null, "sound": "play_noise_hat", "muted": false},
+    "9": {"family": null, "muted": false}
   },
   "drums": "auto",
-  "drum_keys": {"38": "play_noise_clap"},
+  "drum_keys": {
+    "38": "play_noise_clap"
+  },
   "tuning": {
     "max_speakers": 32,
     "release_s": 0.1,
@@ -331,83 +235,27 @@ compiled at 32 with no flag anywhere on the command line.
 }
 ```
 
-`channels` and `drum_keys` are shown filled in; both are empty in a fresh document. Every
-other value above is the default, and **the defaults are `compile_to_rawmap`'s own to the
-byte.** A test compiles a default document and a bare `compile_to_rawmap` call and compares
-the two, because a default that disagreed would mean exporting from the window and typing the
-command produced different maps for a lever nobody had touched.
+Within a channel, `family` and `sound` are mutually exclusive. `family: null` with no
+`sound` means Automatic. `muted` defaults to false. Channel and drum-key keys are strings
+because JSON object keys are strings; validation converts them back to integers for the MIDI
+parser.
 
-`family: null` leaves the automatic choice alone, which is what lets a channel be muted
-without also being given an instrument. Channel and drum-key numbers are strings because JSON
-has no integer keys. `drums` is `auto`, `on` or `off`.
+`null` disables optional duration and polyphony limits. `decaying_families` and
+`family_caps` accept any real palette category, including unpitched categories used by exact
+sound assignments. Unknown keys, nonexistent sounds, incompatible family-and-sound pairs,
+and out-of-range values are rejected by name rather than silently ignored.
 
-**This file is meant to be edited by hand, which is why validation is load-bearing rather
-than defensive.** It is written indented for that reason. Missing keys take their defaults,
-because deleting a line means you are not setting it. A *wrong* value is refused by name,
-because every mistake a hand edit makes here is a quiet one: an unpitched family compiles to
-silence, a lever name that no longer exists reads as applied and does nothing, and
-`{"channels": {"0": "ins_piano"}}` — the shape everybody writes first — is not a channel
-entry at all. `snapmap-midi compile --settings` prints the message and exits 2 rather than
-raising.
+A broken sidecar never prevents the MIDI from opening. The workstation opens the song with
+defaults and reports why that sidecar was ignored. A sidecar that cannot be written does not
+invalidate a map that was exported successfully.
 
-A `version` this build does not know is refused outright rather than half-read. Reading the
-keys that still happen to parse is how a document from a later build silently loses the
-settings that build added.
+## Theme, status, and failure behavior
 
-`drum_keys` replaces wholesale on every change while `channels` and `tuning` merge key by
-key. That asymmetry is what makes *removal* expressible: a channel's entry has two fields and
-a merge has to preserve the one you did not touch, but a drum key's setting is its sound and
-nothing else, so a key given a sound by mistake could never be taken back under a deep merge.
+Light and dark themes use the exact Snapmap Plus token sets and persist locally. The status
+bar reports bridge readiness, optional audio readiness, note count, peak speaker voices,
+long sustains, and song length. Warnings name the conversion setting that can address the
+condition and open the inspector in context.
 
-## You cannot hear a sound here
-
-**The window plays nothing, and nothing in it replaces `audition`.** That command is gone. It
-built a map that played every sound in a category in sequence and printed a numbered legend,
-and that map was the only way to find out what `play_noise_tom` actually is.
-
-What the window gives you instead is not a substitute for it. The ruler tells you how many of
-a channel's notes a family cannot reach, and the dry run tells you how many notes hold past a
-second and how close the arrangement runs to its speaker ceiling. Auditioning told you none of
-that. But none of this tells you what a sound sounds like, and no amount of range readout ever
-will.
-
-**The workflow that is genuinely gone is comparing two candidate families by ear without
-exporting twice.** Auditioning let you hear what a family holds on its own, away from any
-song. The only way to hear one now is to compile the song with it, load the map, press the
-switch, come back, choose the other one and do all of it again. Two exports and two trips
-into the game to answer a question that used to be answered by listening once.
-
-If that is the question you are asking — and curating the ear-labels in
-`data/soundfont_labels.json` is exactly that question, 54 unlabelled percussion sounds of it —
-then the recipe below is the honest answer, not the window.
-
-`sound/timeline.py:author_sound_timeline` is the API the audition command was built on. It is
-unchanged and stays supported for this reason, so what was removed is a command and not a
-capability:
-
-```python
-from snapmap_midi.sound.palette import sounds_in_category
-from snapmap_midi.sound.timeline import author_sound_timeline
-
-raw = author_sound_timeline(
-    [(s, i * 1500) for i, s in enumerate(sounds_in_category("ins_percussion"))],
-    button_name="listen",
-)
-```
-
-That is the whole of what the command did: every sound in the category, spaced 1500 ms apart,
-on a switch. Write the bytes where the loader reads them and press it, with
-`sounds_in_category("ins_percussion")` printed beside you as the legend — the list is in
-declaration order and so is the map, so the nth sound you hear is the nth name:
-
-```python
-from snapmap_midi import paths
-
-destination = paths.rawmap_destination()
-destination.parent.mkdir(parents=True, exist_ok=True)
-destination.write_bytes(raw)
-```
-
-That is five more lines than typing a command, and it is Python rather than a command line,
-which for some people means it is gone. Saying so is cheaper than pretending the ruler
-covers it.
+The page is loaded from a local `file:///` URI. Nothing is served, no port is opened, and no
+network client participates. If WebView2 is unavailable, the launcher prints the runtime to
+install instead of leaving a blank window.

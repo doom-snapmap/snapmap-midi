@@ -38,6 +38,7 @@ packages = [
     "snapmap_midi.rawmap",
     "snapmap_midi.sound",
     "snapmap_midi.music",
+    "snapmap_midi.audio",
     "snapmap_midi.ui",
 ]
 
@@ -51,7 +52,10 @@ snapmap_midi = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["savedmap: needs a saved baseline map; skipped when unconfigured"]
+markers = [
+    "savedmap: needs a saved baseline map; skipped when unconfigured",
+    "gamedata: needs a real game install to read audio from; skipped when none is found",
+]
 
 [tool.ruff]
 line-length = 100

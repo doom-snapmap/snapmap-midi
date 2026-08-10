@@ -142,6 +142,66 @@ def test_the_audition_command_is_gone(tmp_path):
     assert not (tmp_path / "rawmap.json").exists()
 
 
+def test_extract_builds_the_preview_cache_only_when_requested(monkeypatch, capsys):
+    from snapmap_midi.audio import library
+
+    calls = []
+
+    def extract(**kwargs):
+        calls.append(kwargs)
+        kwargs["progress"](2, 2, "play_two")
+        return {
+            "ready": True,
+            "cache_dir": "C:/cache",
+            "written": 2,
+            "skipped": 0,
+            "count": 2,
+            "expected": 2,
+            "failed": [],
+        }
+
+    monkeypatch.setattr(library, "extract", extract)
+    assert main(["extract", "--install", "D:/DOOM", "--force"]) == 0
+    assert len(calls) == 1
+    assert calls[0]["install"] == "D:/DOOM"
+    assert calls[0]["force"] is True
+    assert callable(calls[0]["progress"])
+    out = capsys.readouterr().out
+    assert "2 decoded" in out
+    assert "C:/cache" in out
+
+
+def test_extract_without_game_audio_is_a_clean_error(monkeypatch, capsys):
+    from snapmap_midi.audio import library, wwise
+
+    def unavailable(**kwargs):
+        raise wwise.SoundsUnavailableError("no install found")
+
+    monkeypatch.setattr(library, "extract", unavailable)
+    assert main(["extract"]) == 2
+    assert "no game audio" in capsys.readouterr().out
+
+
+def test_extract_returns_one_when_any_palette_sound_is_still_missing(monkeypatch, capsys):
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library,
+        "extract",
+        lambda **kwargs: {
+            "ready": False,
+            "cache_dir": "C:/cache",
+            "written": 1,
+            "skipped": 0,
+            "count": 1,
+            "expected": 2,
+            "failed": ["play_two"],
+        },
+    )
+    assert main(["extract"]) == 1
+    assert "play_two" in capsys.readouterr().out
+
+
 def test_baseline_flag_adds_to_a_supplied_map(tmp_path, minimal_timeline_map):
     """The path that used to be mandatory still works, now as an option."""
     baseline = tmp_path / "level.json"

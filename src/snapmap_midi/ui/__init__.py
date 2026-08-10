@@ -1,4 +1,4 @@
-"""The control window: the choices the compiler cannot make on its own.
+"""The MIDI workstation: choices the compiler cannot make on its own.
 
 Which sound family a MIDI channel should become is a taste call. The compiler
 guesses it from a General MIDI program number, and that guess is right often

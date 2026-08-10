@@ -131,7 +131,7 @@ def test_clone_preserves_the_concrete_class(minimal_map):
 # The subsystem stack, lowest first. A package may import from itself and from
 # anything BELOW it, never from anything above. `paths` is deliberately absent:
 # it imports nothing internal, so it is a leaf every layer may use.
-_LAYERS = ["rawmap", "sound", "music"]
+_LAYERS = ["rawmap", "sound", "music", "audio"]
 
 #: Product-surface modules, which sit above every subsystem.
 _SURFACE = ["compile", "settings", "cli", "ui"]

@@ -20,8 +20,8 @@ def test_the_shipped_palette_is_present_and_plausible():
     categories = shipped["categories"]
     assert len(categories) == 24
     assert sum(len(v) for v in categories.values()) == 890
-    # Declaration order is load-bearing: `audition` prints an index against
-    # each sound, and re-sorting would renumber every legend anyone wrote down.
+    # Declaration order is load-bearing: review maps and ear-label legends
+    # index each sound, and re-sorting would renumber those references.
     assert categories["ins_noise"][0] == "play_noise_clap"
 
 

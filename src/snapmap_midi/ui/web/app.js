@@ -1,1165 +1,1242 @@
-/* snapmap-midi control window.
+/* snapmap-midi workstation.
 
-   Python owns every decision this window shows, including the ruler's geometry.
-   Nothing here turns a MIDI note into a position: `rulers` arrives as
-   percentages already placed against the 0-127 axis, and this file sets them on
-   elements. That is deliberate -- an axis that clips a family, a disjoint range
-   drawn as a matter of degree, a drum channel plotted on a pitch axis are all
-   failures a Python test can catch and nothing here can.
-
-   Three rules the code below keeps, because breaking them is how a window like
-   this goes wrong:
-
-     1. Rows are built once and patched afterwards. Rebuilding the DOM on every
-        change replaces the field the user is typing into mid-word and takes the
-        caret with it.
-     2. The instrument track is updated in place, never recreated -- a CSS
-        transition only runs on an element that survives the update.
-     3. Every request is stamped and stale answers are dropped. Two overlapping
-        applies resolve in arbitrary order, and the older one can return last.
-
-   It also has to survive being opened straight from disk in a browser, which is
-   how anyone iterating on the markup will open it: with no `window.pywebview`
-   it shows the empty state and throws nothing. */
-
+   Python resolves the converted arrangement. This page presents that answer as
+   tracks, a piano roll and one transport; it never reimplements sound mapping
+   or map limits in JavaScript. */
 (function () {
   'use strict';
 
-  var NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-  var AXIS_LOW = 0;
-  var AXIS_HIGH = 127;          // the axis Python placed its percentages against
-  var OCTAVE = 12;
-  var TABS = ['channels', 'drums', 'tuning', 'export'];
-  var DEBOUNCE_MS = 250;
   var THEME_KEY = 'snapmap_midi_theme';
+  var LOOKAHEAD_MS = 1300;
+  var SCHEDULE_EVERY_MS = 100;
+  var CHANNEL_COLORS = [
+    '#4a9eff', '#e0a52b', '#43b581', '#d75c76',
+    '#a57be8', '#43b9c7', '#ed7d31', '#7aa84f',
+    '#6689e8', '#d85ca8', '#55a7a1', '#c38b5f',
+    '#8f7ee7', '#74a94e', '#d56b52', '#4eafde'
+  ];
+  var NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  var BLACK_KEYS = { 1: true, 3: true, 6: true, 8: true, 10: true };
 
-  var STATE = { settings: null, analysis: null, catalog: null, rulers: null, stats: null };
-  var CHAN_ROWS = [];
-  var CHAN_KEY = '';
-  var DRUM_ROWS = [];
-  var DRUM_KEY = '';
-  var FAM_ROWS = [];
-  var FAM_KEY = '';
-  var BUILT = { tuning: false, exporter: false };
-  var ACTIVE = 'channels';
-  var SEQ = 0;
-  var APPLIED = { settings: 0, stats: 0, catalog: 0 };
+  var STATE = {
+    settings: null,
+    analysis: null,
+    catalog: null,
+    stats: null,
+    preview: null,
+    audio: null,
+    window: null
+  };
+  var REQUEST = 0;
+  var APPLIED = {};
   var BUSY = 0;
   var BOOTED = false;
+  var SELECTED_CHANNEL = null;
+  var TRACK_KEY = '';
+  var OPEN_MENU = null;
+  var INSPECTOR_OPEN = false;
+  var DRAW_QUEUED = false;
+  var SEEK_DRAG = null;
+  var SCRUB_DRAG = null;
+  var PLAY_TOKEN = 0;
 
-  /* ------------------------------------------------------------------ basics */
+  var AUDIO = {
+    context: null,
+    master: null,
+    buffers: {},
+    key: '',
+    loading: null,
+    playing: false,
+    position: 0,
+    anchorPosition: 0,
+    anchorTime: 0,
+    nextIndex: 0,
+    timer: null,
+    frame: null,
+    sources: []
+  };
 
   function el(id) { return document.getElementById(id); }
-
-  function api() {
-    return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
+  function api() { return window.pywebview && window.pywebview.api; }
+  function nextRequest() { REQUEST += 1; return REQUEST; }
+  function hasSong() { return !!(STATE.analysis && STATE.settings && STATE.settings.midi); }
+  function channels() { return (STATE.analysis && STATE.analysis.channels) || []; }
+  function previewEvents() { return (STATE.preview && STATE.preview.events) || []; }
+  function tuning() { return (STATE.settings && STATE.settings.tuning) || {}; }
+  function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
+  function baseName(path) { return String(path || '').replace(/^.*[\\/]/, ''); }
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function channelColor(channel) { return CHANNEL_COLORS[Number(channel) % CHANNEL_COLORS.length]; }
+  function noteName(note) {
+    note = Number(note);
+    return NOTE_NAMES[((note % 12) + 12) % 12] + (Math.floor(note / 12) - 1);
+  }
+  function humanCategory(name) {
+    return String(name || '')
+      .replace(/^([a-z]+\d*)_/, '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, function (letter) { return letter.toUpperCase(); });
+  }
+  function formatTime(ms) {
+    ms = Math.max(0, Number(ms) || 0);
+    var minutes = Math.floor(ms / 60000);
+    var seconds = (ms - minutes * 60000) / 1000;
+    return minutes + ':' + (seconds < 10 ? '0' : '') + seconds.toFixed(1);
+  }
+  function debounce(fn, delay) {
+    var timer = null;
+    return function () {
+      var args = arguments;
+      clearTimeout(timer);
+      timer = setTimeout(function () { fn.apply(null, args); }, delay);
+    };
   }
 
-  function option(value, text) {
-    var o = document.createElement('option');
-    o.value = value;
-    o.textContent = text;
-    return o;
-  }
-
-  function noteName(n) {
-    if (n === null || n === undefined) { return '--'; }
-    var i = ((n % OCTAVE) + OCTAVE) % OCTAVE;
-    return NOTE_NAMES[i] + (Math.floor(n / OCTAVE) - 1);
-  }
-
-  function baseName(path) {
-    var s = String(path || '');
-    var cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
-    return cut < 0 ? s : s.slice(cut + 1);
-  }
-
-  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
-
-  function stamp(text) { el('stamp').textContent = text; }
-
-  /* A sliding toast, the same shape snapmap-plus uses. */
-  function toast(text, kind) {
-    var host = el('toastHost');
+  function toast(message, kind) {
+    if (!message) { return; }
     var node = document.createElement('div');
-    node.className = 'toast' + (kind ? (' ' + kind) : '');
-    node.textContent = text;
-    host.appendChild(node);
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () { node.classList.add('show'); });
-    });
+    node.className = 'toast ' + (kind || '');
+    node.textContent = String(message);
+    el('toastHost').appendChild(node);
+    requestAnimationFrame(function () { node.classList.add('show'); });
     setTimeout(function () {
       node.classList.remove('show');
       setTimeout(function () { if (node.parentNode) { node.parentNode.removeChild(node); } }, 320);
-    }, 2800);
+    }, 3400);
   }
 
-  /* A large file makes an unmarked window look frozen, so anything that crosses
-     the bridge holds the busy slot until it answers. Counted, not a flag: two
-     calls in flight must not have the first one to finish clear the mark. */
-  function setBusy(on) {
+  function fail(error) {
+    toast(error && (error.message || error.error) || String(error || 'Something went wrong'), 'err');
+  }
+
+  function stamp(text) { el('stamp').textContent = text || ''; }
+  function setBusy(on, text) {
     BUSY += on ? 1 : -1;
-    if (BUSY < 0) { BUSY = 0; }
+    BUSY = Math.max(0, BUSY);
     el('busyText').hidden = BUSY === 0;
+    el('busyText').textContent = BUSY ? (text || 'Working...') : 'Working...';
   }
 
-  function fail(err) {
-    toast(String(err && err.message ? err.message : err), 'err');
-  }
-
-  /* Text and number fields wait; dropdowns and checkboxes fire immediately,
-     because a dropdown has no half-typed state to protect. */
-  function debounce(fn) {
-    var timer = null;
-    return function () {
-      var self = this;
-      var args = arguments;
-      if (timer) { clearTimeout(timer); }
-      timer = setTimeout(function () { timer = null; fn.apply(self, args); }, DEBOUNCE_MS);
-    };
-  }
-
-  /* Never write over a control the user is working in. */
-  function held(node) { return document.activeElement === node; }
-
-  function setValue(node, value) { if (!held(node)) { node.value = value; } }
-
-  function setChecked(node, value) { if (!held(node)) { node.checked = !!value; } }
-
-  function numberOrNull(node) {
-    var raw = String(node.value).trim();
-    if (raw === '') { return null; }
-    var n = Number(raw);
-    return isNaN(n) ? undefined : n;      // undefined means "unusable, send nothing"
-  }
-
-  /* ------------------------------------------------------------------- theme */
-
-  function applyTheme(dark, persist) {
-    document.documentElement.classList.toggle('dark', dark);
-    el('segLight').classList.toggle('on', !dark);
-    el('segDark').classList.toggle('on', dark);
-    el('segLight').setAttribute('aria-pressed', String(!dark));
-    el('segDark').setAttribute('aria-pressed', String(dark));
-    if (!persist) { return; }
-    try { window.localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); } catch (e) { /* private mode */ }
-  }
-
-  function initTheme() {
-    var saved = null;
-    try { saved = window.localStorage.getItem(THEME_KEY); } catch (e) { saved = null; }
-    if (saved === null && window.matchMedia) {
-      saved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    }
-    applyTheme(saved === 'dark', false);
-    el('segLight').addEventListener('click', function () { applyTheme(false, true); });
-    el('segDark').addEventListener('click', function () { applyTheme(true, true); });
-  }
-
-  /* -------------------------------------------------------------------- tabs */
-
-  function showTab(name) {
-    ACTIVE = name;
-    var song = hasSong();
-    for (var i = 0; i < TABS.length; i++) {
-      var which = TABS[i];
-      var tab = el('tab-' + which);
-      var on = which === name;
-      tab.classList.toggle('active', on);
-      tab.setAttribute('aria-selected', String(on));
-      el('panel-' + which).hidden = !on || !song;
-    }
-    el('panel-empty').hidden = song;
-  }
-
-  function initTabs() {
-    for (var i = 0; i < TABS.length; i++) {
-      el('tab-' + TABS[i]).addEventListener('click', function () {
-        showTab(this.getAttribute('data-tab'));
-      });
-    }
-  }
-
-  /* ------------------------------------------------------------- state reads */
-
-  function hasSong() {
-    return !!(STATE.analysis && STATE.analysis.channels && STATE.analysis.channels.length);
-  }
-
-  function channels() {
-    return (STATE.analysis && STATE.analysis.channels) || [];
-  }
-
-  function channelSetting(channel) {
-    var all = (STATE.settings && STATE.settings.channels) || {};
-    return all[String(channel)] || null;
-  }
-
-  function chosenFamily(ch) {
-    var entry = channelSetting(ch.channel);
-    var name = (entry && entry.family) ? entry.family : ch.auto_family;
-    return name || null;
-  }
-
-  function familyInfo(name) {
-    if (!name || !STATE.catalog) { return null; }
-    var families = STATE.catalog.families || [];
-    for (var i = 0; i < families.length; i++) {
-      if (families[i].name === name) { return families[i]; }
-    }
-    return null;
-  }
-
-  function isMuted(ch) {
-    var entry = channelSetting(ch.channel);
-    return !!(entry && entry.muted);
-  }
-
-  function segmentFor(channel) {
-    var all = STATE.rulers || {};
-    var seg = all[String(channel)];
-    return seg === undefined ? null : seg;
-  }
-
-  function drumChannel() {
-    var list = channels();
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].is_drums) { return list[i]; }
-    }
-    return null;
-  }
-
-  function tuning() {
-    return (STATE.settings && STATE.settings.tuning) || {};
-  }
-
-  /* The sentence a ruler means, in the same words the warning would use, so the
-     encoding is never colour alone. It rides on `title` and `aria-label`. */
-  function rulerSentence(ch, seg, family) {
-    var who = 'Channel ' + ch.channel + ' (' + ch.program_name + ')';
-    var plays = who + ' plays ' + noteName(ch.lowest) + '-' + noteName(ch.highest) + '.';
-    if (!family) { return plays; }
-    var reach = noteName(family.lowest) + '-' + noteName(family.highest);
-    if (seg && seg.disjoint) {
-      return who + ' shares no note with ' + family.name + ' at all. Every note is transposed.';
-    }
-    if (seg && seg.outside > 0) {
-      return plays + ' ' + family.name + ' only reaches ' + reach + ', so ' + seg.outside
-        + ' of its ' + ch.notes + ' notes move to another octave, or to the nearest pitch the family has.';
-    }
-    return plays + ' ' + family.name + ' reaches ' + reach + ', which covers it.';
-  }
-
-  /* ------------------------------------------------------------ bridge calls */
-
-  function next() { return ++SEQ; }
-
-  /* Stamp every request and drop stale answers -- per field, not per call. Two
-     overlapping applies resolve in arbitrary order and the older one can return
-     last, which is what a stamp fixes. But one counter shared by every call
-     buys a second bug: the methods answer with different things, so a dry run
-     (stats, no settings) would invalidate an apply still in flight and throw
-     away the change the user had just made, putting the control silently back.
-     A field only loses to a later answer that actually carries that field. */
-  function accept(field, seq) {
-    if (seq <= APPLIED[field]) { return false; }
-    APPLIED[field] = seq;
+  function accept(key, sequence) {
+    if ((APPLIED[key] || 0) > sequence) { return false; }
+    APPLIED[key] = sequence;
     return true;
   }
 
-  function patch(body) {
-    if (!api()) { return; }
-    var mine = next();
-    setBusy(true);
-    return api().apply_settings(body).then(function (r) {
-      setBusy(false);
-      if (!r || !r.ok) {
-        /* Re-rendering from the settings we still hold is what puts a refused
-           control back to the value the session actually has. */
-        if (accept('settings', mine)) {
-          toast((r && r.error) || 'that change was refused', 'err');
-          render();
-        }
-        return;
-      }
-      /* Through `adopt` for the analysis. `apply_settings` answers with it
-         because the drums mode is a setting that rewrites it -- which channel
-         is a kit, which keys it names, whether that row has a ruler at all --
-         and a window that took only the settings and the rulers would go on
-         drawing the previous mode's channel list until something else
-         happened to refresh it. */
-      adopt(r, mine);
-      stamp('Updated');
-      render();
-    }, function (e) { setBusy(false); fail(e); });
+  function adopt(payload, sequence) {
+    ['settings', 'analysis', 'catalog', 'stats', 'preview', 'audio', 'window'].forEach(function (key) {
+      if (payload[key] !== undefined && accept(key, sequence)) { STATE[key] = payload[key]; }
+    });
   }
 
-  function adopt(r, seq) {
-    if (accept('settings', seq)) {
-      if (r.settings) { STATE.settings = r.settings; }
-      if (r.analysis !== undefined) { STATE.analysis = r.analysis; }
-      if (r.rulers) { STATE.rulers = r.rulers; }
+  /* --------------------------------------------------------------- themes */
+
+  function storedTheme() {
+    try { return localStorage.getItem(THEME_KEY); } catch (_error) { return null; }
+  }
+
+  function setTheme(name, persist) {
+    var dark = name === 'dark';
+    document.documentElement.classList.toggle('dark', dark);
+    el('menuLight').setAttribute('aria-checked', dark ? 'false' : 'true');
+    el('menuDark').setAttribute('aria-checked', dark ? 'true' : 'false');
+    if (persist) {
+      try { localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); } catch (_error) { /* local only */ }
     }
-    if (r.catalog && accept('catalog', seq)) { STATE.catalog = r.catalog; }
-    if (r.stats && accept('stats', seq)) { STATE.stats = r.stats; }
+    queueDraw();
   }
 
-  /* `catalog()` names only the drum keys the loaded file uses, so a new file
-     needs a fresh one; `load_midi` does not carry it. */
-  function refreshCatalog() {
-    if (!api()) { return; }
-    var mine = next();
-    api().catalog().then(function (r) {
-      if (r && r.ok && accept('catalog', mine)) { STATE.catalog = r; render(); }
-    }, function (e) { fail(e); });
+  function initTheme() {
+    var saved = storedTheme();
+    var dark = saved ? saved === 'dark' : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    setTheme(dark ? 'dark' : 'light', false);
+    el('menuLight').addEventListener('click', function () { setTheme('light', true); closeMenus(); });
+    el('menuDark').addEventListener('click', function () { setTheme('dark', true); closeMenus(); });
   }
 
-  function afterLoad(r, seq) {
-    setBusy(false);
-    if (!r) { return; }
-    /* A dismissed dialog before a failed one. The bridge answers a cancel with
-       `ok: false` and deliberately no `error`, because it is not one: somebody
-       opened the picker and changed their mind. Reading only `ok` put a red
-       toast on screen for that, which is how people learn to stop reading
-       toasts. */
-    if (r.cancelled) { return; }
-    if (!r.ok) { toast(r.error || 'that file could not be opened', 'err'); return; }
-    adopt(r, seq);
-    render();
-    refreshCatalog();
-    stamp('Opened ' + baseName(STATE.analysis ? STATE.analysis.path : ''));
-    /* The song's settings file is applied by the same call that opens the song,
-       so a broken one is only ever visible here. Silence would mean an
-       afternoon's tuning quietly not coming back, and the window looking as
-       though the file had never been written. */
-    if (r.sidecar_error) { toast(r.sidecar_error, 'warn'); }
+  /* ---------------------------------------------------------- desktop menus */
+
+  function closeMenus() {
+    var labels = document.querySelectorAll('.menu-label');
+    for (var index = 0; index < labels.length; index += 1) {
+      labels[index].classList.remove('open');
+      labels[index].setAttribute('aria-expanded', 'false');
+    }
+    var popups = document.querySelectorAll('.menu-popup');
+    for (index = 0; index < popups.length; index += 1) { popups[index].hidden = true; }
+    OPEN_MENU = null;
   }
 
-  function openFile() {
-    if (!api()) { toast('the file picker needs the control window', 'warn'); return; }
-    var mine = next();
-    setBusy(true);
-    api().pick_midi().then(function (r) { afterLoad(r, mine); }, function (e) { setBusy(false); fail(e); });
+  function openMenu(name, focusFirst) {
+    closeMenus();
+    var label = document.querySelector('.menu-label[data-menu="' + name + '"]');
+    var popup = el('menu-' + name);
+    if (!label || !popup) { return; }
+    label.classList.add('open');
+    label.setAttribute('aria-expanded', 'true');
+    popup.hidden = false;
+    OPEN_MENU = name;
+    if (focusFirst) {
+      var first = popup.querySelector('button:not(:disabled)');
+      if (first) { first.focus(); }
+    }
   }
 
-  /* Reads the same file again, for the case where it was edited elsewhere
-     between opening it here and looking at it. It goes through `load_midi`
-     rather than the picker, so it costs no dialog -- and like any open it
-     starts the per-channel choices over, because the channels may not be the
-     ones that were there before. */
-  function reopen() {
-    if (!api() || !STATE.analysis) { return; }
-    var mine = next();
-    setBusy(true);
-    api().load_midi(STATE.analysis.path).then(
-      function (r) { afterLoad(r, mine); },
-      function (e) { setBusy(false); fail(e); }
+  function initMenus() {
+    var labels = document.querySelectorAll('.menu-label');
+    for (var index = 0; index < labels.length; index += 1) {
+      labels[index].addEventListener('click', function (event) {
+        event.stopPropagation();
+        var name = this.getAttribute('data-menu');
+        if (OPEN_MENU === name) { closeMenus(); } else { openMenu(name, false); }
+      });
+      labels[index].addEventListener('mouseenter', function () {
+        if (OPEN_MENU) { openMenu(this.getAttribute('data-menu'), false); }
+      });
+      labels[index].addEventListener('keydown', function (event) {
+        if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openMenu(this.getAttribute('data-menu'), true);
+        }
+      });
+    }
+    document.addEventListener('pointerdown', function (event) {
+      if (OPEN_MENU && !event.target.closest('.menu')) { closeMenus(); }
+    });
+  }
+
+  function updateMenuState() {
+    var song = hasSong();
+    ['menuReopen', 'menuExport', 'menuPlay', 'menuStart'].forEach(function (id) { el(id).disabled = !song; });
+    el('menuPlay').querySelector('span').textContent = AUDIO.playing ? 'Pause' : 'Play';
+    el('menuAudio').querySelector('span').textContent = STATE.audio && STATE.audio.ready ? 'Audio Ready' : 'Set Up Audio...';
+    el('menuAudio').disabled = !!(STATE.audio && STATE.audio.ready);
+  }
+
+  /* --------------------------------------------------------------- tracks */
+
+  function channelEntry(channel) {
+    return (STATE.settings && STATE.settings.channels && STATE.settings.channels[String(channel)]) || {};
+  }
+
+  function assignmentValue(channel) {
+    var entry = channelEntry(channel);
+    if (entry.sound) { return 'sound:' + entry.sound; }
+    if (entry.family) { return 'family:' + entry.family; }
+    return '';
+  }
+
+  function option(parent, value, text) {
+    var node = document.createElement('option');
+    node.value = value;
+    node.textContent = text;
+    parent.appendChild(node);
+  }
+
+  function fillSoundPicker(select, channel) {
+    select.textContent = '';
+    option(
+      select,
+      '',
+      channel.is_drums
+        ? 'Automatic — General MIDI percussion map'
+        : 'Automatic — ' + (channel.auto_family || channel.program_name)
+    );
+
+    var families = (STATE.catalog && STATE.catalog.families) || [];
+    var familyGroup = document.createElement('optgroup');
+    familyGroup.label = 'Pitched instrument sets';
+    families.forEach(function (family) {
+      option(familyGroup, 'family:' + family.name, humanCategory(family.name));
+    });
+    select.appendChild(familyGroup);
+
+    var groups = (STATE.catalog && STATE.catalog.sound_groups) || [];
+    groups.forEach(function (group) {
+      var node = document.createElement('optgroup');
+      node.label = humanCategory(group.name) + ' — exact sounds';
+      group.sounds.forEach(function (sound) {
+        option(node, 'sound:' + sound.name, sound.label || sound.name);
+      });
+      select.appendChild(node);
+    });
+  }
+
+  function trackShapeKey() {
+    var groups = (STATE.catalog && STATE.catalog.sound_groups) || [];
+    return channels().map(function (channel) { return channel.channel + ':' + channel.program; }).join('|')
+      + '#' + groups.length + ':' + ((STATE.catalog && STATE.catalog.sound_count) || 0);
+  }
+
+  function buildTracks() {
+    var list = el('trackList');
+    list.textContent = '';
+    channels().forEach(function (channel) {
+      var row = document.createElement('div');
+      row.className = 'track-row';
+      row.dataset.channel = String(channel.channel);
+      row.style.setProperty('--track-color', channelColor(channel.channel));
+
+      var number = document.createElement('div');
+      number.className = 'track-channel';
+      number.textContent = String(channel.channel + 1);
+      number.title = 'MIDI channel ' + (channel.channel + 1);
+      row.appendChild(number);
+
+      var name = document.createElement('div');
+      name.className = 'track-name';
+      name.textContent = channel.program_name + (channel.is_drums ? ' · Percussion' : '');
+      name.title = channel.notes + ' notes · ' + noteName(channel.lowest) + '–' + noteName(channel.highest);
+      row.appendChild(name);
+
+      var select = document.createElement('select');
+      select.className = 'track-sound';
+      select.setAttribute('aria-label', 'Sound for MIDI channel ' + (channel.channel + 1));
+      fillSoundPicker(select, channel);
+      select.addEventListener('change', function () {
+        var value = this.value;
+        var body = { family: null, sound: null };
+        if (value.indexOf('family:') === 0) { body.family = value.slice(7); }
+        if (value.indexOf('sound:') === 0) { body.sound = value.slice(6); }
+        var patch = { channels: {} };
+        patch.channels[String(channel.channel)] = body;
+        applyPatch(patch, true);
+      });
+      row.appendChild(select);
+
+      var mute = document.createElement('label');
+      mute.className = 'track-mute';
+      var check = document.createElement('input');
+      check.type = 'checkbox';
+      check.setAttribute('aria-label', 'Mute MIDI channel ' + (channel.channel + 1));
+      check.addEventListener('change', function () {
+        var patch = { channels: {} };
+        patch.channels[String(channel.channel)] = { muted: this.checked };
+        applyPatch(patch, true);
+      });
+      mute.appendChild(check);
+      mute.appendChild(document.createTextNode('Mute'));
+      row.appendChild(mute);
+
+      row.addEventListener('click', function (event) {
+        if (event.target.closest('select, input, label')) { return; }
+        SELECTED_CHANNEL = SELECTED_CHANNEL === channel.channel ? null : channel.channel;
+        patchTracks();
+        queueDraw();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function patchTracks() {
+    var rows = el('trackList').querySelectorAll('.track-row');
+    for (var index = 0; index < rows.length; index += 1) {
+      var row = rows[index];
+      var channel = Number(row.dataset.channel);
+      var entry = channelEntry(channel);
+      row.classList.toggle('selected', SELECTED_CHANNEL === channel);
+      row.classList.toggle('muted-track', !!entry.muted);
+      row.querySelector('.track-sound').value = assignmentValue(channel);
+      row.querySelector('.track-mute input').checked = !!entry.muted;
+    }
+  }
+
+  function renderTracks() {
+    var key = trackShapeKey();
+    if (key !== TRACK_KEY) {
+      TRACK_KEY = key;
+      buildTracks();
+    }
+    patchTracks();
+    el('trackCount').textContent = String(channels().length);
+  }
+
+  /* ----------------------------------------------------------- piano roll */
+
+  function canvasGeometry() {
+    var events = previewEvents();
+    var pitches = events.map(function (event) { return Number(event.pitch); }).filter(function (pitch) { return isFinite(pitch); });
+    var low = pitches.length ? Math.max(0, Math.min.apply(null, pitches) - 2) : 36;
+    var high = pitches.length ? Math.min(127, Math.max.apply(null, pitches) + 2) : 84;
+    if (high - low < 24) {
+      var extra = 24 - (high - low);
+      low = Math.max(0, low - Math.floor(extra / 2));
+      high = Math.min(127, low + 24);
+      low = Math.max(0, high - 24);
+    }
+    return { low: low, high: high, top: 30, keys: 48, right: 8, bottom: 8 };
+  }
+
+  function resizeCanvas() {
+    var canvas = el('pianoRoll');
+    if (!canvas || !canvas.parentNode || canvas.parentNode.hidden) { return; }
+    var rect = canvas.getBoundingClientRect();
+    var ratio = window.devicePixelRatio || 1;
+    var width = Math.max(1, Math.round(rect.width * ratio));
+    var height = Math.max(1, Math.round(rect.height * ratio));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    drawPianoRoll();
+  }
+
+  function currentPosition() {
+    if (!AUDIO.playing || !AUDIO.context) { return AUDIO.position; }
+    return clamp(
+      AUDIO.anchorPosition + (AUDIO.context.currentTime - AUDIO.anchorTime) * 1000,
+      0,
+      (STATE.preview && STATE.preview.duration_ms) || 0
     );
   }
 
-  function dryRun() {
-    if (!api()) { return; }
-    var mine = next();
-    setBusy(true);
-    api().dry_run().then(function (r) {
+  function gridStep(duration, width) {
+    var candidates = [1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000];
+    for (var index = 0; index < candidates.length; index += 1) {
+      if (duration / candidates[index] <= Math.max(2, width / 90)) { return candidates[index]; }
+    }
+    return candidates[candidates.length - 1];
+  }
+
+  function drawPianoRoll(positionOverride) {
+    DRAW_QUEUED = false;
+    var canvas = el('pianoRoll');
+    if (!canvas || canvas.width <= 1 || canvas.height <= 1 || canvas.hidden) { return; }
+    var ratio = window.devicePixelRatio || 1;
+    var width = canvas.width / ratio;
+    var height = canvas.height / ratio;
+    var context = canvas.getContext('2d');
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    var geometry = canvasGeometry();
+    var duration = Math.max(1, (STATE.preview && STATE.preview.duration_ms) || 1);
+    var plotWidth = Math.max(1, width - geometry.keys - geometry.right);
+    var pitchCount = geometry.high - geometry.low + 1;
+    var plotHeight = Math.max(1, height - geometry.top - geometry.bottom);
+    var pitchHeight = plotHeight / pitchCount;
+    var background = css('--field');
+    var panel = css('--panel2');
+    var border = css('--border');
+    var border2 = css('--border2');
+    var muted = css('--muted');
+    var text = css('--text');
+    var accent = css('--accent');
+
+    context.fillStyle = background;
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = panel;
+    context.fillRect(0, 0, width, geometry.top);
+    context.fillRect(0, geometry.top, geometry.keys, plotHeight);
+
+    context.font = '10px Consolas, monospace';
+    context.textBaseline = 'middle';
+    for (var pitch = geometry.low; pitch <= geometry.high; pitch += 1) {
+      var row = geometry.high - pitch;
+      var y = geometry.top + row * pitchHeight;
+      if (BLACK_KEYS[pitch % 12]) {
+        context.fillStyle = panel;
+        context.fillRect(geometry.keys, y, plotWidth, pitchHeight);
+      }
+      context.strokeStyle = pitch % 12 === 0 ? border2 : border;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, Math.round(y) + 0.5);
+      context.lineTo(width, Math.round(y) + 0.5);
+      context.stroke();
+      if (pitch % 12 === 0 && pitchHeight >= 5) {
+        context.fillStyle = muted;
+        context.fillText(noteName(pitch), 5, y + pitchHeight / 2);
+      }
+    }
+
+    var step = gridStep(duration, plotWidth);
+    for (var time = 0; time <= duration; time += step) {
+      var x = geometry.keys + time / duration * plotWidth;
+      context.strokeStyle = time === 0 ? border2 : border;
+      context.beginPath();
+      context.moveTo(Math.round(x) + 0.5, geometry.top);
+      context.lineTo(Math.round(x) + 0.5, height);
+      context.stroke();
+      context.fillStyle = muted;
+      context.fillText(formatTime(time), x + 4, geometry.top / 2);
+    }
+
+    var events = previewEvents();
+    for (var index = 0; index < events.length; index += 1) {
+      var event = events[index];
+      if (event.pitch === null || event.pitch === undefined) { continue; }
+      var eventPitch = Number(event.pitch);
+      if (eventPitch < geometry.low || eventPitch > geometry.high) { continue; }
+      var startX = geometry.keys + event.start / duration * plotWidth;
+      var endX = geometry.keys + Math.max(event.end, event.start + duration / plotWidth * 2) / duration * plotWidth;
+      var eventY = geometry.top + (geometry.high - eventPitch) * pitchHeight + 1;
+      var eventHeight = Math.max(2, pitchHeight - 2);
+      context.globalAlpha = SELECTED_CHANNEL === null || SELECTED_CHANNEL === event.channel ? 0.88 : 0.25;
+      context.fillStyle = channelColor(event.channel);
+      context.fillRect(startX, eventY, Math.max(2, endX - startX), eventHeight);
+      if (SELECTED_CHANNEL === event.channel) {
+        context.strokeStyle = text;
+        context.lineWidth = 0.7;
+        context.strokeRect(startX + 0.5, eventY + 0.5, Math.max(1, endX - startX - 1), Math.max(1, eventHeight - 1));
+      }
+    }
+    context.globalAlpha = 1;
+
+    var position = positionOverride === undefined ? currentPosition() : positionOverride;
+    var playheadX = geometry.keys + clamp(position, 0, duration) / duration * plotWidth;
+    context.strokeStyle = accent;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(playheadX, 0);
+    context.lineTo(playheadX, height);
+    context.stroke();
+    context.fillStyle = accent;
+    context.beginPath();
+    context.moveTo(playheadX - 5, 0);
+    context.lineTo(playheadX + 5, 0);
+    context.lineTo(playheadX, 7);
+    context.closePath();
+    context.fill();
+  }
+
+  function queueDraw() {
+    if (DRAW_QUEUED) { return; }
+    DRAW_QUEUED = true;
+    requestAnimationFrame(function () { drawPianoRoll(); });
+  }
+
+  function positionFromCanvas(event) {
+    var canvas = el('pianoRoll');
+    var rect = canvas.getBoundingClientRect();
+    var geometry = canvasGeometry();
+    var width = Math.max(1, rect.width - geometry.keys - geometry.right);
+    var x = clamp(event.clientX - rect.left - geometry.keys, 0, width);
+    return x / width * ((STATE.preview && STATE.preview.duration_ms) || 0);
+  }
+
+  function setPosition(position) {
+    var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
+    AUDIO.position = clamp(Number(position) || 0, 0, duration);
+    renderPosition(AUDIO.position);
+  }
+
+  function beginCanvasSeek(event) {
+    if (!hasSong()) { return; }
+    event.preventDefault();
+    var wasPlaying = AUDIO.playing;
+    pausePlayback();
+    SEEK_DRAG = { pointer: event.pointerId, resume: wasPlaying };
+    el('pianoRoll').setPointerCapture(event.pointerId);
+    setPosition(positionFromCanvas(event));
+  }
+
+  function moveCanvasSeek(event) {
+    if (!SEEK_DRAG || SEEK_DRAG.pointer !== event.pointerId) { return; }
+    setPosition(positionFromCanvas(event));
+  }
+
+  function endCanvasSeek(event) {
+    if (!SEEK_DRAG || SEEK_DRAG.pointer !== event.pointerId) { return; }
+    var resume = SEEK_DRAG.resume;
+    SEEK_DRAG = null;
+    try { el('pianoRoll').releasePointerCapture(event.pointerId); } catch (_error) { /* already released */ }
+    if (resume) { startPlayback(); }
+  }
+
+  /* --------------------------------------------------------------- audio */
+
+  function ensureAudioContext() {
+    if (AUDIO.context) { return AUDIO.context; }
+    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) { throw new Error('This WebView cannot create an audio context'); }
+    AUDIO.context = new AudioContextClass();
+    var compressor = AUDIO.context.createDynamicsCompressor();
+    compressor.threshold.value = -10;
+    compressor.knee.value = 18;
+    compressor.ratio.value = 8;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.18;
+    AUDIO.master = AUDIO.context.createGain();
+    AUDIO.master.gain.value = 0.72;
+    AUDIO.master.connect(compressor);
+    compressor.connect(AUDIO.context.destination);
+    return AUDIO.context;
+  }
+
+  function decodeDataUri(context, uri) {
+    return fetch(uri)
+      .then(function (response) { return response.arrayBuffer(); })
+      .then(function (buffer) { return context.decodeAudioData(buffer); });
+  }
+
+  function audioKey() {
+    return ((STATE.preview && STATE.preview.sounds) || []).join('\n');
+  }
+
+  function invalidateAudio() {
+    PLAY_TOKEN += 1;
+    stopSources();
+    AUDIO.key = '';
+    AUDIO.buffers = {};
+    AUDIO.loading = null;
+  }
+
+  function ensureSongAudio() {
+    if (!STATE.audio || !STATE.audio.ready) {
+      return Promise.reject(new Error('Set up audio preview before playing the converted song'));
+    }
+    var key = audioKey();
+    if (AUDIO.key === key && !AUDIO.loading) { return Promise.resolve(); }
+    if (AUDIO.loading && AUDIO.loading.key === key) { return AUDIO.loading.promise; }
+    if (!api()) { return Promise.reject(new Error('The audio bridge is not available')); }
+    var context;
+    try { context = ensureAudioContext(); } catch (error) { return Promise.reject(error); }
+    var sounds = (STATE.preview && STATE.preview.sounds) || [];
+    setBusy(true, 'Loading song audio...');
+    var promise = api().preview_samples(sounds).then(function (response) {
+      if (!response || !response.ok) { throw new Error(response && response.error || 'Song audio could not be loaded'); }
+      if (response.missing && response.missing.length) {
+        throw new Error(response.missing.length + ' sounds are missing from the local audio cache');
+      }
+      var names = Object.keys(response.samples || {});
+      return Promise.all(names.map(function (name) {
+        return decodeDataUri(context, response.samples[name]).then(function (buffer) {
+          return [name, buffer];
+        });
+      }));
+    }).then(function (pairs) {
+      var buffers = {};
+      pairs.forEach(function (pair) { buffers[pair[0]] = pair[1]; });
+      AUDIO.buffers = buffers;
+      AUDIO.key = key;
+    }).finally(function () {
       setBusy(false);
-      if (!r || !r.ok) { toast((r && r.error) || 'the dry run failed', 'err'); return; }
-      if (!accept('stats', mine)) { return; }
-      STATE.stats = r.stats;
-      render();
-      stamp('Checked');
-      toast('Map checked', 'ok');
-    }, function (e) { setBusy(false); fail(e); });
+      if (AUDIO.loading && AUDIO.loading.promise === promise) { AUDIO.loading = null; }
+    });
+    AUDIO.loading = { key: key, promise: promise };
+    return promise;
+  }
+
+  function stopSources() {
+    var sources = AUDIO.sources.slice();
+    AUDIO.sources = [];
+    sources.forEach(function (source) {
+      try { source.stop(); } catch (_error) { /* already ended */ }
+    });
+    if (AUDIO.timer !== null) { clearInterval(AUDIO.timer); AUDIO.timer = null; }
+    if (AUDIO.frame !== null) { cancelAnimationFrame(AUDIO.frame); AUDIO.frame = null; }
+  }
+
+  function forgetSource(source) {
+    var index = AUDIO.sources.indexOf(source);
+    if (index >= 0) { AUDIO.sources.splice(index, 1); }
+  }
+
+  function scheduleEvent(event, audiblePosition, when) {
+    var buffer = AUDIO.buffers[event.sound];
+    if (!buffer || !AUDIO.context || !AUDIO.master) { return; }
+    var source = AUDIO.context.createBufferSource();
+    var gain = AUDIO.context.createGain();
+    source.buffer = buffer;
+    gain.gain.value = 0.34;
+    source.connect(gain);
+    gain.connect(AUDIO.master);
+    var offset = Math.max(0, (audiblePosition - event.start) / 1000);
+    var stopAfter;
+
+    if (event.sustained) {
+      var release = STATE.preview && !STATE.preview.hard_stop && !event.cut
+        ? Number(STATE.preview.release_s || 0)
+        : 0;
+      var sounding = Math.max(0, (event.end - event.start) / 1000);
+      var total = sounding + release;
+      if (offset >= total) { return; }
+      if (buffer.duration > 0.04 && sounding > buffer.duration) {
+        source.loop = true;
+        source.loopEnd = buffer.duration;
+        offset = offset % buffer.duration;
+      } else if (offset >= buffer.duration) {
+        return;
+      }
+      stopAfter = Math.max(0.01, total - Math.max(0, (audiblePosition - event.start) / 1000));
+      var noteEndAt = when + Math.max(0, (event.end - audiblePosition) / 1000);
+      if (release > 0 && noteEndAt >= AUDIO.context.currentTime) {
+        gain.gain.setValueAtTime(0.34, noteEndAt);
+        gain.gain.exponentialRampToValueAtTime(0.001, noteEndAt + release);
+      }
+      source.start(when, offset);
+      source.stop(when + stopAfter);
+    } else {
+      if (offset >= buffer.duration) { return; }
+      source.start(when, offset);
+    }
+    AUDIO.sources.push(source);
+    source.onended = function () { forgetSource(source); };
+  }
+
+  function firstFutureEvent(position) {
+    var events = previewEvents();
+    var low = 0;
+    var high = events.length;
+    while (low < high) {
+      var middle = Math.floor((low + high) / 2);
+      if (events[middle].start < position) { low = middle + 1; } else { high = middle; }
+    }
+    return low;
+  }
+
+  function scheduleActiveAt(position) {
+    var events = previewEvents();
+    for (var index = 0; index < AUDIO.nextIndex; index += 1) {
+      var event = events[index];
+      var buffer = AUDIO.buffers[event.sound];
+      var end = event.sustained
+        ? event.end + (STATE.preview.hard_stop || event.cut ? 0 : Number(STATE.preview.release_s || 0) * 1000)
+        : event.start + (buffer ? buffer.duration * 1000 : 0);
+      if (end > position) { scheduleEvent(event, position, AUDIO.context.currentTime + 0.025); }
+    }
+  }
+
+  function scheduleAhead() {
+    if (!AUDIO.playing || !AUDIO.context) { return; }
+    var events = previewEvents();
+    var position = currentPosition();
+    var horizon = position + LOOKAHEAD_MS;
+    while (AUDIO.nextIndex < events.length && events[AUDIO.nextIndex].start <= horizon) {
+      var event = events[AUDIO.nextIndex];
+      var when = AUDIO.anchorTime + (event.start - AUDIO.anchorPosition) / 1000;
+      var audible = event.start;
+      if (when < AUDIO.context.currentTime + 0.01) {
+        audible += (AUDIO.context.currentTime + 0.01 - when) * 1000;
+        when = AUDIO.context.currentTime + 0.01;
+      }
+      scheduleEvent(event, audible, when);
+      AUDIO.nextIndex += 1;
+    }
+  }
+
+  function animationTick() {
+    if (!AUDIO.playing) { return; }
+    var position = currentPosition();
+    var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
+    if (position >= duration) {
+      pausePlayback();
+      setPosition(0);
+      return;
+    }
+    renderPosition(position);
+    AUDIO.frame = requestAnimationFrame(animationTick);
+  }
+
+  function startPlayback() {
+    if (!hasSong() || AUDIO.playing) { return; }
+    var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
+    if (AUDIO.position >= duration) { AUDIO.position = 0; }
+    var token = ++PLAY_TOKEN;
+    ensureSongAudio().then(function () {
+      if (token !== PLAY_TOKEN) { return; }
+      return AUDIO.context.resume();
+    }).then(function () {
+      if (token !== PLAY_TOKEN) { return; }
+      AUDIO.playing = true;
+      AUDIO.anchorPosition = AUDIO.position;
+      AUDIO.anchorTime = AUDIO.context.currentTime;
+      AUDIO.nextIndex = firstFutureEvent(AUDIO.position);
+      scheduleActiveAt(AUDIO.position);
+      scheduleAhead();
+      AUDIO.timer = setInterval(scheduleAhead, SCHEDULE_EVERY_MS);
+      AUDIO.frame = requestAnimationFrame(animationTick);
+      renderTransportState();
+    }).catch(function (error) {
+      if (token === PLAY_TOKEN) { fail(error); }
+    });
+  }
+
+  function pausePlayback() {
+    PLAY_TOKEN += 1;
+    if (AUDIO.playing) { AUDIO.position = currentPosition(); }
+    AUDIO.playing = false;
+    stopSources();
+    renderTransportState();
+    renderPosition(AUDIO.position);
+  }
+
+  function togglePlayback() {
+    if (AUDIO.playing) { pausePlayback(); } else { startPlayback(); }
+  }
+
+  function renderPosition(position) {
+    var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
+    el('currentTime').textContent = formatTime(position);
+    el('totalTime').textContent = formatTime(duration);
+    el('scrubber').max = String(duration);
+    el('scrubber').value = String(clamp(position, 0, duration));
+    drawPianoRoll(position);
+  }
+
+  function renderTransportState() {
+    var playable = hasSong();
+    el('transportPlay').disabled = !playable;
+    el('scrubber').disabled = !playable;
+    el('playGlyph').innerHTML = AUDIO.playing ? '&#10074;&#10074;' : '&#9654;';
+    el('transportPlay').setAttribute('aria-label', AUDIO.playing ? 'Pause' : 'Play');
+    updateMenuState();
+  }
+
+  /* ------------------------------------------------ conversion inspector */
+
+  function setDependent(id, enabled) {
+    var host = el(id);
+    host.classList.toggle('disabled', !enabled);
+    var controls = host.querySelectorAll('input, select, button');
+    for (var index = 0; index < controls.length; index += 1) {
+      controls[index].disabled = !enabled;
+    }
+  }
+
+  function syncPair(rangeId, numberId, value) {
+    el(rangeId).value = String(value);
+    el(numberId).value = String(value);
+  }
+
+  function usedFamilies() {
+    var seen = {};
+    previewEvents().forEach(function (event) { if (event.family) { seen[event.family] = true; } });
+    return Object.keys(seen).sort();
+  }
+
+  function renderFamilyBehavior() {
+    var host = el('familyBehavior');
+    host.textContent = '';
+    var values = tuning();
+    var decaying = values.decaying_families || [];
+    var caps = values.family_caps || {};
+    var families = usedFamilies();
+    if (!families.length) {
+      var empty = document.createElement('div');
+      empty.className = 'list-empty';
+      empty.textContent = 'Open a song to see the categories it uses.';
+      host.appendChild(empty);
+      return;
+    }
+    families.forEach(function (family) {
+      var row = document.createElement('div');
+      row.className = 'family-row';
+      var name = document.createElement('span');
+      name.className = 'family-name';
+      name.textContent = humanCategory(family);
+      name.title = family;
+      row.appendChild(name);
+      var label = document.createElement('label');
+      var check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = decaying.indexOf(family) >= 0;
+      label.appendChild(check);
+      label.appendChild(document.createTextNode(' Fire and forget'));
+      row.appendChild(label);
+      var cap = document.createElement('input');
+      cap.type = 'number';
+      cap.min = '1';
+      cap.step = '10';
+      cap.placeholder = 'sustain ms';
+      cap.setAttribute('aria-label', 'Sustain cap for ' + humanCategory(family) + ' in milliseconds');
+      cap.value = caps[family] || '';
+      row.appendChild(cap);
+      check.addEventListener('change', function () {
+        var next = (tuning().decaying_families || []).slice();
+        var where = next.indexOf(family);
+        if (this.checked && where < 0) { next.push(family); }
+        if (!this.checked && where >= 0) { next.splice(where, 1); }
+        next.sort();
+        applyPatch({ tuning: { decaying_families: next } }, true);
+      });
+      cap.addEventListener('change', function () {
+        var nextCaps = Object.assign({}, tuning().family_caps || {});
+        if (this.value === '') { delete nextCaps[family]; }
+        else { nextCaps[family] = Math.max(1, Math.round(Number(this.value))); }
+        applyPatch({ tuning: { family_caps: nextCaps } }, true);
+      });
+      host.appendChild(row);
+    });
+  }
+
+  function syncInspector() {
+    var values = tuning();
+    syncPair('maxSpeakersRange', 'maxSpeakersNumber', values.max_speakers || 32);
+    var polyOn = values.max_poly !== null && values.max_poly !== undefined;
+    el('polyEnabled').checked = polyOn;
+    syncPair('maxPolyRange', 'maxPolyNumber', polyOn ? values.max_poly : 16);
+    setDependent('polyControls', polyOn);
+    el('hardStop').checked = !!values.hard_stop;
+    syncPair('releaseRange', 'releaseNumber', Number(values.release_s || 0));
+    setDependent('releaseControls', !values.hard_stop);
+    var sustainOn = values.cap_sustain_ms !== null && values.cap_sustain_ms !== undefined;
+    el('sustainEnabled').checked = sustainOn;
+    syncPair('sustainRange', 'sustainNumber', sustainOn ? values.cap_sustain_ms : 1000);
+    setDependent('sustainControls', sustainOn);
+    var bassOn = values.bass_cap_ms !== null && values.bass_cap_ms !== undefined;
+    el('bassEnabled').checked = bassOn;
+    syncPair('bassRange', 'bassNumber', bassOn ? values.bass_cap_ms : 750);
+    setDependent('bassControls', bassOn);
+    setDependent('bassPitchControls', bassOn);
+    el('bassPitchNumber').value = String(values.bass_pitch === undefined ? 78 : values.bass_pitch);
+    el('bassPitchName').textContent = noteName(values.bass_pitch === undefined ? 78 : values.bass_pitch);
+    renderFamilyBehavior();
+  }
+
+  function openInspector() {
+    INSPECTOR_OPEN = true;
+    el('conversionInspector').hidden = false;
+    syncInspector();
+  }
+
+  function closeInspector() {
+    INSPECTOR_OPEN = false;
+    el('conversionInspector').hidden = true;
+  }
+
+  function bindPair(rangeId, numberId, key, decimal) {
+    var range = el(rangeId);
+    var number = el(numberId);
+    var send = debounce(function (raw) {
+      var value = decimal ? Number(raw) : Math.round(Number(raw));
+      var body = {}; body[key] = value;
+      applyPatch({ tuning: body }, true);
+    }, 180);
+    range.addEventListener('input', function () { number.value = this.value; send(this.value); });
+    number.addEventListener('change', function () { range.value = this.value; send(this.value); });
+  }
+
+  function initInspector() {
+    el('conversionBtn').addEventListener('click', openInspector);
+    el('menuConversion').addEventListener('click', function () { closeMenus(); openInspector(); });
+    el('closeInspector').addEventListener('click', closeInspector);
+    el('warnBar').addEventListener('click', openInspector);
+    bindPair('maxSpeakersRange', 'maxSpeakersNumber', 'max_speakers', false);
+    bindPair('maxPolyRange', 'maxPolyNumber', 'max_poly', false);
+    bindPair('releaseRange', 'releaseNumber', 'release_s', true);
+    bindPair('sustainRange', 'sustainNumber', 'cap_sustain_ms', false);
+    bindPair('bassRange', 'bassNumber', 'bass_cap_ms', false);
+    el('polyEnabled').addEventListener('change', function () {
+      applyPatch({ tuning: { max_poly: this.checked ? Number(el('maxPolyNumber').value || 16) : null } }, true);
+    });
+    el('hardStop').addEventListener('change', function () { applyPatch({ tuning: { hard_stop: this.checked } }, true); });
+    el('sustainEnabled').addEventListener('change', function () {
+      applyPatch({ tuning: { cap_sustain_ms: this.checked ? Number(el('sustainNumber').value || 1000) : null } }, true);
+    });
+    el('bassEnabled').addEventListener('change', function () {
+      applyPatch({ tuning: { bass_cap_ms: this.checked ? Number(el('bassNumber').value || 750) : null } }, true);
+    });
+    el('bassPitchNumber').addEventListener('change', function () {
+      applyPatch({ tuning: { bass_pitch: Math.round(Number(this.value)) } }, true);
+    });
+    el('restoreDefaults').addEventListener('click', function () {
+      if (!api()) { return; }
+      var resume = AUDIO.playing;
+      pausePlayback();
+      var sequence = nextRequest();
+      setBusy(true, 'Restoring defaults...');
+      api().reset_tuning().then(function (response) {
+        setBusy(false);
+        if (!response || !response.ok) { fail(response); return; }
+        adopt(response, sequence);
+        invalidateAudio();
+        render();
+        toast('Conversion defaults restored', 'ok');
+        if (resume) { startPlayback(); }
+      }, function (error) { setBusy(false); fail(error); });
+    });
+  }
+
+  /* ------------------------------------------------------------- bridge IO */
+
+  function afterLoad(response, sequence) {
+    setBusy(false);
+    if (!response || !response.ok) { fail(response); return; }
+    pausePlayback();
+    AUDIO.position = 0;
+    invalidateAudio();
+    TRACK_KEY = '';
+    SELECTED_CHANNEL = null;
+    adopt(response, sequence);
+    render();
+    if (response.sidecar_error) { toast(response.sidecar_error, 'warn'); }
+    stamp('Opened ' + baseName(STATE.settings && STATE.settings.midi));
+  }
+
+  function importMidi() {
+    closeMenus();
+    if (!api()) { toast('The file picker needs the desktop window', 'warn'); return; }
+    var sequence = nextRequest();
+    setBusy(true, 'Opening MIDI...');
+    api().pick_midi().then(function (response) {
+      if (response && response.cancelled) { setBusy(false); return; }
+      afterLoad(response, sequence);
+    }, function (error) { setBusy(false); fail(error); });
+  }
+
+  function reopenMidi() {
+    closeMenus();
+    if (!api() || !hasSong()) { return; }
+    var sequence = nextRequest();
+    setBusy(true, 'Reopening MIDI...');
+    api().load_midi(STATE.settings.midi).then(function (response) { afterLoad(response, sequence); }, function (error) { setBusy(false); fail(error); });
   }
 
   function exportMap() {
-    if (!api()) { return; }
-    var mine = next();
-    setBusy(true);
-    api().export().then(function (r) {
+    closeMenus();
+    if (!api() || !hasSong()) { return; }
+    var sequence = nextRequest();
+    setBusy(true, 'Exporting SnapMap...');
+    api().export().then(function (response) {
       setBusy(false);
-      if (!r || !r.ok) { toast((r && r.error) || 'the map was not written', 'err'); return; }
-      if (r.stats && accept('stats', mine)) { STATE.stats = r.stats; }
-      var where = el('xDestination');
-      if (where) { where.textContent = r.destination || ''; }
-      var advice = el('xAdvice');
-      if (advice) { advice.textContent = r.advice || ''; }
-      var replaced = el('xReplaced');
-      if (replaced) {
-        replaced.textContent = r.replaced ? 'This replaced the previous map.' : '';
-        replaced.hidden = !r.replaced;
-      }
+      if (!response || !response.ok) { fail(response); return; }
+      if (response.stats) { adopt({ stats: response.stats }, sequence); }
+      renderStatus();
+      renderWarnings();
+      toast(response.replaced ? 'Map exported and previous map replaced' : 'Map exported', 'ok');
+      stamp(baseName(response.destination));
+      if (response.sidecar_error) { toast(response.sidecar_error, 'warn'); }
+    }, function (error) { setBusy(false); fail(error); });
+  }
+
+  function setupAudio() {
+    closeMenus();
+    if (!api() || (STATE.audio && STATE.audio.ready)) { return; }
+    var sequence = nextRequest();
+    setBusy(true, 'Extracting game audio...');
+    api().extract_audio().then(function (response) {
+      setBusy(false);
+      if (response && response.audio) { adopt({ audio: response.audio }, sequence); }
+      renderAudio();
+      if (!response || !response.ok) { fail(response); return; }
+      invalidateAudio();
+      toast('Audio preview is ready', 'ok');
+    }, function (error) { setBusy(false); fail(error); });
+  }
+
+  function applyPatch(body, resumePlayback) {
+    if (!api()) { return; }
+    var wasPlaying = !!resumePlayback && AUDIO.playing;
+    pausePlayback();
+    var sequence = nextRequest();
+    setBusy(true, 'Updating conversion...');
+    api().apply_settings(body).then(function (response) {
+      setBusy(false);
+      if (!response || !response.ok) { fail(response); render(); return; }
+      adopt(response, sequence);
+      invalidateAudio();
+      AUDIO.position = clamp(AUDIO.position, 0, (STATE.preview && STATE.preview.duration_ms) || 0);
       render();
-      stamp('Exported');
-      /* Two files came out of one button, so the toast names both. The sidecar
-         is what makes tomorrow's session open where this one stopped, and a
-         window that only ever said "Map exported" left the user no reason to
-         believe their choices had been kept anywhere. */
-      toast(r.sidecar ? ('Map exported, settings saved to ' + baseName(r.sidecar))
-        : 'Map exported', 'ok');
-      /* A sidecar that could not be written does not fail the export -- the map
-         is on disk where the line above says it is -- so this is a second,
-         quieter message rather than an error. Swallowing it is how a
-         convenience is discovered to have been broken for a month. */
-      if (r.sidecar_error) { toast(r.sidecar_error, 'warn'); }
-    }, function (e) { setBusy(false); fail(e); });
+      if (wasPlaying) { startPlayback(); }
+    }, function (error) { setBusy(false); fail(error); render(); });
   }
 
-  /* ---------------------------------------------------------------- channels */
-
-  /* Rows are rebuilt only when the file itself changes shape. Every ordinary
-     edit patches what is already on screen. */
-  function channelKey() {
-    var list = channels();
-    var parts = [STATE.analysis ? STATE.analysis.path : ''];
-    for (var i = 0; i < list.length; i++) {
-      parts.push(list[i].channel + ':' + list[i].is_drums + ':' + list[i].notes + ':' + list[i].auto_family);
-    }
-    return parts.join('|');
+  function boot() {
+    if (BOOTED || !api()) { return; }
+    BOOTED = true;
+    var sequence = nextRequest();
+    setBusy(true, 'Opening workstation...');
+    api().startup().then(function (response) {
+      setBusy(false);
+      if (!response || !response.ok) { fail(response); render(); return; }
+      adopt(response, sequence);
+      render();
+      if (response.error) { toast(response.error, 'warn'); }
+      setTimeout(refreshWindowState, 0);
+    }, function (error) { setBusy(false); fail(error); render(); });
   }
 
-  function buildAxis() {
-    var strip = document.createElement('div');
-    strip.className = 'axis-strip';
-    for (var note = AXIS_LOW; note <= AXIS_HIGH; note += OCTAVE) {
-      var tick = document.createElement('span');
-      tick.className = 'axis-tick';
-      tick.style.left = ((note - AXIS_LOW) / (AXIS_HIGH - AXIS_LOW) * 100) + '%';
-      tick.textContent = noteName(note);
-      strip.appendChild(tick);
-    }
-    var wrap = document.createElement('div');
-    wrap.className = 'axis';
-    wrap.appendChild(strip);
-    return wrap;
+  /* --------------------------------------------------------------- chrome */
+
+  function keyboardClick(node, action) {
+    node.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action(); }
+    });
   }
 
-  function fillFamilyOptions(select, autoFamily) {
-    select.innerHTML = '';
-    /* The way back to the automatic choice. Without it, reopening the file is
-       the only way to undo a pick. */
-    select.appendChild(option('', 'Automatic (' + (autoFamily || 'none') + ')'));
-    var families = (STATE.catalog && STATE.catalog.families) || [];
-    for (var i = 0; i < families.length; i++) {
-      var f = families[i];
-      select.appendChild(option(f.name, f.name + '   ' + noteName(f.lowest) + '-' + noteName(f.highest)));
-    }
-  }
-
-  function buildChannelRow(ch) {
-    var row = document.createElement('div');
-    row.className = 'chan-row';
-    row.innerHTML =
-      '<div class="chan-top">'
-      + '<span class="chan-no mono"></span>'
-      + '<span class="chan-name"></span>'
-      + '<span class="chan-count mono"></span>'
-      + '</div>'
-      + '<div class="chan-line"></div>'
-      + '<div class="chan-note"></div>';
-
-    var top = row.firstChild;
-    var ref = {
-      node: row,
-      channel: ch.channel,
-      no: row.querySelector('.chan-no'),
-      name: row.querySelector('.chan-name'),
-      count: row.querySelector('.chan-count'),
-      note: row.querySelector('.chan-note'),
-      line: row.querySelector('.chan-line'),
-      family: null,
-      mute: null,
-      ruler: null,
-      inst: null,
-      cells: [],
-      keys: null
+  function useWindowAnswer(response, sequence) {
+    if (!response || !response.ok || !accept('window', sequence)) { return; }
+    STATE.window = {
+      custom: response.custom === undefined ? !!(STATE.window && STATE.window.custom) : !!response.custom,
+      maximized: !!response.maximized
     };
+    renderWindow();
+  }
 
-    ref.no.textContent = 'Ch ' + ch.channel;
-    ref.name.textContent = ch.program_name;
-    ref.count.textContent = plural(ch.notes, 'note');
+  function renderWindow() {
+    var custom = !!(STATE.window && STATE.window.custom);
+    el('winControls').hidden = !custom;
+    var grips = document.querySelectorAll('.rz');
+    for (var index = 0; index < grips.length; index += 1) { grips[index].hidden = !custom; }
+    el('winMax').title = STATE.window && STATE.window.maximized ? 'Restore' : 'Maximize';
+  }
 
-    if (ch.is_drums) {
-      var kit = document.createElement('span');
-      kit.className = 'chan-kit';
-      kit.textContent = 'Drum kit';
-      top.appendChild(kit);
-    } else {
-      ref.family = document.createElement('select');
-      ref.family.className = 'chan-family';
-      ref.family.setAttribute('aria-label', 'Instrument for channel ' + ch.channel);
-      fillFamilyOptions(ref.family, ch.auto_family);
-      ref.family.addEventListener('change', function () {
-        var body = { channels: {} };
-        body.channels[String(ch.channel)] = { family: this.value === '' ? null : this.value };
-        patch(body);
+  function refreshWindowState() {
+    if (!api()) { return; }
+    var sequence = nextRequest();
+    api().win_state().then(function (response) { useWindowAnswer(response, sequence); }, function () { /* native frame remains */ });
+  }
+
+  function initChrome() {
+    function minimize() { if (api()) { api().win_min().then(function () {}, function () {}); } }
+    function maximize() {
+      if (!api()) { return; }
+      var sequence = nextRequest();
+      api().win_max().then(function (response) { useWindowAnswer(response, sequence); }, function () {});
+    }
+    function close() { if (api()) { api().win_close().then(function () {}, function () {}); } }
+    el('winMin').addEventListener('click', minimize);
+    el('winMax').addEventListener('click', maximize);
+    el('winClose').addEventListener('click', close);
+    keyboardClick(el('winMin'), minimize);
+    keyboardClick(el('winMax'), maximize);
+    keyboardClick(el('winClose'), close);
+
+    var menubar = document.querySelector('.menubar');
+    function interactive(target) { return target.closest('.app-menus, .win-controls, button, input, select'); }
+    menubar.addEventListener('mousedown', function (event) {
+      if (event.button !== 0 || interactive(event.target) || !api()) { return; }
+      var sequence = nextRequest();
+      api().win_drag().then(function (response) { useWindowAnswer(response, sequence); }, function () {});
+    });
+    menubar.addEventListener('dblclick', function (event) { if (!interactive(event.target)) { maximize(); } });
+    [['rz-t', 't'], ['rz-b', 'b'], ['rz-l', 'l'], ['rz-r', 'r'], ['rz-tl', 'tl'], ['rz-tr', 'tr'], ['rz-bl', 'bl'], ['rz-br', 'br']]
+      .forEach(function (pair) {
+        document.querySelector('.' + pair[0]).addEventListener('mousedown', function (event) {
+          if (event.button === 0 && api()) {
+            event.preventDefault();
+            api().win_resize(pair[1]).then(function () {}, function () {});
+          }
+        });
       });
-      top.appendChild(ref.family);
-    }
-
-    var muteWrap = document.createElement('label');
-    muteWrap.className = 'chan-mute';
-    ref.mute = document.createElement('input');
-    ref.mute.type = 'checkbox';
-    ref.mute.addEventListener('change', function () {
-      var body = { channels: {} };
-      body.channels[String(ch.channel)] = { muted: this.checked };
-      patch(body);
-    });
-    muteWrap.appendChild(ref.mute);
-    muteWrap.appendChild(document.createTextNode('Mute'));
-    top.appendChild(muteWrap);
-
-    if (ch.is_drums) {
-      /* No ruler. Its lowest and highest are key numbers, and drawing them on a
-         pitch axis would assert something false about what the channel plays. */
-      ref.keys = document.createElement('span');
-      ref.keys.className = 'mono muted';
-      ref.line.appendChild(ref.keys);
-    } else {
-      ref.ruler = document.createElement('div');
-      ref.ruler.className = 'ruler';
-      ref.ruler.setAttribute('role', 'img');
-      for (var note = AXIS_LOW; note <= AXIS_HIGH; note += OCTAVE) {
-        var grid = document.createElement('div');
-        grid.className = 'ruler-grid';
-        grid.style.left = ((note - AXIS_LOW) / (AXIS_HIGH - AXIS_LOW) * 100) + '%';
-        ref.ruler.appendChild(grid);
-      }
-      /* Created here and updated in place for the life of the row: the
-         transition on left/width only runs on an element that survives. */
-      ref.inst = document.createElement('div');
-      ref.inst.className = 'ruler-inst';
-      ref.ruler.appendChild(ref.inst);
-      ref.line.appendChild(ref.ruler);
-    }
-    return ref;
   }
 
-  function buildChannelRows() {
-    var host = el('channelList');
-    host.innerHTML = '';
-    CHAN_ROWS = [];
-    var list = channels();
-    if (!list.length) {
-      var empty = document.createElement('div');
-      empty.className = 'list-empty';
-      empty.textContent = 'This file has no notes.';
-      host.appendChild(empty);
-      return;
-    }
-    for (var i = 0; i < list.length; i++) {
-      var ref = buildChannelRow(list[i]);
-      CHAN_ROWS.push(ref);
-      host.appendChild(ref.node);
-    }
-    host.appendChild(buildAxis());
+  /* --------------------------------------------------------------- render */
+
+  function renderAudio() {
+    var state = STATE.audio;
+    var song = hasSong();
+    el('slotAudio').hidden = !state;
+    el('audioBanner').hidden = !song || !state || !!state.ready;
+    if (!state) { return; }
+    if (state.ready) { el('audioText').textContent = 'ready'; }
+    else if (state.error) { el('audioText').textContent = 'unavailable'; }
+    else if (!state.install) { el('audioText').textContent = 'game not found'; }
+    else { el('audioText').textContent = (state.count || 0) + ' / ' + (state.expected || 0); }
+    updateMenuState();
   }
 
-  function patchRuler(ref, ch, seg, family) {
-    var ruler = ref.ruler;
-    if (!ruler) { return; }
-    var cells = (seg && seg.cells) || [];
-    var width = (seg && seg.cell_width) || 0;
-
-    if (seg && seg.instrument) {
-      ref.inst.hidden = false;
-      ref.inst.style.left = seg.instrument.left + '%';
-      ref.inst.style.width = seg.instrument.width + '%';
-    } else {
-      ref.inst.hidden = true;
-    }
-    ref.inst.classList.toggle('disjoint', !!(seg && seg.disjoint));
-
-    while (ref.cells.length < cells.length) {
-      var cell = document.createElement('div');
-      cell.className = 'ruler-cell';
-      ruler.appendChild(cell);
-      ref.cells.push(cell);
-    }
-    while (ref.cells.length > cells.length) {
-      var extra = ref.cells.pop();
-      if (extra.parentNode) { extra.parentNode.removeChild(extra); }
-    }
-    for (var i = 0; i < cells.length; i++) {
-      var c = cells[i];
-      var node = ref.cells[i];
-      node.style.left = c.left + '%';
-      node.style.width = width + '%';
-      node.style.opacity = 0.25 + 0.75 * c.weight;
-      var out = !!(family && (c.note < family.lowest || c.note > family.highest));
-      node.classList.toggle('out', out);
-    }
-
-    var sentence = rulerSentence(ch, seg, family);
-    ruler.title = sentence;
-    ruler.setAttribute('aria-label', sentence);
-  }
-
-  function patchChannelRow(ref, ch) {
-    var family = familyInfo(chosenFamily(ch));
-    var seg = segmentFor(ch.channel);
-    var muted = isMuted(ch);
-
-    ref.node.classList.toggle('off', muted);
-    setChecked(ref.mute, muted);
-    if (ref.family) {
-      var entry = channelSetting(ch.channel);
-      setValue(ref.family, (entry && entry.family) ? entry.family : '');
-    }
-
-    if (ref.keys) {
-      var keys = ch.drum_keys || {};
-      var total = 0;
-      var unmapped = 0;
-      var overrides = (STATE.settings && STATE.settings.drum_keys) || {};
-      for (var key in keys) {
-        if (!Object.prototype.hasOwnProperty.call(keys, key)) { continue; }
-        total += 1;
-        if (!overrides[String(key)] && !keys[key]) { unmapped += 1; }
-      }
-      ref.keys.textContent = plural(total, 'key') + '  ·  ' + unmapped + ' unmapped';
-      ref.note.className = 'chan-note' + (unmapped ? ' warn' : '');
-      ref.note.textContent = unmapped
-        ? 'Give the unmapped keys sounds on the Drums tab, or they play nothing.'
-        : '';
-      return;
-    }
-
-    patchRuler(ref, ch, seg, family);
-
-    if (seg && seg.disjoint) {
-      ref.note.className = 'chan-note err';
-      ref.note.textContent = rulerSentence(ch, seg, family);
-    } else if (seg && seg.outside > 0) {
-      ref.note.className = 'chan-note warn';
-      ref.note.textContent = rulerSentence(ch, seg, family);
-    } else {
-      ref.note.className = 'chan-note';
-      ref.note.textContent = '';
-    }
-  }
-
-  function renderChannels() {
-    var key = channelKey();
-    if (key !== CHAN_KEY) { buildChannelRows(); CHAN_KEY = key; }
-    var list = channels();
-    el('chanBadge').textContent = list.length;
-    for (var i = 0; i < CHAN_ROWS.length && i < list.length; i++) {
-      patchChannelRow(CHAN_ROWS[i], list[i]);
-    }
-  }
-
-  /* ------------------------------------------------------------------- drums */
-
-  function drumKeyList(ch) {
-    var keys = (ch && ch.drum_keys) || {};
-    var out = [];
-    for (var key in keys) {
-      if (Object.prototype.hasOwnProperty.call(keys, key)) { out.push(Number(key)); }
-    }
-    out.sort(function (a, b) { return a - b; });
-    return out;
-  }
-
-  function drumKeyName(key) {
-    var names = (STATE.catalog && STATE.catalog.drum_names) || {};
-    return names[String(key)] || ('Key ' + key);
-  }
-
-  function fillDrumOptions(select, tableSound) {
-    select.innerHTML = '';
-    select.appendChild(option('', tableSound ? ('Default (' + tableSound + ')') : 'No sound'));
-    var sounds = (STATE.catalog && STATE.catalog.drum_sounds) || [];
-    var groups = {};
-    var order = [];
-    for (var i = 0; i < sounds.length; i++) {
-      var cat = sounds[i].category || 'other';
-      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
-      groups[cat].push(sounds[i]);
-    }
-    for (var g = 0; g < order.length; g++) {
-      var box = document.createElement('optgroup');
-      box.label = order[g];
-      var members = groups[order[g]];
-      for (var m = 0; m < members.length; m++) {
-        box.appendChild(option(members[m].name, members[m].label || members[m].name));
-      }
-      select.appendChild(box);
-    }
-  }
-
-  /* Sent whole rather than as a single key, because clearing one back to the
-     table's own answer has no other spelling in the settings document. */
-  function drumKeyPatch(key, value) {
-    var current = (STATE.settings && STATE.settings.drum_keys) || {};
-    var next = {};
-    for (var k in current) {
-      if (Object.prototype.hasOwnProperty.call(current, k) && String(k) !== String(key)) {
-        next[String(k)] = current[k];
-      }
-    }
-    if (value) { next[String(key)] = value; }
-    patch({ drum_keys: next });
-  }
-
-  function buildDrumRow(ch, key) {
-    var row = document.createElement('div');
-    row.className = 'drum-row';
-    row.innerHTML =
-      '<span class="drum-key mono"></span>'
-      + '<span class="drum-name"></span>'
-      + '<span class="drum-state"></span>';
-
-    var ref = {
-      node: row,
-      key: key,
-      keyText: row.querySelector('.drum-key'),
-      name: row.querySelector('.drum-name'),
-      state: row.querySelector('.drum-state'),
-      pick: document.createElement('select')
-    };
-    ref.keyText.textContent = 'Key ' + key;
-    ref.name.textContent = drumKeyName(key);
-    ref.pick.className = 'drum-pick';
-    ref.pick.setAttribute('aria-label', 'Sound for key ' + key);
-    fillDrumOptions(ref.pick, (ch.drum_keys || {})[String(key)] || null);
-    ref.pick.addEventListener('change', function () { drumKeyPatch(key, this.value); });
-    row.insertBefore(ref.pick, ref.state);
-    return ref;
-  }
-
-  function drumKey() {
-    var ch = drumChannel();
-    if (!ch) { return 'none'; }
-    return ch.channel + '|' + drumKeyList(ch).join(',') + '|'
-      + ((STATE.catalog && STATE.catalog.drum_sounds) ? STATE.catalog.drum_sounds.length : 0);
-  }
-
-  function buildDrumRows() {
-    var host = el('drumList');
-    host.innerHTML = '';
-    DRUM_ROWS = [];
-    var ch = drumChannel();
-    if (!ch) {
-      var empty = document.createElement('div');
-      empty.className = 'list-empty';
-      empty.textContent = 'This file has no drum channel. Turn the drum channel on to route channel notes through the kit.';
-      host.appendChild(empty);
-      return;
-    }
-    var keys = drumKeyList(ch);
-    for (var i = 0; i < keys.length; i++) {
-      var ref = buildDrumRow(ch, keys[i]);
-      DRUM_ROWS.push(ref);
-      host.appendChild(ref.node);
-    }
-  }
-
-  function renderDrums() {
-    var key = drumKey();
-    if (key !== DRUM_KEY) { buildDrumRows(); DRUM_KEY = key; }
-
-    var mode = (STATE.settings && STATE.settings.drums) || 'auto';
-    setValue(el('drumMode'), mode);
-    var ch = drumChannel();
-    el('drumModeHint').textContent = ch
-      ? ('Channel ' + ch.channel + ' plays the kit.')
-      : 'No channel is playing a kit.';
-
-    var overrides = (STATE.settings && STATE.settings.drum_keys) || {};
-    var table = (ch && ch.drum_keys) || {};
-    var unmapped = 0;
-    for (var i = 0; i < DRUM_ROWS.length; i++) {
-      var ref = DRUM_ROWS[i];
-      var chosen = overrides[String(ref.key)] || '';
-      setValue(ref.pick, chosen);
-      var effective = chosen || table[String(ref.key)] || null;
-      if (!effective) { unmapped += 1; }
-      ref.state.className = 'drum-state' + (effective ? '' : ' warn');
-      ref.state.textContent = effective ? '' : 'no sound';
-    }
-    el('drumBadge').textContent = DRUM_ROWS.length + (unmapped ? (' · ' + unmapped) : '');
-  }
-
-  /* ------------------------------------------------------------------ tuning */
-
-  function tuningPatch(body) { patch({ tuning: body }); }
-
-  function buildTuning() {
-    el('tuningBody').innerHTML =
-      '<div class="form-row">'
-      + '<label for="tSpeakers">Max speakers</label>'
-      + '<input type="number" id="tSpeakers" min="1" max="64" step="1">'
-      + '<span class="hint">How many notes may sound at once. The engine recycles slots past this.</span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="tRelease">Release (seconds)</label>'
-      + '<input type="number" id="tRelease" min="0" max="10" step="0.01">'
-      + '<span class="hint">How long a released note takes to fall silent.</span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="tHardStop">Hard stop</label>'
-      + '<span><input type="checkbox" id="tHardStop"></span>'
-      + '<span class="hint">Cut a note dead instead of letting it fade.</span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="tMaxPoly">Max polyphony</label>'
-      + '<input type="number" id="tMaxPoly" min="1" step="1" placeholder="none">'
-      + '<span class="hint">Thin dense chords to this many notes. Leave empty for no limit.</span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="tCapSustain">Cap sustain (ms)</label>'
-      + '<input type="number" id="tCapSustain" min="0" step="10" placeholder="none">'
-      + '<span class="hint">Shorten every held note to this. Leave empty to keep written lengths.</span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="tBassPitch">Bass pitch</label>'
-      + '<input type="number" id="tBassPitch" min="0" max="127" step="1">'
-      + '<span class="hint">Notes below this count as bass, and take the bass cap.</span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="tBassCap">Bass cap (ms)</label>'
-      + '<input type="number" id="tBassCap" min="0" step="10" placeholder="none">'
-      + '<span class="hint">Shorten bass notes to this. Leave empty to keep written lengths.</span>'
-      + '</div>'
-      + '<div class="section-label">Families in this song</div>'
-      + '<p class="muted" id="tFamNote">Move a family to the decaying path to free its speaker slots, or cap how long its notes hold.</p>'
-      + '<table class="fam-table"><thead><tr>'
-      + '<th>Family</th><th>Decaying</th><th>Cap (ms)</th>'
-      + '</tr></thead><tbody id="tFamBody"></tbody></table>';
-
-    bindNumber('tSpeakers', 'max_speakers', false);
-    bindNumber('tRelease', 'release_s', false);
-    bindNumber('tMaxPoly', 'max_poly', true);
-    bindNumber('tCapSustain', 'cap_sustain_ms', true);
-    bindNumber('tBassPitch', 'bass_pitch', false);
-    bindNumber('tBassCap', 'bass_cap_ms', true);
-    el('tHardStop').addEventListener('change', function () {
-      tuningPatch({ hard_stop: this.checked });
-    });
-  }
-
-  function bindNumber(id, keyName, nullable) {
-    var node = el(id);
-    node.addEventListener('input', debounce(function () {
-      var value = numberOrNull(node);
-      if (value === undefined) { return; }
-      if (value === null && !nullable) { return; }
-      var body = {};
-      body[keyName] = value;
-      tuningPatch(body);
-    }));
-  }
-
-  /* Only the families this song actually reaches for. A cap on a family no
-     channel plays changes nothing, and sixteen inert rows would hide the two
-     that matter. */
-  function familiesInPlay() {
-    var seen = {};
-    var out = [];
-    var list = channels();
-    var i;
-    for (i = 0; i < list.length; i++) {
-      var name = list[i].is_drums ? null : chosenFamily(list[i]);
-      if (name && !seen[name]) { seen[name] = true; out.push(name); }
-    }
-    var t = tuning();
-    var decaying = t.decaying_families || [];
-    for (i = 0; i < decaying.length; i++) {
-      if (!seen[decaying[i]]) { seen[decaying[i]] = true; out.push(decaying[i]); }
-    }
-    var caps = t.family_caps || {};
-    for (var cap in caps) {
-      if (Object.prototype.hasOwnProperty.call(caps, cap) && !seen[cap]) {
-        seen[cap] = true;
-        out.push(cap);
-      }
-    }
-    out.sort();
-    return out;
-  }
-
-  function decayingPatch(name, on) {
-    var current = (tuning().decaying_families || []).slice();
-    var at = current.indexOf(name);
-    if (on && at < 0) { current.push(name); }
-    if (!on && at >= 0) { current.splice(at, 1); }
-    tuningPatch({ decaying_families: current });
-  }
-
-  function capPatch(name, value) {
-    var current = tuning().family_caps || {};
-    var next = {};
-    for (var k in current) {
-      if (Object.prototype.hasOwnProperty.call(current, k) && k !== name) { next[k] = current[k]; }
-    }
-    if (value !== null && value !== undefined) { next[name] = value; }
-    tuningPatch({ family_caps: next });
-  }
-
-  function buildFamilyRows(names) {
-    var body = el('tFamBody');
-    body.innerHTML = '';
-    FAM_ROWS = [];
-    for (var i = 0; i < names.length; i++) {
-      (function (name) {
-        var tr = document.createElement('tr');
-        var cellName = document.createElement('td');
-        cellName.className = 'mono';
-        cellName.textContent = name;
-
-        var cellDecay = document.createElement('td');
-        var box = document.createElement('input');
-        box.type = 'checkbox';
-        box.setAttribute('aria-label', 'Play ' + name + ' on the decaying path');
-        box.addEventListener('change', function () { decayingPatch(name, this.checked); });
-        cellDecay.appendChild(box);
-
-        var cellCap = document.createElement('td');
-        var num = document.createElement('input');
-        num.type = 'number';
-        num.min = '0';
-        num.step = '10';
-        num.placeholder = 'none';
-        num.setAttribute('aria-label', 'Cap for ' + name + ' in milliseconds');
-        num.addEventListener('input', debounce(function () {
-          var value = numberOrNull(num);
-          if (value === undefined) { return; }
-          capPatch(name, value);
-        }));
-        cellCap.appendChild(num);
-
-        tr.appendChild(cellName);
-        tr.appendChild(cellDecay);
-        tr.appendChild(cellCap);
-        body.appendChild(tr);
-        FAM_ROWS.push({ name: name, decay: box, cap: num });
-      }(names[i]));
-    }
-  }
-
-  function renderTuning() {
-    if (!BUILT.tuning) { buildTuning(); BUILT.tuning = true; }
-    var t = tuning();
-    setValue(el('tSpeakers'), t.max_speakers === null || t.max_speakers === undefined ? '' : t.max_speakers);
-    setValue(el('tRelease'), t.release_s === null || t.release_s === undefined ? '' : t.release_s);
-    setChecked(el('tHardStop'), t.hard_stop);
-    setValue(el('tMaxPoly'), t.max_poly === null || t.max_poly === undefined ? '' : t.max_poly);
-    setValue(el('tCapSustain'), t.cap_sustain_ms === null || t.cap_sustain_ms === undefined ? '' : t.cap_sustain_ms);
-    setValue(el('tBassPitch'), t.bass_pitch === null || t.bass_pitch === undefined ? '' : t.bass_pitch);
-    setValue(el('tBassCap'), t.bass_cap_ms === null || t.bass_cap_ms === undefined ? '' : t.bass_cap_ms);
-
-    var names = familiesInPlay();
-    var key = names.join(',');
-    if (key !== FAM_KEY) { buildFamilyRows(names); FAM_KEY = key; }
-
-    var decaying = t.decaying_families || [];
-    var caps = t.family_caps || {};
-    for (var i = 0; i < FAM_ROWS.length; i++) {
-      var ref = FAM_ROWS[i];
-      setChecked(ref.decay, decaying.indexOf(ref.name) >= 0);
-      var cap = caps[ref.name];
-      setValue(ref.cap, cap === undefined || cap === null ? '' : cap);
-    }
-  }
-
-  /* ------------------------------------------------------------------ export */
-
-  function buildExport() {
-    el('exportBody').innerHTML =
-      '<div class="form-row">'
-      + '<label for="xButton">Button name</label>'
-      + '<span class="wide"><input type="text" id="xButton"></span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="xOutDir">Output folder</label>'
-      + '<span class="wide"><input type="text" id="xOutDir" readonly>'
-      + '<button type="button" class="btn" id="xOutBtn">Browse</button></span>'
-      + '</div>'
-      + '<div class="form-row">'
-      + '<label for="xBaseline">Baseline map</label>'
-      + '<span class="wide"><input type="text" id="xBaseline" readonly>'
-      + '<button type="button" class="btn" id="xBaseBtn">Browse</button>'
-      + '<button type="button" class="btn" id="xBaseClear">Clear</button></span>'
-      + '</div>'
-      + '<div class="section-label">What this will produce</div>'
-      + '<div class="readout">'
-      + '<span>Notes <b id="xNotes">0</b></span>'
-      + '<span>Dropped <b id="xDropped">0</b></span>'
-      + '<span>Decaying <b id="xDecaying">0</b></span>'
-      + '<span>Sustained <b id="xSustained">0</b></span>'
-      + '<span>Events <b id="xEvents">0</b></span>'
-      + '<span>Long sustains <b id="xLong">0</b></span>'
-      + '<span>Peak voices <b id="xPeak">0</b></span>'
-      + '<span>Length <b id="xLength">0</b></span>'
-      + '</div>'
-      + '<div class="actions">'
-      + '<button type="button" class="btn" id="xDryBtn">Dry run</button>'
-      + '<button type="button" class="btn primary" id="xExportBtn">Export map</button>'
-      + '</div>'
-      + '<p class="muted mono" id="xDestination"></p>'
-      + '<p class="muted" id="xReplaced" hidden></p>'
-      + '<p class="muted" id="xAdvice"></p>';
-
-    el('xButton').addEventListener('input', debounce(function () {
-      patch({ button: el('xButton').value });
-    }));
-    el('xOutBtn').addEventListener('click', function () {
-      if (!api()) { return; }
-      var mine = next();
-      setBusy(true);
-      api().pick_out_dir().then(function (r) {
-        setBusy(false);
-        if (!r || !r.ok) { if (r && r.error) { toast(r.error, 'err'); } return; }
-        adopt(r, mine);
-        render();
-      }, function (e) { setBusy(false); fail(e); });
-    });
-    el('xBaseBtn').addEventListener('click', function () {
-      if (!api()) { return; }
-      var mine = next();
-      setBusy(true);
-      api().pick_baseline().then(function (r) {
-        setBusy(false);
-        if (!r || !r.ok) { if (r && r.error) { toast(r.error, 'err'); } return; }
-        adopt(r, mine);
-        render();
-      }, function (e) { setBusy(false); fail(e); });
-    });
-    el('xBaseClear').addEventListener('click', function () { patch({ baseline: null }); });
-    el('xDryBtn').addEventListener('click', dryRun);
-    el('xExportBtn').addEventListener('click', exportMap);
-  }
-
-  function renderExport() {
-    if (!BUILT.exporter) { buildExport(); BUILT.exporter = true; }
-    /* Spelled out rather than aliased to `s`, so that every key this file reads
-       off the document is greppable as `settings.<key>`. That is what
-       `tests/test_ui_assets.py` scans for, and a one-letter alias hid three
-       reads from it -- the three most likely to drift, being the only
-       top-level document keys the window writes back. */
-    var settings = STATE.settings || {};
-    setValue(el('xButton'), settings.button || '');
-    setValue(el('xOutDir'), settings.out_dir || '');
-    setValue(el('xBaseline'), settings.baseline || '');
-    el('xBaseClear').disabled = !settings.baseline;
-
-    var stats = STATE.stats || {};
-    el('xNotes').textContent = stats.notes || 0;
-    el('xDropped').textContent = stats.dropped || 0;
-    el('xDecaying').textContent = stats.decaying || 0;
-    el('xSustained').textContent = stats.sustained || 0;
-    el('xEvents').textContent = stats.events || 0;
-    el('xLong').textContent = stats.long_sustains || 0;
-    el('xPeak').textContent = (stats.peak_voices || 0) + ' / ' + (stats.max_speakers || 0);
-    el('xLength').textContent = (stats.duration_s || 0) + 's';
-  }
-
-  /* -------------------------------------------------- warnings and statusbar */
-
-  /* Verbatim. Each one already names a cause, a magnitude and the lever that
-     changes it; rewording them here would put a second voice in the window. */
   function renderWarnings() {
+    var warnings = (STATE.stats && STATE.stats.warnings) || [];
     var bar = el('warnBar');
-    var list = (STATE.stats && STATE.stats.warnings) || [];
-    bar.innerHTML = '';
-    bar.hidden = !list.length;
-    for (var i = 0; i < list.length; i++) {
-      var row = document.createElement('div');
-      row.className = 'warn-row';
-      var sev = document.createElement('span');
-      sev.className = 'sev';
-      sev.textContent = '!';
-      var text = document.createElement('span');
-      text.textContent = list[i];
-      row.appendChild(sev);
-      row.appendChild(text);
-      bar.appendChild(row);
-    }
-  }
-
-  function setBridge(connected, text) {
-    var dot = el('bridgeDot');
-    dot.className = 'dot' + (connected ? ' ok' : ' no');
-    el('bridgeText').textContent = text;
+    bar.hidden = warnings.length === 0;
+    bar.textContent = warnings.length
+      ? warnings[0] + (warnings.length > 1 ? '  +' + (warnings.length - 1) + ' more' : '')
+      : '';
   }
 
   function renderStatus() {
-    el('songName').textContent = STATE.analysis ? baseName(STATE.analysis.path) : '';
-    el('reopenBtn').disabled = !(api() && STATE.analysis);
     var stats = STATE.stats;
-    var slots = ['slotNotes', 'slotVoices', 'slotSustain', 'slotLength'];
-    for (var i = 0; i < slots.length; i++) { el(slots[i]).hidden = !stats; }
-    if (!stats) { return; }
-    el('statNotes').textContent = stats.notes;
-    el('statVoices').textContent = stats.peak_voices + ' / ' + stats.max_speakers;
-    el('statSustain').textContent = stats.long_sustains;
-    el('statLength').textContent = stats.duration_s + 's';
+    el('bridgeDot').className = 'dot ' + (api() ? 'ok' : 'no');
+    el('bridgeText').textContent = api() ? 'ready' : 'browser preview';
+    [['slotNotes', 'statNotes', 'notes'], ['slotVoices', 'statVoices', 'peak_voices'], ['slotSustain', 'statSustain', 'long_sustains']]
+      .forEach(function (row) {
+        el(row[0]).hidden = !stats;
+        if (stats) { el(row[1]).textContent = String(stats[row[2]] || 0); }
+      });
+    el('slotLength').hidden = !STATE.preview;
+    if (STATE.preview) { el('statLength').textContent = ((STATE.preview.duration_ms || 0) / 1000).toFixed(1) + 's'; }
   }
 
   function render() {
-    showTab(ACTIVE);
-    if (hasSong()) {
-      renderChannels();
-      renderDrums();
-      renderTuning();
-      renderExport();
-    }
-    renderStatus();
+    var song = hasSong();
+    el('emptyState').hidden = song;
+    el('workspace').hidden = !song;
+    el('songName').textContent = song ? baseName(STATE.settings.midi) : '';
+    el('menuExport').disabled = !song;
+    el('exportBtn').disabled = !song;
+    if (song) { renderTracks(); }
+    renderTransportState();
+    renderPosition(currentPosition());
+    renderAudio();
     renderWarnings();
+    renderStatus();
+    renderWindow();
+    if (INSPECTOR_OPEN) { syncInspector(); }
+    requestAnimationFrame(resizeCanvas);
   }
 
-  /* -------------------------------------------------------------------- boot */
+  /* --------------------------------------------------------------- startup */
 
-  function boot() {
-    if (BOOTED) { return; }
-    BOOTED = true;
-    if (!api()) { return; }
-    setBridge(true, 'ready');
-    var mine = next();
-    setBusy(true);
-    api().startup().then(function (r) {
-      setBusy(false);
-      if (!r) { return; }
-      /* `ok` and `error` can both be set: opening on a bad path still opens a
-         usable window, and the message is the only place that says why. */
-      if (r.error) { toast(r.error, r.ok ? 'warn' : 'err'); }
-      if (!r.ok) { render(); return; }
-      adopt(r, mine);
-      render();
-      if (hasSong()) { stamp('Opened ' + baseName(STATE.analysis.path)); }
-    }, function (e) { setBusy(false); fail(e); });
+  function shortcut(event) {
+    var target = event.target;
+    var editing = target && target.closest && target.closest('input, select, textarea');
+    if (event.key === 'Escape') {
+      if (OPEN_MENU) { closeMenus(); }
+      else if (INSPECTOR_OPEN) { closeInspector(); }
+      return;
+    }
+    if (event.ctrlKey && !event.shiftKey && !event.altKey) {
+      var key = event.key.toLowerCase();
+      if (key === 'i') { event.preventDefault(); importMidi(); }
+      else if (key === 'e') { event.preventDefault(); exportMap(); }
+      else if (key === 'r') { event.preventDefault(); reopenMidi(); }
+      else if (event.key === ',') { event.preventDefault(); openInspector(); }
+      return;
+    }
+    if (!editing && event.code === 'Space') { event.preventDefault(); togglePlayback(); }
+    if (!editing && event.key === 'Home') { event.preventDefault(); pausePlayback(); setPosition(0); }
+  }
+
+  function initTransport() {
+    el('transportPlay').addEventListener('click', togglePlayback);
+    el('menuPlay').addEventListener('click', function () { closeMenus(); togglePlayback(); });
+    el('menuStart').addEventListener('click', function () { closeMenus(); pausePlayback(); setPosition(0); });
+    var scrubber = el('scrubber');
+    scrubber.addEventListener('pointerdown', function () {
+      SCRUB_DRAG = { resume: AUDIO.playing };
+      pausePlayback();
+    });
+    scrubber.addEventListener('input', function () { setPosition(Number(this.value)); });
+    scrubber.addEventListener('pointerup', function () {
+      var resume = SCRUB_DRAG && SCRUB_DRAG.resume;
+      SCRUB_DRAG = null;
+      if (resume) { startPlayback(); }
+    });
+    scrubber.addEventListener('change', function () {
+      if (!SCRUB_DRAG) { pausePlayback(); setPosition(Number(this.value)); }
+    });
+    var canvas = el('pianoRoll');
+    canvas.addEventListener('pointerdown', beginCanvasSeek);
+    canvas.addEventListener('pointermove', moveCanvasSeek);
+    canvas.addEventListener('pointerup', endCanvasSeek);
+    canvas.addEventListener('pointercancel', endCanvasSeek);
   }
 
   function init() {
+    initMenus();
     initTheme();
-    initTabs();
-    el('openBtn').addEventListener('click', openFile);
-    el('emptyOpenBtn').addEventListener('click', openFile);
-    el('reopenBtn').addEventListener('click', reopen);
-    el('drumMode').addEventListener('change', function () {
-      var done = patch({ drums: this.value });
-      /* `apply_settings` carries the analysis back, so the channel list and the
-         rulers are already right by the time this resolves. The catalog is the
-         one thing it does not carry: `drum_names` covers the keys the OPEN SONG
-         plays, and this switch is what decides whether channel 9 has any. Left
-         stale, every row on the Drums tab reads "Key 42" instead of naming the
-         drum. */
-      if (done && done.then) { done.then(refreshCatalog); } else { refreshCatalog(); }
-    });
-    setBridge(false, 'no window attached');
+    initInspector();
+    initTransport();
+    initChrome();
+    el('menuImport').addEventListener('click', importMidi);
+    el('menuReopen').addEventListener('click', reopenMidi);
+    el('menuExport').addEventListener('click', exportMap);
+    el('menuExit').addEventListener('click', function () { closeMenus(); if (api()) { api().win_close(); } });
+    el('menuAudio').addEventListener('click', setupAudio);
+    el('audioBanner').addEventListener('click', setupAudio);
+    el('emptyOpenBtn').addEventListener('click', importMidi);
+    el('exportBtn').addEventListener('click', exportMap);
+    document.addEventListener('keydown', shortcut);
+    window.addEventListener('resize', debounce(resizeCanvas, 40));
+    if (window.ResizeObserver) { new ResizeObserver(resizeCanvas).observe(el('pianoRoll')); }
     render();
-    if (api()) { boot(); }
+    if (api()) { setTimeout(boot, 0); }
   }
 
-  /* pywebview signals its bridge is ready with this event. Opened straight from
-     disk in a browser it never fires, `api()` stays null, and the window sits on
-     its empty state rather than throwing. */
   window.addEventListener('pywebviewready', boot);
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', init); }
+  else { init(); }
 }());

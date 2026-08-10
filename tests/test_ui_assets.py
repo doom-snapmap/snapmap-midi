@@ -20,13 +20,15 @@ one that can see this class of failure at all.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 import tomllib
 from pathlib import Path
 
 from snapmap_midi import settings as settings_module
 from snapmap_midi.ui.api import Bridge
-from snapmap_midi.ui.app import web_root
+from snapmap_midi.ui.app import web_root, web_url
 from snapmap_midi.ui.session import Session
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -99,15 +101,22 @@ def test_the_window_hard_codes_no_family_name():
 
 
 def test_the_markup_links_the_style_and_the_behaviour_beside_it():
-    """Relative paths, because the window is loaded off the filesystem by path.
+    """Relative paths, because the window is loaded from a local file URI.
 
-    Nothing is served: `webview.create_window` is handed `index.html` and the
-    engine resolves the two links against it. A link that no longer matches the
-    file beside it does not raise -- the page renders unstyled and inert, which
-    reads as the window having failed to load its data rather than its assets.
+    Nothing is served: `webview.create_window` is handed the `file:///` URI for
+    `index.html` and the engine resolves the two links against it. A link that
+    no longer matches the file beside it does not raise -- the page renders
+    unstyled and inert, which reads as the window having failed to load its data
+    rather than its assets.
     """
     assert 'href="styles.css"' in _HTML
     assert 'src="app.js"' in _HTML
+
+
+def test_the_window_entrypoint_is_a_file_uri_and_not_a_loopback_server():
+    assert web_url() == (_WEB / "index.html").as_uri()
+    assert web_url().startswith("file:///")
+    assert "127.0.0.1" not in web_url()
 
 
 def test_the_window_waits_for_the_bridge_instead_of_assuming_it():
@@ -129,14 +138,9 @@ def test_the_window_waits_for_the_bridge_instead_of_assuming_it():
     )
 
 
-def test_reduced_motion_turns_the_ruler_s_animation_off():
-    """The ruler's instrument track slides on every family change.
-
-    That transition is the one piece of motion in the window and it is on the
-    control somebody changes repeatedly, so for a reader who has asked their
-    system for less of it this is precisely the thing they asked about. The
-    preference is a system setting; honouring it is not a preference.
-    """
+def test_reduced_motion_disables_decorative_transitions():
+    """The playhead still moves because it carries song position; the drawer
+    and toast transitions are decoration and honour the system preference."""
     assert "prefers-reduced-motion" in _CSS
 
 
@@ -153,6 +157,137 @@ def test_both_themes_are_defined():
     stripped = re.sub(r"\s+", "", _CSS)
     assert ":root{" in stripped
     assert ":root.dark{" in stripped
+
+
+def test_the_shared_snapmap_plus_design_tokens_do_not_drift():
+    """Both windows use the exact same canonical light and dark palettes."""
+    compact = re.sub(r"\s+", "", _CSS)
+    canonical = [
+        """
+        :root {
+          --bg:#eef0f3; --chrome:#f7f8fa; --panel:#ffffff; --panel2:#fbfbfc;
+          --border:#e4e6ea; --border2:#d3d6db; --text:#1b1d21; --muted:#6b7280;
+          --accent:#2f7ad6; --accentText:#ffffff; --sel:#e7f0fb; --selText:#123a63;
+          --link:#2a68b8; --field:#ffffff; --danger:#a3352f;
+          --tkKey:#0550ae; --tkStr:#9a3b22; --tkNum:#116329; --tkBool:#8250df;
+          --sqErr:#d1372c; --sqWarn:#b58a1f; color-scheme: light;
+        }
+        """,
+        """
+        :root.dark {
+          --bg:#191a1d; --chrome:#232428; --panel:#26272b; --panel2:#2b2d31;
+          --border:#33353b; --border2:#45474e; --text:#e7e8ea; --muted:#9aa0a8;
+          --accent:#4a9eff; --accentText:#0c1116; --sel:#2d4257; --selText:#cfe4fb;
+          --link:#6fb2ff; --field:#1f2024; --danger:#c9483d;
+          --tkKey:#7cb5ff; --tkStr:#ce9178; --tkNum:#9fd394; --tkBool:#c39ce8;
+          --sqErr:#f14c4c; --sqWarn:#d7a944; color-scheme: dark;
+        }
+        """,
+    ]
+    for rule in canonical:
+        assert re.sub(r"\s+", "", rule) in compact
+
+
+def test_the_shared_snapmap_plus_shell_primitives_do_not_drift():
+    """MIDI-specific rows may differ; shared chrome and controls may not."""
+    compact = re.sub(r"\s+", "", _CSS)
+    canonical = [
+        (
+            ".app { display:flex; flex-direction:column; height:100vh; "
+            "background:var(--bg); color:var(--text); user-select:none; "
+            "-webkit-user-select:none; }"
+        ),
+        (
+            ".menubar { display:flex; align-items:center; height:30px; "
+            "background:var(--chrome); border-bottom:1px solid var(--border); "
+            "padding:0 6px; gap:8px; flex-shrink:0; user-select:none; }"
+        ),
+        ".win-controls { display:flex; margin-left:8px; }",
+        (
+            ".win-btn { width:30px; height:30px; display:flex; align-items:center; "
+            "justify-content:center; color:var(--muted); font-size:12px; cursor:default; }"
+        ),
+        ".win-btn:hover { background:var(--panel2); color:var(--text); }",
+        ".panel-body.pad { padding:10px; }",
+        ".list-empty { padding:10px; color:var(--muted); font-style:italic; }",
+        ".btn.icon { padding:3px 8px; font-size:12px; }",
+        (
+            ".toast { min-width:150px; max-width:320px; padding:8px 12px; "
+            "background:#333; color:#fff; border-radius:6px; font-size:11px;"
+        ),
+    ]
+    for rule in canonical:
+        assert re.sub(r"\s+", "", rule) in compact, rule.split("{")[0].strip()
+
+
+def test_the_brand_mark_is_the_exact_snapmap_plus_asset():
+    prefix = "data:image/jpeg;base64,"
+    assert prefix in _HTML
+    encoded = _HTML.split(prefix, 1)[1].split(chr(34), 1)[0]
+    digest = hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+    assert digest == "3209c9dbad0ff5a63858c4ebb97cb5d059463768b8993919d59abc7dec51215b"
+
+
+def test_the_custom_frame_has_every_snapmap_plus_move_and_resize_surface():
+    for edge in ("t", "b", "l", "r", "tl", "tr", "bl", "br"):
+        assert 'class="rz rz-%s"' % edge in _HTML
+    for button in ("winMin", "winMax", "winClose"):
+        assert 'id="%s"' % button in _HTML
+    for call in ("win_drag", "win_resize", "win_min", "win_max", "win_close"):
+        assert "api().%s(" % call in _JS
+
+
+def test_the_workstation_is_one_surface_with_one_global_transport():
+    assert 'id="trackList"' in _HTML
+    assert 'id="pianoRoll"' in _HTML
+    assert 'id="transportPlay"' in _HTML
+    assert 'id="scrubber"' in _HTML
+    assert _HTML.count('class="transport-play"') == 1
+    assert "tabstrip" not in _HTML
+    assert 'role="tab"' not in _HTML
+    assert "preview_note" not in _JS
+    assert "preview_sound" not in _JS
+
+
+def test_the_playhead_and_scrubber_both_seek_the_whole_song():
+    for event in ("pointerdown", "pointermove", "pointerup", "pointercancel"):
+        assert "canvas.addEventListener('%s'" % event in _JS
+    assert "setPointerCapture" in _JS
+    assert "context.lineTo(playheadX, height)" in _JS
+    assert "requestAnimationFrame(animationTick)" in _JS
+    assert "scrubber.addEventListener('input'" in _JS
+
+
+def test_global_preview_is_wired_to_explicit_local_audio_setup():
+    assert 'id="audioBanner"' in _HTML
+    assert 'id="slotAudio"' in _HTML
+    assert "api().extract_audio(" in _JS
+    assert "api().preview_samples(" in _JS
+    assert "api().preview_manifest(" not in _JS, "startup already carries the manifest"
+
+
+def test_header_commands_are_conventional_desktop_menus():
+    for label in ("File", "Playback", "Options", "View"):
+        assert ">%s</button>" % label in _HTML
+    for shortcut in ("Ctrl+I", "Ctrl+E", "Ctrl+R", "Ctrl+,", "Space", "Home"):
+        assert shortcut in _HTML
+
+
+def test_conversion_limits_stay_in_a_nonblocking_inspector():
+    assert 'id="conversionInspector"' in _HTML
+    for control in (
+        "maxSpeakersRange",
+        "maxPolyRange",
+        "releaseRange",
+        "hardStop",
+        "sustainRange",
+        "bassRange",
+        "bassPitchNumber",
+        "familyBehavior",
+        "restoreDefaults",
+    ):
+        assert 'id="%s"' % control in _HTML
+    assert "api().reset_tuning(" in _JS
 
 
 def test_the_window_s_assets_are_declared_against_the_ui_package():

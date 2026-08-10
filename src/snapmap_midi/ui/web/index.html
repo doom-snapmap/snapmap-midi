@@ -7,10 +7,9 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<!-- The panels below are deliberately empty. Every row, dropdown and field is
-     built once by app.js from what the bridge hands over, then patched in place;
-     the only fixed content here is the shell, the headings, the tab buttons and
-     the status-bar slots. -->
+<!-- Track rows and category controls are built from the Python payload. The
+     fixed markup is the one-screen workstation shell: desktop menus, global
+     transport, piano roll, conversion inspector, and status slots. -->
 <div class="app">
 
   <div class="menubar">
@@ -21,93 +20,122 @@
          the two windows show one mark rather than two that drifted. -->
     <img class="icon" alt="" src="data:image/jpeg;base64,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">
     <div class="brand">snapmap-midi</div>
-    <button type="button" class="btn" id="openBtn">Open</button>
-    <button type="button" class="btn" id="reopenBtn" title="Read this file again from disk" disabled>Reopen</button>
+    <div class="app-menus" id="appMenus">
+      <div class="menu">
+        <button type="button" class="menu-label" data-menu="file" aria-haspopup="menu" aria-expanded="false">File</button>
+        <div class="menu-popup" id="menu-file" role="menu" hidden>
+          <button type="button" id="menuImport" role="menuitem"><span>Import MIDI...</span><kbd>Ctrl+I</kbd></button>
+          <button type="button" id="menuReopen" role="menuitem" disabled><span>Reopen MIDI</span><kbd>Ctrl+R</kbd></button>
+          <div class="menu-separator"></div>
+          <button type="button" id="menuExport" role="menuitem" disabled><span>Export SnapMap...</span><kbd>Ctrl+E</kbd></button>
+          <div class="menu-separator"></div>
+          <button type="button" id="menuExit" role="menuitem"><span>Exit</span><kbd>Alt+F4</kbd></button>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-label" data-menu="playback" aria-haspopup="menu" aria-expanded="false">Playback</button>
+        <div class="menu-popup" id="menu-playback" role="menu" hidden>
+          <button type="button" id="menuPlay" role="menuitem" disabled><span>Play</span><kbd>Space</kbd></button>
+          <button type="button" id="menuStart" role="menuitem" disabled><span>Return to Start</span><kbd>Home</kbd></button>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-label" data-menu="options" aria-haspopup="menu" aria-expanded="false">Options</button>
+        <div class="menu-popup" id="menu-options" role="menu" hidden>
+          <button type="button" id="menuConversion" role="menuitem"><span>Conversion Settings...</span><kbd>Ctrl+,</kbd></button>
+          <button type="button" id="menuAudio" role="menuitem"><span>Set Up Audio...</span></button>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-label" data-menu="view" aria-haspopup="menu" aria-expanded="false">View</button>
+        <div class="menu-popup" id="menu-view" role="menu" hidden>
+          <button type="button" id="menuLight" role="menuitemradio" aria-checked="true"><span>Light Theme</span></button>
+          <button type="button" id="menuDark" role="menuitemradio" aria-checked="false"><span>Dark Theme</span></button>
+        </div>
+      </div>
+    </div>
     <span class="song mono" id="songName"></span>
     <div class="spacer"></div>
-    <div class="theme-toggle" id="themeToggle" role="group" aria-label="Theme">
-      <button type="button" class="on" id="segLight" aria-pressed="true">Light</button>
-      <button type="button" id="segDark" aria-pressed="false">Dark</button>
+    <div class="win-controls" id="winControls" hidden>
+      <div class="win-btn" id="winMin" title="Minimize" role="button" tabindex="0">&#8211;</div>
+      <div class="win-btn" id="winMax" title="Maximize / Restore" role="button" tabindex="0">&#9633;</div>
+      <div class="win-btn" id="winClose" title="Close" role="button" tabindex="0">&#10005;</div>
     </div>
   </div>
 
-  <div class="tabstrip" role="tablist" aria-label="Sections">
-    <button type="button" class="tab active" id="tab-channels" role="tab" aria-selected="true" aria-controls="panel-channels" data-tab="channels">Channels</button>
-    <button type="button" class="tab" id="tab-drums" role="tab" aria-selected="false" aria-controls="panel-drums" data-tab="drums">Drums</button>
-    <button type="button" class="tab" id="tab-tuning" role="tab" aria-selected="false" aria-controls="panel-tuning" data-tab="tuning">Tuning</button>
-    <button type="button" class="tab" id="tab-export" role="tab" aria-selected="false" aria-controls="panel-export" data-tab="export">Export</button>
+  <div class="transport" id="transport">
+    <button type="button" class="transport-play" id="transportPlay" aria-label="Play" disabled><span id="playGlyph">&#9654;</span></button>
+    <span class="transport-time mono" id="currentTime">0:00.0</span>
+    <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Song position" disabled>
+    <span class="transport-time mono" id="totalTime">0:00.0</span>
+    <button type="button" class="tool-button" id="conversionBtn" title="Conversion settings">Conversion</button>
+    <button type="button" class="tool-button primary" id="exportBtn" disabled>Export</button>
   </div>
 
-  <div class="content" id="panel-empty">
-    <div class="panel">
-      <div class="panel-body placeholder empty-state">
-        <p>Open a MIDI file to begin.</p>
-        <button type="button" class="btn primary" id="emptyOpenBtn">Open</button>
-      </div>
+  <div class="empty-state" id="emptyState">
+    <div class="empty-card">
+      <div class="empty-title">Open a MIDI file to begin.</div>
+      <div class="muted">The song will be converted and shown here without changing the original file.</div>
+      <button type="button" class="btn primary" id="emptyOpenBtn">Import MIDI...</button>
     </div>
   </div>
 
-  <div class="content" id="panel-channels" role="tabpanel" aria-labelledby="tab-channels" tabindex="0" hidden>
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Channels</span><span class="badge" id="chanBadge">0</span>
-        <div class="panel-actions">
-          <span class="hint">Each row plots the notes the channel plays against the reach of its instrument.</span>
-        </div>
-      </div>
-      <div class="panel-body" id="channelList"></div>
-    </div>
-  </div>
+  <main class="workspace" id="workspace" hidden>
+    <section class="tracks-pane" aria-label="MIDI channels">
+      <div class="pane-head"><span>Channels</span><span class="badge" id="trackCount">0</span></div>
+      <div class="track-list" id="trackList"></div>
+    </section>
+    <section class="roll-pane" aria-label="Converted song piano roll">
+      <canvas id="pianoRoll" tabindex="0" aria-label="Piano roll and draggable playback position"></canvas>
+      <div class="roll-help">Click or drag to seek</div>
+    </section>
+  </main>
 
-  <div class="content" id="panel-drums" role="tabpanel" aria-labelledby="tab-drums" tabindex="0" hidden>
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Drums</span><span class="badge" id="drumBadge">0</span>
-        <div class="panel-actions">
-          <span class="hint">A key with no sound plays nothing.</span>
-        </div>
-      </div>
-      <div class="panel-toolbar">
-        <label for="drumMode">Drum channel</label>
-        <select id="drumMode">
-          <option value="auto">Automatic</option>
-          <option value="on">On</option>
-          <option value="off">Off</option>
-        </select>
-        <span class="muted" id="drumModeHint"></span>
-      </div>
-      <div class="panel-body" id="drumList"></div>
-    </div>
-  </div>
+  <button type="button" class="audio-banner" id="audioBanner" hidden>
+    Audio preview is not set up. Set up audio to hear the converted song.
+  </button>
 
-  <div class="content" id="panel-tuning" role="tabpanel" aria-labelledby="tab-tuning" tabindex="0" hidden>
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Tuning</span>
-        <div class="panel-actions">
-          <span class="hint">How many notes may sound at once, and for how long.</span>
-        </div>
-      </div>
-      <div class="panel-body pad" id="tuningBody"></div>
-    </div>
-  </div>
+  <button type="button" class="warnbar" id="warnBar" hidden></button>
 
-  <div class="content" id="panel-export" role="tabpanel" aria-labelledby="tab-export" tabindex="0" hidden>
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Export</span>
-        <div class="panel-actions">
-          <span class="hint">Writes one rawmap.json.</span>
-        </div>
-      </div>
-      <div class="panel-body pad" id="exportBody"></div>
+  <aside class="inspector" id="conversionInspector" aria-label="Conversion settings" hidden>
+    <div class="inspector-head">
+      <div><strong>Conversion settings</strong><div class="muted">SnapMap engine limits</div></div>
+      <button type="button" class="close-button" id="closeInspector" aria-label="Close conversion settings">&#10005;</button>
     </div>
-  </div>
-
-  <div class="warnbar" id="warnBar" hidden></div>
+    <div class="inspector-body">
+      <div class="control-group">
+        <div class="control-title"><label for="maxSpeakersRange">Maximum speakers</label><span class="hint">Per channel</span></div>
+        <div class="range-number"><input type="range" id="maxSpeakersRange" min="1" max="128" step="1"><input type="number" id="maxSpeakersNumber" min="1" max="128" step="1"></div>
+      </div>
+      <div class="control-group">
+        <label class="check-line"><input type="checkbox" id="polyEnabled"> Limit maximum polyphony</label>
+        <div class="range-number dependent" id="polyControls"><input type="range" id="maxPolyRange" min="1" max="128" step="1"><input type="number" id="maxPolyNumber" min="1" max="128" step="1"></div>
+      </div>
+      <div class="control-group">
+        <label class="check-line"><input type="checkbox" id="hardStop"> Hard stop notes</label>
+        <div class="control-title"><label for="releaseRange">Release</label><span class="hint">seconds</span></div>
+        <div class="range-number dependent" id="releaseControls"><input type="range" id="releaseRange" min="0" max="2" step="0.01"><input type="number" id="releaseNumber" min="0" max="10" step="0.01"></div>
+      </div>
+      <div class="control-group">
+        <label class="check-line"><input type="checkbox" id="sustainEnabled"> Limit sustained-note duration</label>
+        <div class="range-number dependent" id="sustainControls"><input type="range" id="sustainRange" min="50" max="5000" step="10"><input type="number" id="sustainNumber" min="1" step="10"><span class="unit">ms</span></div>
+      </div>
+      <div class="control-group">
+        <label class="check-line"><input type="checkbox" id="bassEnabled"> Limit bass-note duration</label>
+        <div class="range-number dependent" id="bassControls"><input type="range" id="bassRange" min="50" max="5000" step="10"><input type="number" id="bassNumber" min="1" step="10"><span class="unit">ms</span></div>
+        <div class="threshold-line dependent" id="bassPitchControls"><label for="bassPitchNumber">Below MIDI note</label><input type="number" id="bassPitchNumber" min="0" max="127" step="1"><span class="mono" id="bassPitchName"></span></div>
+      </div>
+      <div class="control-group">
+        <div class="control-title"><span>Sound behavior</span><span class="hint">Used categories</span></div>
+        <div class="family-behavior" id="familyBehavior"></div>
+      </div>
+    </div>
+    <div class="inspector-foot"><button type="button" class="btn" id="restoreDefaults">Restore defaults</button></div>
+  </aside>
 
   <div class="statusbar">
     <span><span class="dot" id="bridgeDot"></span><b id="bridgeName">snapmap-midi</b> <span id="bridgeText">connecting...</span></span>
+    <span id="slotAudio" hidden>Audio <b id="audioText">not set up</b></span>
     <span id="slotNotes" hidden>Notes <b id="statNotes">0</b></span>
     <span id="slotVoices" hidden>Peak voices <b id="statVoices">0</b></span>
     <span id="slotSustain" hidden>Long sustains <b id="statSustain">0</b></span>
@@ -119,6 +147,8 @@
 
 </div>
 
+<div class="rz rz-t" hidden></div><div class="rz rz-b" hidden></div><div class="rz rz-l" hidden></div><div class="rz rz-r" hidden></div>
+<div class="rz rz-tl" hidden></div><div class="rz rz-tr" hidden></div><div class="rz rz-bl" hidden></div><div class="rz rz-br" hidden></div>
 <div id="toastHost" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
 </body>

@@ -12,6 +12,8 @@ the ones above, and a test asserts exactly that.
 ```
    compile.py / cli.py / settings.py / ui/  the product surface
                   |
+   audio/     locate, wwise, library        optional local preview samples
+                  |
    music/     midi, gm, voices, analysis    notes: pairing, timbre, density
                   |
    sound/     palette, events, timeline     sounds: names, event calls, scheduling
@@ -73,7 +75,7 @@ number maps to a percussion sound; and a set names which families sustain rather
 These are data, not logic — the module has no behaviour worth testing beyond the tables
 being well-formed, and one test that every name in them exists in the shipped palette.
 
-### `music/analysis.py` — the file as the user sees it
+### `music/analysis.py` — channel identity before conversion
 
 `parse_notes` cannot answer what a MIDI file contains. By the time it returns, a program
 number has become a family and the channel's own identity — which instrument the composer
@@ -82,17 +84,15 @@ collapse, so this reads the file separately and reports per channel: the program
 General MIDI name, a per-note histogram, the extremes, whether it is the kit, and the family
 the automatic mapping would pick.
 
-It keeps the whole histogram rather than only the extremes, because everything the window
-draws is computed from it: how many notes a chosen family cannot reach, and the density strip
-described in [`ui.md`](ui.md#reading-the-pitch-ruler). Lowest and highest alone draw the same
-bar for two notes as for two thousand, so one stray low note makes a piano part look like it
-spans the keyboard.
+It keeps the whole histogram rather than only the extremes because range warnings need to
+say how many written notes a chosen pitched family cannot reach. Lowest and highest alone
+cannot distinguish one stray note from a phrase that lives outside the available range.
 
-**The ruler's geometry is computed here, in Python, not in the window's Javascript.**
-`ruler_segments` returns percentages. Every failure that geometry can have — an axis that
-clips the one family it was built to showcase, a family sharing no note with the channel
-drawn as a matter of degree, a drum channel plotted on a pitch axis — is a failure a test can
-catch on this side of the bridge and nothing can catch on the other.
+`ruler_segments` remains a tested compatibility API for clients that want density geometry.
+The current workstation's piano roll instead draws the effective events returned by
+`Session.preview_manifest`: after sound resolution, duration caps, polyphony thinning, and
+speaker allocation. That makes the visible notes agree with what Play and Export actually
+use. JavaScript owns only the responsive screen coordinate transform.
 
 ### `sound/palette.py` — the sound index
 
@@ -125,11 +125,12 @@ then guessed at; only a name the palette has never seen falls back to the patter
 Reads are cached per source, because every surface that asks a question about sound asks this
 module for the palette first, and a multi-layer compile used to re-parse it per layer.
 
-The palette also answers which categories can play a pitch at all, which the window needs
-before it can offer a choice. Twelve of the twenty-four can; `pitched_families` derives that
-list from the pitch index rather than from the `ins_` prefix, because `ins_string` and
-`ins_synth` carry the prefix and hold no pitched sound between them. A channel routed to one
-resolves every note to nothing and vanishes from a map that still loads and plays.
+The palette also answers which categories can play a pitch at all. Twelve of the twenty-four
+can; `pitched_families` derives that list from the pitch index rather than from the `ins_`
+prefix, because `ins_string` and `ins_synth` carry the prefix and hold no pitched sound
+between them. A channel routed to either as a pitched instrument set would resolve every note
+to nothing, so the workstation offers them only through its exact-sound choices. The grouped
+catalog still carries every one of the palette's 890 sound names.
 
 ### The split that defines the design
 
@@ -163,9 +164,8 @@ MIDI; it takes a sound name and a time and emits the call structure.
 
 Writes events onto a timeline entity and adds the switch that triggers it. This is the
 reusable layer: `author_sound_timeline` takes a list of `(sound, milliseconds)` pairs and
-returns finished map bytes. The retired `audition` command was a thin caller of it, and this
-API is kept partly so that behaviour is still reachable from Python — see
-[`ui.md`](ui.md#you-cannot-hear-a-sound-here) for the recipe.
+returns finished map bytes. It keeps direct sound-map authoring available without coupling
+that job to MIDI parsing or the desktop UI.
 
 `find_timeline` used to raise when a document had no timeline, with a message telling the
 caller to go and find a baseline map containing one. It now authors one, and is called
@@ -201,27 +201,49 @@ Validation is load-bearing rather than defensive: this file is meant to be hand-
 every mistake a hand edit makes here is a quiet one. See
 [`ui.md`](ui.md#the-settings-sidecar).
 
-### `ui/` — the control window
+### `audio/` — optional local previews
 
-A pywebview window over the library, in four files. `app.py` opens it and is the only module
+This layer never participates in compilation. `locate.py` finds a usable DOOM install from
+the explicit override or Steam's own records. `wwise.py` indexes the game's banks and packs,
+resolves event names to media, and decodes the IMA ADPCM variant into WAV bytes without an
+external codec. `library.py` owns the versioned, resumable cache under the user's local
+application data.
+
+The package carries only sound names. Every WAV is derived on the user's machine from their
+own install, never committed or distributed, and preview failure cannot stop the editor or
+change a compile. Real-install tests carry the `gamedata` marker; the parsers and cache are
+otherwise exercised against small synthetic banks.
+
+### `ui/` — the MIDI workstation
+
+A pywebview window over the library. `app.py` opens it and is the only module
 that imports pywebview at all — inside a function, so importing the package still works on a
 machine that will never open a window. `session.py` holds the loaded file, the settings
-document and the analysis behind a lock, because bridge calls arrive on separate threads.
+document, analysis, statistics, and resolved preview manifest behind a lock, because bridge
+calls arrive on separate threads.
 `api.py` is the class pywebview exposes to Javascript; every method returns
 `{"ok": true, ...}` or `{"ok": false, "error": "..."}` and none of them raises, because an
 exception crossing that boundary reaches Javascript as an opaque `Error` with nothing worth
-showing. `web/` is hand-written HTML, CSS and Javascript — no framework, no bundler.
+showing. `chrome.py` removes the drawn Windows caption while retaining the native resize,
+snap, taskbar and system-menu behaviour. `web/` is hand-written HTML, CSS and Javascript —
+no framework, no bundler — and its shared tokens and shell primitives are the exact Snapmap
+Plus design contract.
 
-Nothing is served and nothing listens. The markup is loaded from the filesystem by path, so
-the window has no address and no port; `test_product_has_no_network_client` still passes over
-the whole package.
+Nothing is served and nothing listens. The markup is loaded from the filesystem through a
+`file:///` URI, so the window has no address and no port;
+`test_product_has_no_network_client` still passes over the whole package.
 
-**The division of labour is the design.** Python decides everything, including the ruler's
-geometry, so the only untestable surface is markup. Javascript positions percentages it is
-handed and calls the bridge; it computes no position from a MIDI note and names no sound
-family anywhere. Families come from the bridge's catalog, which derives them from the
-palette. A family name written into the markup would be a second source of truth, and the
-palette is the one that cannot be wrong.
+**The division of labour is the design.** Python decides every conversion fact: which sound
+each note resolves to, whether it is sustained, which duration caps and polyphony rules keep
+it, which speaker voice it receives, when reuse cuts it off, and which cached samples the
+current conversion may request. The same settings document feeds both the preview manifest
+and `compile_to_rawmap`.
+
+Javascript owns presentation and transport: it draws the returned events onto a responsive
+canvas, converts time and MIDI pitch to screen coordinates, moves the single playhead,
+schedules decoded buffers with a rolling look-ahead, and forwards settings changes to the
+bridge. It names no palette family or sound in source. The grouped 24-category catalog comes
+from `sound/palette.py`, so the shipped palette stays the only source of truth.
 
 ## The authoring core
 

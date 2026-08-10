@@ -33,7 +33,8 @@ class ChannelInfo:
     and its one stray bottom A as the same undifferentiated bar.
 
     `drum_keys` is empty unless `is_drums`, and a `None` value means the key is
-    one `DRUM_MAP` has no sound for -- the row the Drums tab exists to fill.
+    one `DRUM_MAP` has no sound for -- the case a channel assignment or an
+    advanced per-key sidecar override can fill.
     """
 
     channel: int

@@ -1,8 +1,10 @@
-"""Command-line surface: compile a MIDI file, or open the control window.
+"""Command-line surface: compile, prepare local previews, or open the window.
 
-The whole surface is one required argument. Everything a compile used to
+The ordinary compile surface is one required argument. Everything it used to
 demand -- a sound palette to point at, a saved map to inherit a timeline from,
-an output name -- is either shipped, authored, or fixed by the loader.
+an output name -- is either shipped, authored, or fixed by the loader. Audio
+extraction is separate and optional because it needs an installed game while a
+compile never does.
 
 Typing the name with nothing after it opens the window, because the window is
 now where an instrument gets chosen and this command line is where a choice
@@ -157,6 +159,48 @@ def _compile(args) -> int:
     return 0
 
 
+def _extract_progress(done: int, total: int, name: str) -> None:
+    """One rewritten line, not one line per sound.
+
+    890 lines of scrollback for a step that takes half a minute buries whatever
+    was printed before it, and the only number anyone reads is the last one.
+    """
+    if done == total or done % 25 == 0:
+        print("\r  {}/{}  {:<44}".format(done, total, name[:44]), end="", flush=True)
+
+
+def _extract(args) -> int:
+    """Decode the game's own audio into the cache the window plays from.
+
+    Separate from `compile` because it needs something a compile never does --
+    an installed copy of the game -- and takes about half a minute. Folding it
+    into startup would put that in front of a window that otherwise opens at
+    once, on every machine, including the ones that only ever export.
+    """
+    # Imported here so the compile path does not pay for reading a palette and
+    # a registry it has no use for.
+    from snapmap_midi.audio import library, wwise
+
+    try:
+        result = library.extract(install=args.install, force=args.force, progress=_extract_progress)
+    except wwise.SoundsUnavailableError as exc:
+        print("no game audio: {}".format(exc))
+        return 2
+    print()
+    print("  -> {}".format(result["cache_dir"]))
+    print(
+        "     {} decoded, {} already there, {} of {} cached".format(
+            result["written"], result["skipped"], result["count"], result["expected"]
+        )
+    )
+    if result["failed"]:
+        # Named, not counted. Which sounds are missing decides whether this
+        # matters -- a handful of DLC effects is not the same event as the
+        # piano failing, and a bare count cannot tell them apart.
+        print("     {} could not be decoded: {}".format(len(result["failed"]), result["failed"]))
+    return 0 if result["ready"] else 1
+
+
 def _has_display() -> bool:
     """Whether there is a screen to put a window on.
 
@@ -226,7 +270,7 @@ def _add_compile_flags(parser) -> None:
     parser.add_argument(
         "--settings",
         default=None,
-        help="a settings file written by the control window; any flag given here wins over it",
+        help="a settings file written by the workstation; any flag given here wins over it",
     )
     parser.add_argument("--button", default=None, help="switch label (default snapmap-midi-song)")
     parser.add_argument(
@@ -270,7 +314,7 @@ def main(argv=None) -> int:
     # flag is how `--out` kept working after it was removed.
     parser = argparse.ArgumentParser(
         prog="snapmap-midi",
-        description="Compile a MIDI file into a playable in-game music map.",
+        description="Compile playable MIDI maps, prepare local previews, or open the window.",
         allow_abbrev=False,
     )
     # Not required: a bare `snapmap-midi` opens the window, which is what
@@ -282,7 +326,14 @@ def main(argv=None) -> int:
     _add_compile_flags(c)
     c.set_defaults(func=_compile)
 
-    u = sub.add_parser("ui", help="open the control window", allow_abbrev=False)
+    e = sub.add_parser(
+        "extract", help="decode the game's audio so the window can play it", allow_abbrev=False
+    )
+    e.add_argument("--install", default=None, help="read this game directory instead of searching")
+    e.add_argument("--force", action="store_true", help="re-decode sounds that are already cached")
+    e.set_defaults(func=_extract)
+
+    u = sub.add_parser("ui", help="open the MIDI workstation", allow_abbrev=False)
     u.add_argument("midi", nargs="?", default=None, help="open on this song")
     u.add_argument("--settings", default=None, help="open with these settings")
     u.set_defaults(func=_ui)

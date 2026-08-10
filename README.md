@@ -1,12 +1,15 @@
 # snapmap-midi
 
-**Compile a standard MIDI file into a playable music map for DOOM (2016)'s SnapMap editor.**
+**Open a desktop workstation for a standard MIDI file, then export it as a playable music map for
+DOOM (2016)'s SnapMap editor.**
 
 Feed it a `.mid`; it builds a room with a switch that plays the song. Seven real songs have
 been verified end to end in game.
 
 **This repo ships NO game data** — no declaration files, no saved maps, no audio. It ships
 the *names* of the sounds the game already has, which is what lets it work out of the box.
+Optional previews are decoded locally from your own DOOM install and stay in a rebuildable
+cache on your machine; they are never part of the package or repository.
 Every line here is our own implementation, built from our own reverse-engineering of the map
 format; no decompiled or copied content.
 
@@ -14,7 +17,7 @@ format; no decompiled or copied content.
 
 You need **Python 3.12 or newer**. Nothing else to find or configure — pip fetches the two
 dependencies for you. `mido` reads MIDI files and is needed everywhere; `pywebview` is the
-control window, and it is a plain dependency on Windows only. Elsewhere the window is the
+desktop workstation, and it is a plain dependency on Windows only. Elsewhere the window is the
 `[ui]` extra, because the map loader this tool writes to is Windows-only and a window on
 another platform has nowhere to hand its output. Check what you have:
 
@@ -34,7 +37,7 @@ If you just want it working and do not mind installing into your main Python:
 pip install git+https://github.com/doom-snapmap/snapmap-midi.git
 ```
 
-Skip to [Compile a song](#compile-a-song). If that command errors with
+Skip to [Open the UI](#open-the-ui). If that command errors with
 `externally-managed-environment`, your Python does not allow it — use the isolated way below.
 
 ### The isolated way (recommended)
@@ -94,11 +97,14 @@ Then run the activate line again.
 pip install git+https://github.com/doom-snapmap/snapmap-midi.git
 ```
 
-**5. Check it worked:**
+**5. Open it:**
 
 ```bash
-snapmap-midi --help
+snapmap-midi
 ```
+
+The command with nothing after it opens the UI. Use `snapmap-midi --help` when you want the
+command-line reference instead.
 
 ### Coming back later
 
@@ -130,6 +136,29 @@ pip show -f snapmap-midi
 pip uninstall snapmap-midi
 ```
 
+## Open the UI
+
+```bash
+snapmap-midi
+```
+
+That plain command is the application launcher; there is no audition command. Import a MIDI
+file and the complete converted arrangement appears on one screen: every channel, including
+percussion, lives in the left column and the read-only piano roll fills the rest of the
+window. Choose Automatic mapping, one of the pitched instrument sets, or any exact sound in
+the full 890-sound SnapMap speaker palette for each channel.
+
+There is one Play/Pause control for the whole converted song. Its playhead sweeps across the
+entire note surface and can be dragged to seek, as can the transport scrubber. Conversion
+limits open in a nonblocking inspector instead of an import wizard or a separate tab. If
+DOOM is installed, **Set Up Audio** decodes the local preview cache once; conversion and
+export continue to work without it.
+
+Exporting writes the map and, beside the song, a settings file holding every choice that
+produced it. Open that song again and the choices are already there;
+`snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays them without the
+window. Full detail is in [`docs/ui.md`](docs/ui.md).
+
 ## Compile a song
 
 ```bash
@@ -148,31 +177,11 @@ filename stays `rawmap.json`, because that is the only name the loader will open
 snapmap-midi compile song.mid --out-dir D:/songs/bach
 ```
 
-## Choose the instruments
-
-The compiler picks a sound family for each channel from its General MIDI program number,
-which is a guess. To make the choices yourself, open the control window:
-
-```bash
-snapmap-midi
-```
-
-The name with nothing after it opens it; `snapmap-midi ui song.mid` opens it on a song. Set
-the instrument for every channel, remap drum keys, mute parts, tune the levers, and watch
-what the compile will produce before exporting. Each channel row plots the notes it plays
-against the reach of the instrument you gave it, so a part that cannot fit is visible rather
-than something you find out by listening.
-
-Exporting writes the map and, beside the song, a settings file holding every choice that
-produced it. Open that song again and the choices are already there;
-`snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays them without the
-window. Full detail in [`docs/ui.md`](docs/ui.md).
-
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
-| [`docs/ui.md`](docs/ui.md) | the control window, the pitch ruler, and the settings file |
+| [`docs/ui.md`](docs/ui.md) | the one-screen workstation, full-song preview, piano roll, conversion inspector, and settings file |
 | [`docs/capabilities.md`](docs/capabilities.md) | every command, flag and tuning lever |
 | [`docs/game-data.md`](docs/game-data.md) | what ships, what doesn't, and the optional overrides |
 | [`docs/architecture.md`](docs/architecture.md) | how a MIDI file becomes a map |
@@ -248,7 +257,8 @@ never the ones above.
 | `src/snapmap_midi/rawmap/` | the map-authoring core — codec, value builders, documents, reference slots, the blank-map template |
 | `src/snapmap_midi/sound/` | the game's sound surface — the palette, event calls, timeline authoring |
 | `src/snapmap_midi/music/` | the MIDI domain — parsing, General MIDI tables, voice allocation |
-| `src/snapmap_midi/ui/` | the control window — its session, its Javascript bridge, its markup |
+| `src/snapmap_midi/audio/` | optional local preview extraction — install discovery, Wwise decoding, cache |
+| `src/snapmap_midi/ui/` | the desktop workstation — its session, preview manifest, Javascript bridge, native chrome, and markup |
 | `src/snapmap_midi/data/` | the shipped sound palette, and curated ear-labels for it |
 | `tools/` | maintainer scripts, not part of the installed package |
 | `tests/` | the suite, its fixtures, and the MIDI-input generator |

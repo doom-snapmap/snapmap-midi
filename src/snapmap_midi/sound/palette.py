@@ -233,6 +233,21 @@ def sounds_in_category(category: str, decl_path: Optional[Path] = None) -> list:
     return list(_shared(decl_path).get(category, ()))
 
 
+def sound_categories(decl_path: Optional[Path] = None) -> dict:
+    """Every palette sound to the category that owns it.
+
+    Exact track assignments still need their category for scheduling and for
+    the grouped workstation picker. This inverse index keeps the declaration
+    itself as the only classification table.
+    """
+    return {sound: category for category, sounds in _shared(decl_path).items() for sound in sounds}
+
+
+def all_sounds(decl_path: Optional[Path] = None) -> list:
+    """Every speaker-palette sound, preserving declaration order."""
+    return [sound for sounds in _shared(decl_path).values() for sound in sounds]
+
+
 def build_note_index(decl_path: Optional[Path] = None) -> dict:
     """The pitch index: {category: {midi_note: sound}}.
 

@@ -27,6 +27,9 @@ What is left are genuine overrides, for people doing something unusual:
                     a freshly authored blank room
     groove_fixture  the byte-identical regression artifact for the timeline
                     authoring API; one test, and it is not distributed
+    doom_install    the game directory to read audio out of, for a copy the
+                    Steam search cannot reach -- a portable install, a second
+                    machine's drive, a manually placed copy
 
 Configuration is a JSON object mapping logical name to path, supplied either
 inline or as a file:
@@ -49,6 +52,7 @@ from pathlib import Path
 PALETTE_DECL = "palette_decl"
 BASELINE_MAP = "baseline_map"
 GROOVE_FIXTURE = "groove_fixture"
+DOOM_INSTALL = "doom_install"
 
 #: The environment variable holding the override table. Public so the test
 #: suite can clear it: these overrides are ambient process state, and a suite
@@ -60,6 +64,14 @@ RAWMAP_NAME = "rawmap.json"
 
 #: The loader's data folder, relative to local application data.
 LOADER_DIR_NAME = "snapmap-plus"
+
+#: This tool's own data folder, relative to local application data. Distinct
+#: from the loader's: that one is somebody else's directory that we write one
+#: fixed filename into, this one is ours.
+APP_DIR_NAME = "snapmap-midi"
+
+#: Where decoded game audio is cached, under this tool's own folder.
+SOUND_CACHE_NAME = "sounds"
 
 
 def loader_dir() -> Path | None:
@@ -74,6 +86,24 @@ def loader_dir() -> Path | None:
     if not local:
         return None
     return Path(local) / LOADER_DIR_NAME
+
+
+def sound_cache() -> Path:
+    """Where decoded game audio is cached. Always a path, never None.
+
+    Unlike `loader_dir`, this one has no right answer to refuse with. That
+    folder is the game loader's and naming a location nothing reads would be a
+    lie; this folder is ours, so with no `LOCALAPPDATA` the honest move is to
+    pick somewhere in the user's home directory and use it.
+
+    Nothing in here is precious. It is decoded audio from a game the user
+    already owns, rebuildable from the install in about 36 seconds, and
+    deleting it costs one extraction.
+    """
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / APP_DIR_NAME / SOUND_CACHE_NAME
+    return Path.home() / (".%s" % APP_DIR_NAME) / SOUND_CACHE_NAME
 
 
 def rawmap_destination(out_dir=None) -> Path:
@@ -157,6 +187,11 @@ def baseline_map() -> Path | None:
 def groove_fixture() -> Path | None:
     """The byte-identical regression artifact for the timeline authoring API."""
     return resolve(GROOVE_FIXTURE)
+
+
+def doom_install() -> Path | None:
+    """A game directory to read audio from, instead of searching for one."""
+    return resolve(DOOM_INSTALL)
 
 
 def baseline_configured() -> bool:

@@ -6,13 +6,14 @@ around see [`limits.md`](limits.md).
 
 ## Commands
 
-Two subcommands, plus a bare invocation that is a third thing. None of them needs anything
-configured.
+The bare command is the normal application launcher. Compiling and editing need nothing
+configured; `extract` is the optional path that reads audio from an installed game. The
+`ui` subcommand is only a shortcut for preloading a song or an explicit settings file.
 
 ```bash
-snapmap-midi                     # open the control window
-snapmap-midi ui song.mid         # open it on a song
+snapmap-midi                     # open the MIDI workstation
 snapmap-midi compile song.mid    # compile without a window
+snapmap-midi extract             # build the optional local preview cache
 ```
 
 The name with nothing after it opens the window, because the window is where an instrument
@@ -82,19 +83,41 @@ offending key and exits `2` — the window writes that file and editing it by ha
 so a bad one is an ordinary event rather than a bug. See
 [`ui.md`](ui.md#the-settings-sidecar) for the schema.
 
-### `ui` — the control window
+### `extract` — build the local preview cache
+
+| Flag | Type | Default | What it does |
+|---|---|---|---|
+| `--install` | path | automatic search | read this DOOM install instead of searching Steam |
+| `--force` | flag | off | re-decode sounds already present in the current cache |
+
+The command decodes the 890 palette sounds from the user's own game into WAV files under
+`%LOCALAPPDATA%\snapmap-midi\sounds`. It is the command-line form of the window's **Set up
+audio** button. Existing complete files are skipped, so an interrupted run resumes. Exit `0`
+means every palette sound is ready, `1` means one or more sounds could not be decoded, and
+`2` means there was no usable install. No audio is shipped or downloaded.
+
+### Bare command — the MIDI workstation
+
+Run `snapmap-midi`, then use **File > Import MIDI...** in the window. That is the ordinary
+launch path; the retired `audition` command has no alias or compatibility mode.
+For scripts that need to preload files, `snapmap-midi ui song.mid --settings settings.json`
+accepts these arguments:
 
 | Flag | Type | Default | What it does |
 |---|---|---|---|
 | `midi` | path | none | open on this song |
 | `--settings` | path | none | open with these settings |
 
-Set the instrument for every channel, remap drum keys, mute parts, tune the levers, and see
-what the compile will produce before writing it. Export writes the map and a settings file
-beside the song, so the next session on that song opens where this one stopped. It needs
-pywebview, which is an ordinary dependency on Windows and the `[ui]` extra everywhere else.
-[`ui.md`](ui.md) covers the panels, the pitch ruler and the settings document both surfaces
-share.
+The workstation is one persistent surface: a unified channel list, a read-only piano roll,
+one global Play/Pause transport, a draggable sweeping playhead, and a nonblocking Conversion
+inspector. Percussion stays with the other channels. Every channel can use Automatic mapping,
+one of the 12 pitched instrument sets, or any exact sound in all 24 categories and all 890
+shipped palette names. Export writes the map and a settings file beside the song, so the next
+session opens where this one stopped.
+
+It needs pywebview, which is an ordinary dependency on Windows and the `[ui]` extra
+everywhere else. [`ui.md`](ui.md) covers the complete workstation and the settings document
+both surfaces share.
 
 ### The palette's categories
 
@@ -118,9 +141,10 @@ categories actually have a pitch index, which is the only version that cannot be
 The rest of the unpitched half is ambience, gore and interface noise, and a looping ambience
 fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 
-Nothing here tells you what any of these sounds like. The `audition` command that did is
-gone; [`ui.md`](ui.md#you-cannot-hear-a-sound-here) says plainly what was lost with it, and
-carries the library recipe that reproduces it.
+The workstation can play the entire converted arrangement after its optional local cache is
+built. Preview uses the same channel assignments and engine-limit processing as export and
+loads only samples the current song uses. See [`ui.md`](ui.md#previewing-the-song) for setup,
+transport, and cache behavior.
 
 ## Tuning levers
 
@@ -150,6 +174,7 @@ promoting one to a flag is a welcome pull request.
 | `family_caps` | — | dict | one instrument is monopolising voices; cap per family |
 | `decaying_families` | — | set | force a family down the fire-and-forget path |
 | `channel_families` | — | dict | override the family for a whole MIDI channel |
+| `channel_sounds` | — | dict | trigger one exact palette sound for every note on a MIDI channel |
 | `channel_mutes` | — | set | silence whole channels; the notes are not counted as dropped |
 | `drop_shaders` | — | set | one specific sound is wrong; exclude it |
 | `drum_overrides` | — | dict | retimbre whatever the drum table picked, keyed by sound |
@@ -162,11 +187,12 @@ why the per-key choice is applied first and the shader table only ever post-proc
 table's own answer. Applied the other way round it silently replaced the sound somebody had
 just picked.
 
-The control window offers thirteen of these: `max_speakers`, `release_s`, `hard_stop`,
-`max_poly`, `cap_sustain_ms`, `bass_pitch`, `bass_cap_ms`, `decaying_families`,
-`family_caps`, `drums`, `channel_families`, `channel_mutes` and `drum_key_overrides`. The
-rest stay library-only. `max_events` is deliberately not among them: the compiler implements
-it as
+The workstation directly exposes `max_speakers`, `release_s`, `hard_stop`, `max_poly`,
+`cap_sustain_ms`, `bass_pitch`, `bass_cap_ms`, `decaying_families`, `family_caps`,
+`channel_families`, `channel_sounds`, and `channel_mutes`. Automatic percussion still obeys
+`drums` and `drum_key_overrides` restored from a sidecar, but percussion is not a separate UI
+mode. The rest stay sidecar or library controls. `max_events` is deliberately not in the
+inspector: the compiler implements it as
 `decaying_events[:max_events]`, which truncates the one-shot list in time order, so the drums
 stop partway through the song rather than thinning out. Behind a slider that reads as a
 density limit, that is a trap.

@@ -300,6 +300,95 @@ class Session:
             _, stats = self.compile()
             return self._report(stats)
 
+    def preview_manifest(self) -> dict:
+        """The converted notes the workstation transport will actually play.
+
+        This repeats the note preparation portion of ``compile_to_rawmap`` but
+        does not author a map. It applies the same channel choices, duration
+        caps, polyphony thinning and per-layer voice stealing so the preview is
+        a reading of the current conversion rather than a General MIDI render.
+        """
+        with self._lock:
+            if not self._doc["midi"]:
+                raise ValueError("no song is open -- open a MIDI file first")
+            levers = settings_module.to_compile_kwargs(self._doc)
+            notes, _ = parse_notes(
+                self._doc["midi"],
+                drums=levers["drums"],
+                decaying_families=levers["decaying_families"],
+                channel_families=levers["channel_families"],
+                channel_sounds=levers["channel_sounds"],
+                note_index=self._note_index,
+                channel_mutes=levers["channel_mutes"],
+                drum_key_overrides=levers["drum_key_overrides"],
+            )
+            decaying = [note for note in notes if not note.sustained]
+            sustained = [note for note in notes if note.sustained]
+            _apply_caps(sustained, levers)
+
+            prepared = list(decaying)
+            layers: dict = {}
+            for note in sustained:
+                layers.setdefault(note.chan, []).append(note)
+            for channel in sorted(layers):
+                layer = layers[channel]
+                if levers["max_poly"]:
+                    layer = thin_polyphony(layer, levers["max_poly"])
+                allocate_voices(layer, levers["max_speakers"])
+
+                # Starting a note on a stolen speaker cuts off the note that
+                # owned it. Reflect that effective end in preview rather than
+                # letting Web Audio sustain a note the exported map truncates.
+                by_voice: dict = {}
+                for note in layer:
+                    by_voice.setdefault(note.voice, []).append(note)
+                for voice_notes in by_voice.values():
+                    voice_notes.sort(key=lambda note: note.start)
+                    for index, note in enumerate(voice_notes[:-1]):
+                        following = voice_notes[index + 1]
+                        # ``compile_to_rawmap`` deliberately emits no fade or
+                        # stop when the next note starts before, or exactly
+                        # when, this one ends: starting the next sound on the
+                        # same speaker is the cutoff. Keep that fact beside the
+                        # preview event so Web Audio does not add the global
+                        # release and briefly layer a tail the map never has.
+                        if following.start <= note.end:
+                            note.preview_cut = True
+                        if following.start < note.end:
+                            note.end = following.start
+                prepared.extend(layer)
+
+            events = [
+                {
+                    "start": note.start,
+                    "end": max(note.start, note.end),
+                    "sound": note.shader,
+                    "channel": note.chan,
+                    "pitch": getattr(note, "pitch", palette.shader_pitch(note.shader)),
+                    "family": note.fam,
+                    "sustained": note.sustained,
+                    "cut": bool(getattr(note, "preview_cut", False)),
+                }
+                for note in sorted(
+                    prepared,
+                    key=lambda note: (
+                        note.start,
+                        note.chan,
+                        -1 if getattr(note, "pitch", None) is None else getattr(note, "pitch"),
+                    ),
+                )
+            ]
+            duration_ms = int(round((self._analysis.duration_s if self._analysis else 0) * 1000))
+            if events:
+                duration_ms = max(duration_ms, max(event["end"] for event in events))
+            return {
+                "duration_ms": duration_ms,
+                "events": events,
+                "sounds": sorted({event["sound"] for event in events}),
+                "release_s": levers["release_s"],
+                "hard_stop": levers["hard_stop"],
+            }
+
     def _report(self, stats) -> dict:
         report = dict(stats)
         report["warnings"] = self._warnings(stats)
@@ -339,6 +428,8 @@ class Session:
         moment it opens.
         """
         entry = self._doc["channels"].get(str(channel.channel))
+        if entry and entry.get("sound") is not None:
+            return None
         chosen = entry.get("family") if entry else None
         return chosen or channel.auto_family
 
@@ -402,6 +493,7 @@ class Session:
             drums=levers["drums"],
             decaying_families=levers["decaying_families"],
             channel_families=levers["channel_families"],
+            channel_sounds=levers["channel_sounds"],
             note_index=self._note_index,
             channel_mutes=levers["channel_mutes"],
             drum_key_overrides=levers["drum_key_overrides"],
@@ -470,7 +562,7 @@ class Session:
         """
         lines = []
         for channel in self._analysis.channels:
-            if channel.is_drums or channel.channel in muted or not channel.pitches:
+            if channel.channel in muted or not channel.pitches:
                 continue
             family = self._family_for(channel)
             span = None if family is None else palette.family_range(family, self._note_index)
@@ -556,10 +648,12 @@ class Session:
                 # Named only when there are keys to name. Percussion is very
                 # nearly the only way a note reaches this count -- every family
                 # the picker offers has a sound for some pitch -- but claiming
-                # unmapped drum keys where there are none would send the reader
-                # to a tab with nothing on it to fix.
-                text += " Drum keys %s are unmapped -- give them sounds on the Drums tab." % (
-                    ", ".join(str(key) for key in keys)
+                # unmapped percussion keys where there are none would send the
+                # reader toward a track that does not need changing.
+                text += (
+                    " Percussion keys %s are unmapped -- assign that channel an instrument "
+                    "set or exact sound, or add per-key drum_keys in the sidecar."
+                    % ", ".join(str(key) for key in keys)
                 )
             warnings.append(text)
 

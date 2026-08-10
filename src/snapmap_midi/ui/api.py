@@ -8,8 +8,9 @@ every method catches `Exception` and returns `{"ok": False, "error": ...}`, and
 the failure becomes a sentence the window can put in a toast instead of a
 rejected promise it can only apologise for.
 
-Nothing here decides anything. `Session` owns the state and every rule about
-it; this turns its answers into payloads and its exceptions into sentences.
+Nothing here decides how a map is built. `Session` owns that state and every
+rule about it; this turns its answers into payloads, resolves local preview
+samples through the shared palette, and turns exceptions into sentences.
 Keeping that split is what lets the whole bridge be tested with no browser
 engine present, and the file dialogs are careful to preserve it: they answer
 None before they reach `import webview`, so `tests/test_ui_api.py` runs on a
@@ -17,9 +18,9 @@ machine that has never had pywebview installed rather than skipping.
 
 Two things are batched deliberately, and both are about the frame the window
 draws rather than about speed. `startup` answers with settings, analysis,
-catalog, rulers and statistics together, because four promises resolving in
-four orders paint an empty table, then a table with no dropdowns, then
-dropdowns with no ranges. And every answer that can change the analysis carries
+catalog, rulers, statistics, audio readiness and window-frame state together,
+because separate promises resolving in separate orders paint partial frames.
+And every answer that can change the analysis carries
 the analysis with it: the drums switch decides which channel is a kit, and
 opening a song changes which drum keys exist at all, so a window left to notice
 either for itself is a window showing the last song's keys.
@@ -33,6 +34,7 @@ lose every one of them.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -108,6 +110,7 @@ class Bridge:
 
     def __init__(self, midi=None, settings_path=None):
         self._window = None
+        self._chrome = None
         self._error = None
         try:
             self._session = Session(midi=midi, settings_path=settings_path)
@@ -162,6 +165,7 @@ class Bridge:
             "analysis": analysis,
             "rulers": self._session.rulers(),
             "stats": None if analysis is None else self._session.stats(),
+            "preview": None if analysis is None else self._session.preview_manifest(),
         }
 
     def _catalog(self) -> dict:
@@ -174,9 +178,9 @@ class Bridge:
         its range without passing the index reparses the palette once per
         family.
 
-        `drum_names` covers the keys the OPEN SONG plays and not all 128. The
-        rest are rows for keys the file never touches, and the file's own keys
-        are the entire subject of the Drums tab.
+        `drum_names` remains in the compatibility payload for sidecar and API
+        consumers. The workstation itself keeps percussion in the unified
+        channel list and consumes `sound_groups` for its picker.
         """
         index = palette.build_note_index()
         families = []
@@ -189,10 +193,9 @@ class Bridge:
             for group in palette.sound_labels().values()
             for sound, label in group.items()
         }
+        palette_data = palette.load_palette()
         category_of = {
-            sound: category
-            for category, sounds in palette.load_palette().items()
-            for sound in sounds
+            sound: category for category, sounds in palette_data.items() for sound in sounds
         }
         drum_sounds = [
             {
@@ -209,7 +212,53 @@ class Bridge:
             for key in channel["drum_keys"]:
                 drum_names[key] = gm_drum_name(int(key))
 
-        return {"families": families, "drum_sounds": drum_sounds, "drum_names": drum_names}
+        sound_groups = []
+        for category, sounds in palette_data.items():
+            sound_groups.append(
+                {
+                    "name": category,
+                    "pitched": bool(index.get(category)),
+                    "sounds": [
+                        {
+                            "name": sound,
+                            "label": _label(sound, labels.get(sound)),
+                        }
+                        for sound in sounds
+                    ],
+                }
+            )
+
+        return {
+            "families": families,
+            "drum_sounds": drum_sounds,
+            "drum_names": drum_names,
+            "sound_groups": sound_groups,
+            "sound_count": sum(len(group["sounds"]) for group in sound_groups),
+        }
+
+    def _audio_status(self) -> dict:
+        """Preview readiness; audio failure never takes down the editor."""
+        try:
+            from snapmap_midi.audio import library
+
+            return library.status()
+        except Exception as exc:
+            return {
+                "ready": False,
+                "count": 0,
+                "expected": 0,
+                "install": None,
+                "cache_dir": "",
+                "error": str(exc) or exc.__class__.__name__,
+            }
+
+    def _window_state(self) -> dict:
+        """Whether the HTML page owns the frame, and its maximize state."""
+        from snapmap_midi.ui import chrome as chrome_module
+
+        custom = self._chrome is not None and chrome_module.supported()
+        maximized = bool(self._chrome.is_maximized()) if custom else False
+        return {"custom": custom, "maximized": maximized}
 
     # ---- opening ----
 
@@ -226,6 +275,8 @@ class Bridge:
             payload = {"ok": True}
             payload.update(self._state())
             payload["catalog"] = self._catalog()
+            payload["audio"] = self._audio_status()
+            payload["window"] = self._window_state()
             if self._error:
                 payload["error"] = self._error
             return payload
@@ -293,11 +344,123 @@ class Bridge:
         return None
 
     def catalog(self) -> dict:
-        """The families, the drum sounds and the open song's drum keys."""
+        """The full grouped palette plus compatibility percussion metadata."""
         try:
             payload = {"ok": True}
             payload.update(self._catalog())
             return payload
+        except Exception as exc:
+            return _fail(exc)
+
+    # ---- local audio preview ----
+
+    def audio_status(self) -> dict:
+        """Report the cache without changing it."""
+        return {"ok": True, "audio": self._audio_status()}
+
+    @staticmethod
+    def _audio_payload(sound: str) -> dict:
+        """One cached WAV as a data URI the local page can always play."""
+        from snapmap_midi.audio import library
+
+        if sound not in set(library.expected_names()):
+            raise ValueError("%r is not a sound in the shipped palette" % sound)
+        data = library.read_wav(sound)
+        if data is None:
+            return {
+                "ok": False,
+                "error": "%s has not been extracted; set up audio preview first" % sound,
+                "sound": sound,
+            }
+        encoded = base64.b64encode(data).decode("ascii")
+        return {
+            "ok": True,
+            "sound": sound,
+            "data_uri": "data:audio/wav;base64,%s" % encoded,
+        }
+
+    def extract_audio(self) -> dict:
+        """Decode the user's game samples after an explicit button press."""
+        try:
+            from snapmap_midi.audio import library
+
+            status = library.extract()
+            if not status["ready"]:
+                failed = status.get("failed") or []
+                return {
+                    "ok": False,
+                    "error": "%d sound%s could not be decoded"
+                    % (len(failed), "" if len(failed) == 1 else "s"),
+                    "audio": status,
+                }
+            return {"ok": True, "audio": status}
+        except Exception as exc:
+            return _fail(exc)
+
+    def preview_sound(self, sound) -> dict:
+        """Return one exact palette sound for compatibility preview callers."""
+        try:
+            if not isinstance(sound, str) or not sound:
+                raise ValueError("a sound name is required")
+            return self._audio_payload(sound)
+        except Exception as exc:
+            return _fail(exc)
+
+    def preview_note(self, family, midi_note) -> dict:
+        """Resolve one family and MIDI pitch exactly as the compiler does."""
+        try:
+            if family not in palette.pitched_families():
+                raise ValueError("%r is not a pitched sound family" % family)
+            if isinstance(midi_note, bool):
+                raise ValueError("a MIDI note from 0 to 127 is required")
+            note = int(midi_note)
+            if note < 0 or note > 127 or float(midi_note) != note:
+                raise ValueError("a MIDI note from 0 to 127 is required")
+            sound = palette.decl_for(family, note, palette.build_note_index())
+            if sound is None:
+                raise ValueError("%s has no sound for MIDI note %d" % (family, note))
+            return self._audio_payload(sound)
+        except Exception as exc:
+            return _fail(exc)
+
+    def preview_manifest(self) -> dict:
+        """Resolved events for the global workstation transport."""
+        try:
+            return {"ok": True, "preview": self._session.preview_manifest()}
+        except Exception as exc:
+            return _fail(exc)
+
+    def preview_samples(self, names) -> dict:
+        """Cached WAV payloads for sounds used by the current conversion only."""
+        try:
+            if isinstance(names, (str, bytes)) or not isinstance(names, (list, tuple)):
+                raise ValueError("preview sample names must be a list")
+            requested = []
+            seen = set()
+            for name in names:
+                if not isinstance(name, str) or not name:
+                    raise ValueError("every preview sample name must be text")
+                if name not in seen:
+                    requested.append(name)
+                    seen.add(name)
+            allowed = set(self._session.preview_manifest()["sounds"])
+            outside = [name for name in requested if name not in allowed]
+            if outside:
+                raise ValueError("%r is not used by the current converted song" % outside[0])
+
+            from snapmap_midi.audio import library
+
+            samples = {}
+            missing = []
+            for name in requested:
+                data = library.read_wav(name)
+                if data is None:
+                    missing.append(name)
+                else:
+                    samples[name] = "data:audio/wav;base64,%s" % base64.b64encode(data).decode(
+                        "ascii"
+                    )
+            return {"ok": True, "samples": samples, "missing": missing}
         except Exception as exc:
             return _fail(exc)
 
@@ -312,16 +475,23 @@ class Bridge:
     def apply_settings(self, patch) -> dict:
         """Merge one change in, and answer with everything it can have moved.
 
-        Settings and statistics are obvious. The analysis and the rulers are
-        here because the drums mode is a setting and rewrites both: it decides
-        whether channel 9 is a kit, which changes `is_drums`, the drum-key list,
-        and whether that row has a ruler at all. Leaving them out means the
-        window must call `startup` again after every drums change, and until it
-        returns the Drums tab lists keys for a channel the compiler has already
-        stopped routing through `DRUM_MAP`.
+        Settings and statistics are obvious. Analysis remains here because
+        drums mode can change whether a channel is interpreted as percussion;
+        preview is here because every channel choice and conversion lever can
+        change the events the global transport schedules.
         """
         try:
             self._session.apply(patch)
+            payload = {"ok": True}
+            payload.update(self._state())
+            return payload
+        except Exception as exc:
+            return _fail(exc)
+
+    def reset_tuning(self) -> dict:
+        """Restore the compiler's conversion defaults without changing tracks."""
+        try:
+            self._session.apply({"tuning": settings_module.defaults()["tuning"]})
             payload = {"ok": True}
             payload.update(self._state())
             return payload
@@ -452,5 +622,101 @@ class Bridge:
                 return _cancelled()
             self._session.apply({"baseline": chosen})
             return {"ok": True, "settings": self._session.settings()}
+        except Exception as exc:
+            return _fail(exc)
+
+    # ---- the window frame ----
+
+    def attach_chrome(self, chrome) -> None:
+        """Hand over the thing that moves, sizes and closes the window.
+
+        Stored under a LEADING UNDERSCORE, and the underscore is load-bearing.
+        pywebview builds the Javascript surface by walking every public
+        non-callable attribute of this object and recursing into each one that
+        has a `__module__` -- so a window or a chrome parked on a public name
+        sends it down the native form's accessibility tree, `Bounds.Empty.Empty`
+        forever, until the stack ends. That happens inside the injection itself,
+        which means `pywebviewready` never fires, `evaluate_js` never returns,
+        and the window sits there rendering nothing with no error anywhere.
+        `_window` is safe by the same rule and for the same reason.
+
+        Optional, like the window: the frame-action methods below answer `ok: False`
+        when nothing has been attached, so the whole bridge stays testable with
+        no browser engine and no window in existence. There is deliberately no
+        `error` on that answer -- the window toasts that key when it is present,
+        and the only way to see it is to be running with no window at all.
+        """
+        self._chrome = chrome
+
+    def win_state(self) -> dict:
+        """Whether the page owns the frame, and its current maximize state."""
+        try:
+            payload = {"ok": True}
+            payload.update(self._window_state())
+            return payload
+        except Exception as exc:
+            return _fail(exc)
+
+    def win_drag(self) -> dict:
+        """Move the window, and report where the drag left it.
+
+        Answers only when the user lets go: the drag is Windows' own modal move
+        loop, not a stream of positions. `maximized` rides along because
+        dragging to the top of the screen is one of the ways this window becomes
+        maximized, and the button that would say so was never clicked.
+        """
+        try:
+            if self._chrome is None:
+                return {"ok": False}
+            moved = bool(self._chrome.drag())
+            return {"ok": moved, "maximized": bool(self._chrome.is_maximized())}
+        except Exception as exc:
+            return _fail(exc)
+
+    def win_resize(self, edge) -> dict:
+        """Size the window from one of the eight edges.
+
+        `ok: False` for an edge name that is not one of the eight, with no
+        `error`: the names come from the markup's own grips, so a bad one is a
+        typo in the page rather than anything to tell the user about.
+        """
+        try:
+            if self._chrome is None:
+                return {"ok": False}
+            return {"ok": bool(self._chrome.resize_from(edge))}
+        except Exception as exc:
+            return _fail(exc)
+
+    def win_min(self) -> dict:
+        """Minimise to the taskbar."""
+        try:
+            if self._chrome is None:
+                return {"ok": False}
+            return {"ok": bool(self._chrome.minimize())}
+        except Exception as exc:
+            return _fail(exc)
+
+    def win_max(self) -> dict:
+        """Maximise or restore, and answer with which of the two it now is.
+
+        `ok` stays True for both directions. Answering with the chrome's own
+        return value would make restoring the window look like a failed call,
+        and the state belongs in its own key anyway -- the button that sent this
+        has to change glyph, and nothing else on the page knows which way it
+        went.
+        """
+        try:
+            if self._chrome is None:
+                return {"ok": False}
+            return {"ok": True, "maximized": bool(self._chrome.toggle_maximize())}
+        except Exception as exc:
+            return _fail(exc)
+
+    def win_close(self) -> dict:
+        """Close the window, through pywebview so its own shutdown still runs."""
+        try:
+            if self._chrome is None:
+                return {"ok": False}
+            return {"ok": bool(self._chrome.close())}
         except Exception as exc:
             return _fail(exc)
