@@ -78,6 +78,27 @@ def _kit(tmp_path, extra_key=None, extra_count=2) -> str:
     return _midi(tmp_path, messages, name="kit.mid")
 
 
+def _dense(tmp_path) -> str:
+    """One channel playing one note at a time, and one playing a three-note chord.
+
+    Two layers of different widths, so the warning about running out of
+    speakers has a channel to be wrong about.
+    """
+    messages = [
+        mido.Message("program_change", channel=0, program=40, time=0),
+        mido.Message("program_change", channel=3, program=40, time=0),
+        mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+        mido.Message("note_on", channel=3, note=60, velocity=100, time=0),
+        mido.Message("note_on", channel=3, note=64, velocity=100, time=0),
+        mido.Message("note_on", channel=3, note=67, velocity=100, time=0),
+        mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        mido.Message("note_off", channel=3, note=60, velocity=0, time=0),
+        mido.Message("note_off", channel=3, note=64, velocity=0, time=0),
+        mido.Message("note_off", channel=3, note=67, velocity=0, time=0),
+    ]
+    return _midi(tmp_path, messages, name="dense.mid")
+
+
 def _channel(session, number) -> dict:
     return [c for c in session.analysis_dict()["channels"] if c["channel"] == number][0]
 
@@ -401,9 +422,23 @@ def test_the_automatic_family_is_warned_about_too():
     silent on every file nobody had touched yet."""
     session = Session(midi=TINY_MIDI)
     assert [w for w in _warnings(session) if w.startswith("Channel 1")] == [
-        "Channel 1 (Violin) plays 48-67. ins_violin only reaches 55-100, so 1 of its 2 "
+        "Channel 1 (Violin) plays C3-G4. ins_violin only reaches G3-E7, so 1 of its 2 "
         "notes move to another octave, or to the nearest pitch the family has."
     ]
+
+
+def test_a_warning_speaks_the_note_names_the_ruler_is_labelled_with():
+    """The window labels its C-octave gridlines in note names, so a sentence
+    that said "plays 48-67" made the reader convert between two vocabularies to
+    find out whether it was about the row they were looking at. Counts stay
+    counts: a number that means "how many" is not a pitch and must not be
+    dressed as one."""
+    session = Session(midi=TINY_MIDI)
+    warning = [w for w in _warnings(session) if w.startswith("Channel 1")][0]
+    assert "48" not in warning
+    assert "55" not in warning
+    assert "plays C3-G4" in warning
+    assert "1 of its 2 notes" in warning
 
 
 def test_a_muted_channel_is_not_warned_about():
@@ -450,7 +485,7 @@ def test_a_family_that_cannot_reach_some_notes_names_how_many(tmp_path):
     session = Session(midi=song)
     session.apply({"channels": {"0": {"family": "ins_sine"}}})
     assert [w for w in _warnings(session) if w.startswith("Channel 0")] == [
-        "Channel 0 (Acoustic Grand Piano) plays 30-100. ins_sine only reaches 36-67, so 2 "
+        "Channel 0 (Acoustic Grand Piano) plays F#1-E7. ins_sine only reaches C2-G4, so 2 "
         "of its 3 notes move to another octave, or to the nearest pitch the family has."
     ]
 
@@ -489,7 +524,7 @@ def test_more_than_three_range_warnings_collapse_to_the_worst_one(tmp_path):
 
     lines = [w for w in _warnings(session) if w.startswith("Channel")]
     assert len(lines) == 1
-    assert lines[0].startswith("Channel 4 (Acoustic Grand Piano) plays 20-100.")
+    assert lines[0].startswith("Channel 4 (Acoustic Grand Piano) plays G#0-E7.")
     assert "4 other channels" in lines[0]
 
 
@@ -526,10 +561,45 @@ def test_running_out_of_speakers_is_reported(tmp_path):
     )
     session = Session(midi=song)
     session.apply({"tuning": {"max_speakers": 1}})
-    assert any("used all 1 speakers" in w for w in _warnings(session))
+    assert any("Channel 0 (Violin) used all 1 speakers" in w for w in _warnings(session))
 
     session.apply({"tuning": {"max_speakers": 32}})
     assert not any("speakers" in w for w in _warnings(session))
+
+
+def test_the_channel_that_ran_out_of_speakers_is_the_one_that_is_named(tmp_path):
+    """ "The busiest channel" was all the sentence could say, because
+    `compile_to_rawmap` reports the worst layer's voice count and not which
+    layer it was -- so the one thing the reader needs in order to act, which row
+    to go and thin, was the one thing missing. Channel 0 plays one note at a
+    time and channel 3 plays a triad; only one of them is against the ceiling.
+    """
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_speakers": 2}})
+    assert [w for w in _warnings(session) if "speakers" in w] == [
+        "Channel 3 (Violin) used all 2 speakers, so its densest passages were thinned. "
+        "Raise max speakers, or cap the polyphony."
+    ]
+
+
+def test_capping_the_sustain_still_names_the_right_channel(tmp_path):
+    """The layers are rebuilt here to find out which one peaked, and a cap
+    shortens notes before they are allocated -- so a rebuild that ignored the
+    caps would count a concurrency the compile never had."""
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_speakers": 2, "cap_sustain_ms": 50}})
+    assert any("Channel 3 (Violin) used all 2 speakers" in w for w in _warnings(session))
+
+
+def test_a_layer_count_that_disagrees_with_the_compile_names_no_channel(tmp_path, monkeypatch):
+    """The rebuilt layers are a hypothesis, and the compile's own `peak_voices`
+    is the fact. When the two disagree -- which is what a change to how the
+    compiler thins or caps would look like from here -- the sentence goes back
+    to naming no channel rather than naming the wrong one."""
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_speakers": 2}})
+    monkeypatch.setattr(session_module, "allocate_voices", lambda notes, cap: 1)
+    assert any("The busiest channel used all 2 speakers" in w for w in _warnings(session))
 
 
 def test_a_file_of_one_shots_that_cannot_hit_the_limit_is_not_warned_about(tmp_path):

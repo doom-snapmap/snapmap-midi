@@ -178,15 +178,17 @@ would.
 
 Export writes `rawmap.json`, and it says whether it replaced a map that was already there.
 The loader reads exactly one file at one hardcoded path, so a button that writes it invites
-repeated use in a way a typed command did not.
+repeated use in a way a typed command did not. It also writes the settings sidecar beside the
+song, which is what makes the next session open on this one's choices — see
+[the settings sidecar](#the-settings-sidecar).
 
 ## Warnings
 
 The strip under the panels carries problems rather than observations, and each one names a
 cause, the number that decides whether to care, and the lever that changes it. Nothing will
 play because every channel is muted. So many notes have no sound, and which drum keys are
-unmapped. So many sustained notes hold longer than a second. The busiest channel used every
-speaker it had, so its densest passages were thinned.
+unmapped. So many sustained notes hold longer than a second. Which channel used every speaker
+it had, so its densest passages were thinned.
 
 **The thresholds are [`limits.md`](limits.md)'s, not invented here.** That is the whole
 reason this list is short. An earlier draft warned on total event count, which is dominated
@@ -259,9 +261,26 @@ that travels beside it is one nobody has to find again. The name is the song's
 whole filename with a suffix, not its stem — `bach.mid` and `bach.midi` are two different
 songs and would otherwise silently share one set of instruments.
 
-**Nothing writes it for you yet.** Export writes `rawmap.json` and nothing else, so closing
-the window loses the choices in it. Until the window saves the document itself, a settings
-file is one you write — by hand against the schema below, or from Python:
+**Export writes it for you, and opening the song again applies it.** Those two are one
+feature: without them the window's choices lived only as long as the window, and an afternoon
+of picking instruments ended when you closed it. Export writes two files — `rawmap.json` into
+the output folder, and `song.mid.snapmap.json` beside the song — and the next time you open
+that song, in this window or with `--settings`, the choices are already there.
+
+Three things about it are deliberate:
+
+- **A sidecar that cannot be written does not fail the export.** The map is the deliverable.
+  A read-only folder or a song on a share that has gone away is not a reason to be told your
+  map failed while it is sitting on disk where the report says it is.
+- **A sidecar that cannot be read costs its settings and not the song.** This file is meant
+  to be hand-edited, so a broken one is an ordinary event — and refusing to open the song over
+  it would lock out exactly the person trying to fix it. The song opens on the defaults and
+  the answer carries the reason.
+- **The `midi` line in a sidecar is ignored when it is applied.** It was written by an earlier
+  session, and the file has since been copied, renamed, or handed to somebody else. The song
+  you opened is the song; everything else in the document is about how to play it.
+
+You can still write one yourself, by hand against the schema below or from Python:
 
 ```python
 from snapmap_midi import settings

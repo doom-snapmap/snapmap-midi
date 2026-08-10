@@ -87,7 +87,7 @@ def run(midi=None, settings=None) -> int:
     # the window to hang a native file dialog on. Until this line the bridge's
     # pickers report that there is nothing to open a dialog on, which is also
     # how they stay testable with no browser engine present.
-    bridge._window = window
+    bridge.attach(window)
 
     try:
         webview.start()

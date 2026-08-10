@@ -78,9 +78,9 @@ arrangement is inside the engine's comfortable range.
 whatever you typed.** A settings file is a decision made earlier and saved; a flag is a
 decision being made right now, so the flag goes last. Setting one lever in the file does not
 reset the other forty. A file that does not validate prints `settings: <message>` naming the
-offending key and exits `2` — hand editing is how that file is meant to change, so a bad one
-is an ordinary event rather than a bug. See [`ui.md`](ui.md#the-settings-sidecar) for the
-schema.
+offending key and exits `2` — the window writes that file and editing it by hand is expected,
+so a bad one is an ordinary event rather than a bug. See
+[`ui.md`](ui.md#the-settings-sidecar) for the schema.
 
 ### `ui` — the control window
 
@@ -90,9 +90,11 @@ schema.
 | `--settings` | path | none | open with these settings |
 
 Set the instrument for every channel, remap drum keys, mute parts, tune the levers, and see
-what the compile will produce before writing it. It needs pywebview, which is an ordinary
-dependency on Windows and the `[ui]` extra everywhere else. [`ui.md`](ui.md) covers the
-panels, the pitch ruler and the settings document both surfaces share.
+what the compile will produce before writing it. Export writes the map and a settings file
+beside the song, so the next session on that song opens where this one stopped. It needs
+pywebview, which is an ordinary dependency on Windows and the `[ui]` extra everywhere else.
+[`ui.md`](ui.md) covers the panels, the pitch ruler and the settings document both surfaces
+share.
 
 ### The palette's categories
 

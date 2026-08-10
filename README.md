@@ -163,9 +163,10 @@ what the compile will produce before exporting. Each channel row plots the notes
 against the reach of the instrument you gave it, so a part that cannot fit is visible rather
 than something you find out by listening.
 
-Every choice the window makes is also a line in a settings file, and
-`snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays one. Full detail in
-[`docs/ui.md`](docs/ui.md).
+Exporting writes the map and, beside the song, a settings file holding every choice that
+produced it. Open that song again and the choices are already there;
+`snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays them without the
+window. Full detail in [`docs/ui.md`](docs/ui.md).
 
 ## Documentation
 

@@ -32,6 +32,8 @@ from snapmap_midi import paths
 from snapmap_midi import settings as settings_module
 from snapmap_midi.compile import compile_to_rawmap
 from snapmap_midi.music import analysis
+from snapmap_midi.music.midi import parse_notes
+from snapmap_midi.music.voices import allocate_voices, thin_polyphony
 from snapmap_midi.sound import palette
 
 #: The axis every ruler row is drawn against: MIDI's own range, which is also
@@ -46,6 +48,55 @@ _AXIS = (0, 127)
 #: into one. Sixteen near-identical lines in a status bar is not information,
 #: and the per-row ruler already carries the detail.
 _RANGE_LINES = 3
+
+#: The spelling the window's ruler prints under its C-octave gridlines. Sharps,
+#: where `palette` spells flats: that module's table exists to PARSE the game's
+#: sound names, which are written `play_violindb6`, and this one exists to print
+#: a note to somebody reading a sentence. Spelling the same note both ways in
+#: one window is exactly the two-vocabulary problem this replaced.
+_NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+
+def _note_name(midi: int) -> str:
+    """A MIDI note number as the note it is: 48 is C3.
+
+    Here rather than in `palette` beside `note_to_midi`, because it is not that
+    function's inverse and putting it there would say it was. `note_to_midi`
+    reads the game's own flat spelling off a sound name; this writes the
+    window's sharp one for a person to read. Two small tables are a smaller trap
+    than a pair of functions that look like a round trip and are not.
+
+    The octave numbering is the one every editor prints and the window's ruler
+    is labelled with: middle C, MIDI 60, is C4.
+    """
+    return "%s%d" % (_NOTE_NAMES[midi % 12], midi // 12 - 1)
+
+
+def _apply_caps(sustained, levers) -> None:
+    """Shorten notes the way a compile shortens them, before anybody counts them.
+
+    The caps are why a layer's width cannot be read off the written note
+    lengths. They run before voices are allocated, and a note cut to 50ms
+    overlaps nothing that a note held for two bars would have -- so counting the
+    written lengths reports a concurrency the compile never had, and hands the
+    warning whichever channel holds the longest chords rather than the one that
+    actually ran out of speakers.
+
+    Edits the notes in place, which is safe only because the caller parsed them
+    for this and nothing else looks at them again.
+    """
+    cap_all = levers["cap_sustain_ms"]
+    bass_cap = levers["bass_cap_ms"]
+    family_caps = levers["family_caps"]
+    if not (cap_all or bass_cap or family_caps):
+        return
+    for note in sustained:
+        cap = family_caps.get(note.fam, cap_all or 10**9)
+        pitch = palette.shader_pitch(note.shader)
+        if bass_cap and pitch is not None and pitch < levers["bass_pitch"]:
+            cap = min(cap, bass_cap)
+        if note.duration > cap:
+            note.end = note.start + cap
 
 
 def _advice(destination: Path) -> str:
@@ -315,6 +366,78 @@ class Session:
     def _muted(self) -> set:
         return {int(c) for c, entry in self._doc["channels"].items() if entry["muted"]}
 
+    def _who(self, channel: int) -> str:
+        """A channel named the way every sentence here names it.
+
+        Both halves earn their place: the number is what the window's row is
+        labelled with, so it is how the reader finds the row, and the General
+        MIDI program name is what the composer asked for, so it is how they
+        recognise the part.
+        """
+        for info in self._analysis.channels if self._analysis is not None else ():
+            if info.channel == channel:
+                return "Channel %d (%s)" % (channel, info.program_name)
+        return "Channel %d" % channel
+
+    def _layer_voices(self) -> dict:
+        """How many voices each channel's sustained layer needs, by channel.
+
+        Rebuilt here because `compile_to_rawmap` reports the worst layer's count
+        and not which layer it was. Widening its return to carry that would
+        change a surface every other caller depends on, for one sentence in one
+        window that only ever needs it when something is already wrong.
+
+        It is a rebuild rather than an estimate: the same parse, the same caps,
+        the same thinning and the same allocation, through the same functions
+        the compile calls. Two things keep it honest. It runs only while the
+        warning is already firing, so the second read of the file is paid on the
+        arrangement that has a problem instead of on every dropdown. And the
+        answer is checked against the compile's own `peak_voices` before a word
+        of it is used, so a compiler that starts thinning differently makes this
+        say nothing rather than say something false.
+        """
+        levers = settings_module.to_compile_kwargs(self._doc)
+        notes, _ = parse_notes(
+            self._doc["midi"],
+            drums=levers["drums"],
+            decaying_families=levers["decaying_families"],
+            channel_families=levers["channel_families"],
+            note_index=self._note_index,
+            channel_mutes=levers["channel_mutes"],
+            drum_key_overrides=levers["drum_key_overrides"],
+        )
+        sustained = [note for note in notes if note.sustained]
+        _apply_caps(sustained, levers)
+
+        layers: dict = {}
+        for note in sustained:
+            layers.setdefault(note.chan, []).append(note)
+        counts = {}
+        for channel, layer in layers.items():
+            if levers["max_poly"]:
+                layer = thin_polyphony(layer, levers["max_poly"])
+            counts[channel] = allocate_voices(layer, levers["max_speakers"])
+        return counts
+
+    def _busiest_channel(self, stats):
+        """The channel that used every speaker it was allowed, or None if unsure.
+
+        The rebuilt counts are a hypothesis; `peak_voices` is the fact, because
+        it comes from the compile the sentence is actually about. When the two
+        disagree the name is dropped and the warning says "the busiest channel"
+        as it did before there was any way to know. A named channel that was
+        never thinned sends somebody off to rewrite a part that was fine, which
+        is a worse answer than the vague one.
+
+        Ties resolve to the lower channel number rather than to whichever layer
+        the dictionary happened to be built in.
+        """
+        counts = self._layer_voices()
+        if not counts:
+            return None
+        channel = max(counts, key=lambda number: (counts[number], -number))
+        return channel if counts[channel] == stats["peak_voices"] else None
+
     def _unmapped_drum_keys(self) -> list:
         """Percussion keys the file plays that nothing has a sound for.
 
@@ -358,27 +481,31 @@ class Session:
                 lines.append(
                     (
                         channel.notes,
-                        "Channel %d (%s) shares no note with %s at all. Every note is "
-                        "transposed." % (channel.channel, channel.program_name, family),
+                        "%s shares no note with %s at all. Every note is transposed."
+                        % (self._who(channel.channel), family),
                     )
                 )
                 continue
             outside = analysis.notes_outside(channel, span)
             if outside:
+                # Pitches as note names, counts as counts. The window's ruler is
+                # labelled in note names, so a sentence that said "plays 48-67"
+                # made the reader convert before they could tell whether it was
+                # about the row in front of them -- but "1 of its 2 notes" is a
+                # tally and dressing a tally as a pitch would be worse than the
+                # problem it fixed.
                 lines.append(
                     (
                         outside,
-                        "Channel %d (%s) plays %d-%d. %s only reaches %d-%d, so %d of its %d "
-                        "notes move to another octave, or to the nearest pitch the family "
-                        "has."
+                        "%s plays %s-%s. %s only reaches %s-%s, so %d of its %d notes move "
+                        "to another octave, or to the nearest pitch the family has."
                         % (
-                            channel.channel,
-                            channel.program_name,
-                            channel.lowest,
-                            channel.highest,
+                            self._who(channel.channel),
+                            _note_name(channel.lowest),
+                            _note_name(channel.highest),
                             family,
-                            low,
-                            high,
+                            _note_name(low),
+                            _note_name(high),
                             outside,
                             channel.notes,
                         ),
@@ -450,14 +577,19 @@ class Session:
             )
 
         if stats["peak_voices"] >= stats["max_speakers"]:
-            # The statistics carry the worst layer's voice count and not which
-            # layer it was, so the sentence says "the busiest channel" rather
-            # than naming one it cannot know. A layer that needs exactly the cap
-            # and a layer that was thinned look identical from here; the warning
-            # fires on both, because raising the lever costs nothing and settles
-            # which one it was.
+            # A layer that needs exactly the cap and a layer that was thinned
+            # look identical from here; the warning fires on both, because
+            # raising the lever costs nothing and settles which one it was.
+            # Which layer it was is rebuilt rather than reported -- see
+            # `_busiest_channel` -- and the sentence falls back to the number
+            # alone when that rebuild cannot be trusted.
+            busiest = self._busiest_channel(stats)
             warnings.append(
-                "The busiest channel used all %d speakers, so its densest passages were "
-                "thinned. Raise max speakers, or cap the polyphony." % stats["max_speakers"]
+                "%s used all %d speakers, so its densest passages were thinned. Raise max "
+                "speakers, or cap the polyphony."
+                % (
+                    "The busiest channel" if busiest is None else self._who(busiest),
+                    stats["max_speakers"],
+                )
             )
         return warnings
