@@ -497,7 +497,7 @@ class Session:
                 lines.append(
                     (
                         outside,
-                        "%s plays %s-%s. %s only reaches %s-%s, so %d of its %d notes move "
+                        "%s plays %s-%s. %s only reaches %s-%s, so %d of its %d notes %s "
                         "to another octave, or to the nearest pitch the family has."
                         % (
                             self._who(channel.channel),
@@ -508,6 +508,7 @@ class Session:
                             _note_name(high),
                             outside,
                             channel.notes,
+                            "moves" if outside == 1 else "move",
                         ),
                     )
                 )

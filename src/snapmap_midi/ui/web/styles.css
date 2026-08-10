@@ -36,7 +36,7 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 
 /* ---- menubar ---- */
 .menubar { display: flex; align-items: center; height: 30px; background: var(--chrome); border-bottom: 1px solid var(--border); padding: 0 8px; gap: 8px; flex-shrink: 0; }
-.menubar .mark { width: 14px; height: 14px; border-radius: 3px; background: var(--accent); flex-shrink: 0; }
+.menubar .icon { width: 16px; height: 16px; border-radius: 3px; margin-left: 4px; display: block; flex-shrink: 0; }
 .menubar .brand { font-weight: 600; }
 .menubar .song { color: var(--muted); max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .theme-toggle { display: inline-flex; border: 1px solid var(--border2); border-radius: 20px; overflow: hidden; }

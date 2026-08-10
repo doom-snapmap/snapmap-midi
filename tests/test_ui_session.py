@@ -423,7 +423,7 @@ def test_the_automatic_family_is_warned_about_too():
     session = Session(midi=TINY_MIDI)
     assert [w for w in _warnings(session) if w.startswith("Channel 1")] == [
         "Channel 1 (Violin) plays C3-G4. ins_violin only reaches G3-E7, so 1 of its 2 "
-        "notes move to another octave, or to the nearest pitch the family has."
+        "notes moves to another octave, or to the nearest pitch the family has."
     ]
 
 

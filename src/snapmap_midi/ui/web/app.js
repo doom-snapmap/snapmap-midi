@@ -282,8 +282,13 @@
         }
         return;
       }
-      if (accept('settings', mine)) { STATE.settings = r.settings; STATE.rulers = r.rulers; }
-      if (accept('stats', mine)) { STATE.stats = r.stats; }
+      /* Through `adopt` for the analysis. `apply_settings` answers with it
+         because the drums mode is a setting that rewrites it -- which channel
+         is a kit, which keys it names, whether that row has a ruler at all --
+         and a window that took only the settings and the rulers would go on
+         drawing the previous mode's channel list until something else
+         happened to refresh it. */
+      adopt(r, mine);
       stamp('Updated');
       render();
     }, function (e) { setBusy(false); fail(e); });
@@ -309,30 +314,25 @@
     }, function (e) { fail(e); });
   }
 
-  /* The drums switch changes which channel is a kit and which keys it names,
-     and `apply_settings` answers with settings, stats and rulers only. Asking
-     for the whole opening payload again is the one call that re-reads the
-     analysis without reopening the file and discarding the user's choices. */
-  function refreshAll() {
-    if (!api()) { return; }
-    var mine = next();
-    setBusy(true);
-    api().startup().then(function (r) {
-      setBusy(false);
-      if (!r || !r.ok) { toast((r && r.error) || 'the window could not refresh', 'err'); return; }
-      adopt(r, mine);
-      render();
-    }, function (e) { setBusy(false); fail(e); });
-  }
-
   function afterLoad(r, seq) {
     setBusy(false);
     if (!r) { return; }
+    /* A dismissed dialog before a failed one. The bridge answers a cancel with
+       `ok: false` and deliberately no `error`, because it is not one: somebody
+       opened the picker and changed their mind. Reading only `ok` put a red
+       toast on screen for that, which is how people learn to stop reading
+       toasts. */
+    if (r.cancelled) { return; }
     if (!r.ok) { toast(r.error || 'that file could not be opened', 'err'); return; }
     adopt(r, seq);
     render();
     refreshCatalog();
     stamp('Opened ' + baseName(STATE.analysis ? STATE.analysis.path : ''));
+    /* The song's settings file is applied by the same call that opens the song,
+       so a broken one is only ever visible here. Silence would mean an
+       afternoon's tuning quietly not coming back, and the window looking as
+       though the file had never been written. */
+    if (r.sidecar_error) { toast(r.sidecar_error, 'warn'); }
   }
 
   function openFile() {
@@ -391,7 +391,17 @@
       }
       render();
       stamp('Exported');
-      toast('Map exported', 'ok');
+      /* Two files came out of one button, so the toast names both. The sidecar
+         is what makes tomorrow's session open where this one stopped, and a
+         window that only ever said "Map exported" left the user no reason to
+         believe their choices had been kept anywhere. */
+      toast(r.sidecar ? ('Map exported, settings saved to ' + baseName(r.sidecar))
+        : 'Map exported', 'ok');
+      /* A sidecar that could not be written does not fail the export -- the map
+         is on disk where the line above says it is -- so this is a second,
+         quieter message rather than an error. Swallowing it is how a
+         convenience is discovered to have been broken for a month. */
+      if (r.sidecar_error) { toast(r.sidecar_error, 'warn'); }
     }, function (e) { setBusy(false); fail(e); });
   }
 
@@ -1024,11 +1034,16 @@
 
   function renderExport() {
     if (!BUILT.exporter) { buildExport(); BUILT.exporter = true; }
-    var s = STATE.settings || {};
-    setValue(el('xButton'), s.button || '');
-    setValue(el('xOutDir'), s.out_dir || '');
-    setValue(el('xBaseline'), s.baseline || '');
-    el('xBaseClear').disabled = !s.baseline;
+    /* Spelled out rather than aliased to `s`, so that every key this file reads
+       off the document is greppable as `settings.<key>`. That is what
+       `tests/test_ui_assets.py` scans for, and a one-letter alias hid three
+       reads from it -- the three most likely to drift, being the only
+       top-level document keys the window writes back. */
+    var settings = STATE.settings || {};
+    setValue(el('xButton'), settings.button || '');
+    setValue(el('xOutDir'), settings.out_dir || '');
+    setValue(el('xBaseline'), settings.baseline || '');
+    el('xBaseClear').disabled = !settings.baseline;
 
     var stats = STATE.stats || {};
     el('xNotes').textContent = stats.notes || 0;
@@ -1124,11 +1139,14 @@
     el('emptyOpenBtn').addEventListener('click', openFile);
     el('reopenBtn').addEventListener('click', reopen);
     el('drumMode').addEventListener('change', function () {
-      var mode = this.value;
-      var done = patch({ drums: mode });
-      /* The switch decides which channel is a kit and which keys it names, and
-         only the analysis carries that. */
-      if (done && done.then) { done.then(refreshAll); } else { refreshAll(); }
+      var done = patch({ drums: this.value });
+      /* `apply_settings` carries the analysis back, so the channel list and the
+         rulers are already right by the time this resolves. The catalog is the
+         one thing it does not carry: `drum_names` covers the keys the OPEN SONG
+         plays, and this switch is what decides whether channel 9 has any. Left
+         stale, every row on the Drums tab reads "Key 42" instead of naming the
+         drum. */
+      if (done && done.then) { done.then(refreshCatalog); } else { refreshCatalog(); }
     });
     setBridge(false, 'no window attached');
     render();
