@@ -10,9 +10,9 @@ Modules are grouped by subsystem and stacked. Each layer may use the ones below 
 the ones above, and a test asserts exactly that.
 
 ```
-   compile.py / audition.py / cli.py        the product surface
+   compile.py / cli.py / settings.py / ui/  the product surface
                   |
-   music/     midi, gm, voices              notes: pairing, timbre, density
+   music/     midi, gm, voices, analysis    notes: pairing, timbre, density
                   |
    sound/     palette, events, timeline     sounds: names, event calls, scheduling
                   |
@@ -73,6 +73,27 @@ number maps to a percussion sound; and a set names which families sustain rather
 These are data, not logic — the module has no behaviour worth testing beyond the tables
 being well-formed, and one test that every name in them exists in the shipped palette.
 
+### `music/analysis.py` — the file as the user sees it
+
+`parse_notes` cannot answer what a MIDI file contains. By the time it returns, a program
+number has become a family and the channel's own identity — which instrument the composer
+asked for — is gone. Choosing an instrument per channel needs the question asked before that
+collapse, so this reads the file separately and reports per channel: the program and its
+General MIDI name, a per-note histogram, the extremes, whether it is the kit, and the family
+the automatic mapping would pick.
+
+It keeps the whole histogram rather than only the extremes, because everything the window
+draws is computed from it: how many notes a chosen family cannot reach, and the density strip
+described in [`ui.md`](ui.md#reading-the-pitch-ruler). Lowest and highest alone draw the same
+bar for two notes as for two thousand, so one stray low note makes a piano part look like it
+spans the keyboard.
+
+**The ruler's geometry is computed here, in Python, not in the window's Javascript.**
+`ruler_segments` returns percentages. Every failure that geometry can have — an axis that
+clips the one family it was built to showcase, a family sharing no note with the channel
+drawn as a matter of degree, a drum channel plotted on a pitch axis — is a failure a test can
+catch on this side of the bridge and nothing can catch on the other.
+
 ### `sound/palette.py` — the sound index
 
 Builds an index of every sound a speaker can play. **The palette ships with the package**;
@@ -101,8 +122,14 @@ away, and because the misreads collided with the genuine flats, `ins_flute` ende
 the `e` in "clave". A name the palette knows and gives no pitch to is unpitched and is not
 then guessed at; only a name the palette has never seen falls back to the pattern.
 
-Reads are cached per source, because both the compiler and the audition builder ask for the
-palette and a multi-layer compile used to re-parse it per layer.
+Reads are cached per source, because every surface that asks a question about sound asks this
+module for the palette first, and a multi-layer compile used to re-parse it per layer.
+
+The palette also answers which categories can play a pitch at all, which the window needs
+before it can offer a choice. Twelve of the twenty-four can; `pitched_families` derives that
+list from the pitch index rather than from the `ins_` prefix, because `ins_string` and
+`ins_synth` carry the prefix and hold no pitched sound between them. A channel routed to one
+resolves every note to nothing and vanishes from a map that still loads and plays.
 
 ### The split that defines the design
 
@@ -136,8 +163,9 @@ MIDI; it takes a sound name and a time and emits the call structure.
 
 Writes events onto a timeline entity and adds the switch that triggers it. This is the
 reusable layer: `author_sound_timeline` takes a list of `(sound, milliseconds)` pairs and
-returns finished map bytes. `audition.py` uses the same API, which is why there is no second
-copy of the recipe.
+returns finished map bytes. The retired `audition` command was a thin caller of it, and this
+API is kept partly so that behaviour is still reachable from Python — see
+[`ui.md`](ui.md#you-cannot-hear-a-sound-here) for the recipe.
 
 `find_timeline` used to raise when a document had no timeline, with a message telling the
 caller to go and find a baseline map containing one. It now authors one, and is called
@@ -149,6 +177,51 @@ that name for the pure query that returns `None`.
 Runs the stages above in order and returns `(bytes, statistics)`. The statistics dictionary
 is not decoration: the byte gates assert on it, so a byte difference reports *what* changed
 rather than only *that* something did.
+
+Two of its numbers are there for the window and are worth naming. `long_sustains` counts
+notes held past a second and `peak_voices` the largest allocation any layer reached, because
+those are the two quantities [`limits.md`](limits.md) actually names. `events` is the biggest
+number in the summary and the least useful one to judge a map by: it is dominated by decaying
+one-shots, which hold no emitter slot and are immune.
+
+### `settings.py` — one document, two surfaces
+
+The window's whole state as a single JSON document, validated here and turned into keyword
+arguments for `compile_to_rawmap`. Both surfaces read it — the window through its session,
+the command line through `--settings` — so one document drives either of them and produces
+the same bytes. A test compiles a default document and a bare `compile_to_rawmap` call and
+compares the two.
+
+It sits at the surface rather than under it because it validates against `sound/palette.py`
+and hands arguments to `compile.py`, which are both at or above the layer it would otherwise
+occupy. Its defaults mirror `compile_to_rawmap`'s own, named rather than imported, and the
+byte gate is what keeps the two from drifting.
+
+Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
+every mistake a hand edit makes here is a quiet one. See
+[`ui.md`](ui.md#the-settings-sidecar).
+
+### `ui/` — the control window
+
+A pywebview window over the library, in four files. `app.py` opens it and is the only module
+that imports pywebview at all — inside a function, so importing the package still works on a
+machine that will never open a window. `session.py` holds the loaded file, the settings
+document and the analysis behind a lock, because bridge calls arrive on separate threads.
+`api.py` is the class pywebview exposes to Javascript; every method returns
+`{"ok": true, ...}` or `{"ok": false, "error": "..."}` and none of them raises, because an
+exception crossing that boundary reaches Javascript as an opaque `Error` with nothing worth
+showing. `web/` is hand-written HTML, CSS and Javascript — no framework, no bundler.
+
+Nothing is served and nothing listens. The markup is loaded from the filesystem by path, so
+the window has no address and no port; `test_product_has_no_network_client` still passes over
+the whole package.
+
+**The division of labour is the design.** Python decides everything, including the ruler's
+geometry, so the only untestable surface is markup. Javascript positions percentages it is
+handed and calls the bridge; it computes no position from a MIDI note and names no sound
+family anywhere. Families come from the bridge's catalog, which derives them from the
+palette. A family name written into the markup would be a second source of truth, and the
+palette is the one that cannot be wrong.
 
 ## The authoring core
 

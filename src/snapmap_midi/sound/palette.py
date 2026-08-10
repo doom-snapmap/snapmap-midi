@@ -171,7 +171,7 @@ def _parse_decl(path: Path) -> dict:
 def _load(override: Optional[Path]) -> dict:
     """The palette, read once per distinct source.
 
-    Cached because both the compiler and the audition builder ask for it, and
+    Cached because every surface that asks about sound asks for it first, and
     a compile with several layers used to re-read and re-parse the whole file
     for each one.
     """

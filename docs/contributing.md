@@ -31,8 +31,12 @@ to review and makes a byte-gate movement ambiguous.
 
 ## 2. Setup
 
-Python 3.12 or newer. Nothing else — `mido` is the only runtime dependency and pip fetches
-it.
+Python 3.12 or newer. Nothing to find or configure — pip fetches the two runtime
+dependencies. `mido` reads MIDI files. `pywebview` is the control window and is declared for
+Windows only, so on Linux or macOS add the `[ui]` extra to the install line below if you are
+working on the window. The suite does not need it: `ui/api.py` and `ui/session.py` import
+pywebview nowhere, and `ui/app.py` imports it inside a function, which is what keeps the
+whole package importable and testable on a machine that will never open one.
 
 ```bash
 git clone https://github.com/doom-snapmap/snapmap-midi.git
@@ -91,7 +95,7 @@ fully configured contributor.
 python -m pytest
 ```
 
-Expect `128 passed, 4 skipped` on a clone with nothing configured.
+Expect `319 passed, 4 skipped` on a clone with nothing configured.
 
 ### What the byte gates mean
 
@@ -119,6 +123,22 @@ keeps this package a pure bytes-out tool.
 The layering test is data-driven over the subsystem list, and it fails if a named package is
 missing rather than scanning an empty directory and passing vacuously. Its predecessor
 matched modules by bare name and would have gone quiet the moment they moved into packages.
+
+### Working on the control window
+
+Open `src/snapmap_midi/ui/web/index.html` in an ordinary browser. There is no bridge there,
+so the window shows its empty state rather than throwing — that is deliberate, because
+opening the file directly is how anybody iterating on the markup will look at it.
+
+Everything the window decides is decided in Python, including the pitch ruler's geometry,
+which arrives as percentages from `music/analysis.py`. **Do not move a calculation into
+`app.js` to save a round trip.** The reason it is on the Python side is that a wrong
+percentage there is a test failure and a wrong percentage in the browser is a picture nobody
+can check. The same rule bans a sound-family name appearing anywhere in the markup: the
+window gets its families from the bridge, which derives them from the palette.
+
+To see it running, `.venv/Scripts/python.exe -m snapmap_midi`. [`ui.md`](ui.md) describes
+what should be on screen.
 
 ## 5. Style
 

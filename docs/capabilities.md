@@ -6,15 +6,23 @@ around see [`limits.md`](limits.md).
 
 ## Commands
 
-Two subcommands. Neither needs anything configured.
+Two subcommands, plus a bare invocation that is a third thing. None of them needs anything
+configured.
 
 ```bash
-snapmap-midi compile song.mid
-snapmap-midi audition ins_noise
+snapmap-midi                     # open the control window
+snapmap-midi ui song.mid         # open it on a song
+snapmap-midi compile song.mid    # compile without a window
 ```
 
-Both also run as a module, which is handy when the package is installed but its scripts
-directory is not on `PATH`:
+The name with nothing after it opens the window, because the window is where an instrument
+gets chosen and this command line is where a choice already made gets replayed. Where there
+is no display — CI, a container, a shell over a remote connection — it prints the usage text
+instead. `webview.start()` blocks until the window closes, and a window nobody can see never
+closes, so the alternative is a command that hangs having printed nothing.
+
+All of them also run as a module, which is handy when the package is installed but its
+scripts directory is not on `PATH`:
 
 ```bash
 python -m snapmap_midi compile song.mid
@@ -25,9 +33,12 @@ python -m snapmap_midi compile song.mid
 **The map loader reads exactly one file: `rawmap.json`, in `%LOCALAPPDATA%\snapmap-plus\`.**
 Not a directory it scans, not a name you give it — one hardcoded path.
 
-So that is where both commands write, and the folder is created if it isn't there yet. The
-loader creates it too, the first time it runs; doing it here as well means compiling works
-on a machine where that hasn't happened.
+So that is where a compile writes, and where the window's Export button writes, and the
+folder is created if it isn't there yet. The loader creates it too, the first time it runs;
+doing it here as well means compiling works on a machine where that hasn't happened.
+
+One file means every export replaces the last one. The window says when it has, because a
+button invites repeated use in a way a typed command did not.
 
 `--out-dir` moves the folder. It does not rename the file, because a map named anything else
 cannot be loaded without being renamed first:
@@ -50,6 +61,7 @@ Yours loads instead of it. Run `sh_rawmaps_off` when you're done.
 | `midi` | path | *required* | the `.mid` to compile |
 | `--out-dir` | path | the loader's folder | write to this folder instead (filename stays `rawmap.json`) |
 | `--baseline` | path | none | add the song to this saved map instead of authoring a blank room |
+| `--settings` | path | none | take every lever from this settings file (see [`ui.md`](ui.md)) |
 | `--button` | text | `snapmap-midi-song` | display name of the switch that plays the song |
 | `--remap` | text | none | retimbre families, e.g. `ins_guitar=ins_piano`; comma-separate several |
 | `--drums` | `auto` / `on` / `off` | `auto` | `auto` includes drums when the file has a channel-9 track |
@@ -62,27 +74,51 @@ On success it prints the statistics summary and the output path. The summary is 
 reading: `voices`, `decaying`, `sustained` and `notes` tell you at a glance whether the
 arrangement is inside the engine's comfortable range.
 
-### `audition` — hear what a category contains
+**`--settings` and the flags resolve in one order: built-in defaults, then the file, then
+whatever you typed.** A settings file is a decision made earlier and saved; a flag is a
+decision being made right now, so the flag goes last. Setting one lever in the file does not
+reset the other forty. A file that does not validate prints `settings: <message>` naming the
+offending key and exits `2` — hand editing is how that file is meant to change, so a bad one
+is an ordinary event rather than a bug. See [`ui.md`](ui.md#the-settings-sidecar) for the
+schema.
 
-The sound palette has hundreds of entries whose names do not tell you what they sound like.
-`audition` builds a map that plays every sound in a category in sequence and prints a
-numbered legend, so you can listen through with the list in front of you and find out.
+### `ui` — the control window
 
 | Flag | Type | Default | What it does |
 |---|---|---|---|
-| `category` | text | `ins_noise` | which palette category to play |
-| `--out-dir` | path | the loader's folder | write to this folder instead |
-| `--baseline` | path | none | add to this saved map instead of authoring a blank room |
-| `--gap` | ms | `1500` | spacing between sounds |
+| `midi` | path | none | open on this song |
+| `--settings` | path | none | open with these settings |
 
-Exits `2` if the category is empty, rather than writing a map that plays nothing, and prints
-the categories that do exist.
+Set the instrument for every channel, remap drum keys, mute parts, tune the levers, and see
+what the compile will produce before writing it. It needs pywebview, which is an ordinary
+dependency on Windows and the `[ui]` extra everywhere else. [`ui.md`](ui.md) covers the
+panels, the pitch ruler and the settings document both surfaces share.
 
-The 24 categories: `amb_air`, `amb_hellish`, `amb_hums`, `dlc1_ui_user_defined`,
-`dlc2_classicsfx`, `eff_explosions`, `eff_gore`, `eff_miscellaneous`, `ins_brass_bells`,
-`ins_flute`, `ins_guitar`, `ins_horns`, `ins_marimba`, `ins_noise`, `ins_percussion`,
-`ins_piano`, `ins_pulse`, `ins_sine`, `ins_square`, `ins_string`, `ins_synth`, `ins_tri`,
-`ins_trumpet`, `ins_violin`.
+### The palette's categories
+
+24 of them, and the split matters more than the count.
+
+**12 can play a pitch** and are the families a melodic channel may be routed to:
+`ins_brass_bells`, `ins_flute`, `ins_guitar`, `ins_horns`, `ins_marimba`, `ins_piano`,
+`ins_pulse`, `ins_sine`, `ins_square`, `ins_tri`, `ins_trumpet`, `ins_violin`. Only nine of
+those are reachable by the automatic General MIDI mapping; `ins_square`, `ins_tri` and
+`ins_brass_bells` can be chosen but never guessed.
+
+**12 have no pitched sound at all**: `amb_air`, `amb_hellish`, `amb_hums`,
+`dlc1_ui_user_defined`, `dlc2_classicsfx`, `eff_explosions`, `eff_gore`,
+`eff_miscellaneous`, `ins_noise`, `ins_percussion`, `ins_string`, `ins_synth`. Two of those
+carry the `ins_` prefix and are still silent for every note — `ins_string` is even listed
+among the sustained families beside the violins, and holds twelve unpitched effect samples.
+**Never split the list by name prefix.** `pitched_families()` derives it from which
+categories actually have a pitch index, which is the only version that cannot be wrong.
+
+`ins_noise` and `ins_percussion` together are the 70 sounds a drum key may be remapped to.
+The rest of the unpitched half is ambience, gore and interface noise, and a looping ambience
+fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
+
+Nothing here tells you what any of these sounds like. The `audition` command that did is
+gone; [`ui.md`](ui.md#you-cannot-hear-a-sound-here) says plainly what was lost with it, and
+carries the library recipe that reproduces it.
 
 ## Tuning levers
 
@@ -112,10 +148,26 @@ promoting one to a flag is a welcome pull request.
 | `family_caps` | — | dict | one instrument is monopolising voices; cap per family |
 | `decaying_families` | — | set | force a family down the fire-and-forget path |
 | `channel_families` | — | dict | override the family for a whole MIDI channel |
+| `channel_mutes` | — | set | silence whole channels; the notes are not counted as dropped |
 | `drop_shaders` | — | set | one specific sound is wrong; exclude it |
-| `drum_overrides` | — | dict | remap individual percussion notes |
+| `drum_overrides` | — | dict | retimbre whatever the drum table picked, keyed by sound |
+| `drum_key_overrides` | — | dict | give one percussion key a sound; wins over the table |
 | `low_split` | — | — | split the low register onto its own family |
 | `note_index` | — | index | supply a prebuilt palette index instead of resolving one |
+
+`drum_key_overrides` is keyed by MIDI key and `drum_overrides` by resolved sound, which is
+why the per-key choice is applied first and the shader table only ever post-processes the
+table's own answer. Applied the other way round it silently replaced the sound somebody had
+just picked.
+
+The control window offers thirteen of these: `max_speakers`, `release_s`, `hard_stop`,
+`max_poly`, `cap_sustain_ms`, `bass_pitch`, `bass_cap_ms`, `decaying_families`,
+`family_caps`, `drums`, `channel_families`, `channel_mutes` and `drum_key_overrides`. The
+rest stay library-only. `max_events` is deliberately not among them: the compiler implements
+it as
+`decaying_events[:max_events]`, which truncates the one-shot list in time order, so the drums
+stop partway through the song rather than thinning out. Behind a slider that reads as a
+density limit, that is a trap.
 
 Notes held under about a second cut reliably. That is the practical target when tuning.
 

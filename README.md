@@ -12,8 +12,11 @@ format; no decompiled or copied content.
 
 ## Install
 
-You need **Python 3.12 or newer**. Nothing else — `mido` is the only dependency and pip
-fetches it for you. Check what you have:
+You need **Python 3.12 or newer**. Nothing else to find or configure — pip fetches the two
+dependencies for you. `mido` reads MIDI files and is needed everywhere; `pywebview` is the
+control window, and it is a plain dependency on Windows only. Elsewhere the window is the
+`[ui]` extra, because the map loader this tool writes to is Windows-only and a window on
+another platform has nowhere to hand its output. Check what you have:
 
 ```bash
 python --version
@@ -145,17 +148,30 @@ filename stays `rawmap.json`, because that is the only name the loader will open
 snapmap-midi compile song.mid --out-dir D:/songs/bach
 ```
 
-Not sure what a sound category actually contains? Build a map that plays every sound in it
-in sequence and prints a numbered legend:
+## Choose the instruments
+
+The compiler picks a sound family for each channel from its General MIDI program number,
+which is a guess. To make the choices yourself, open the control window:
 
 ```bash
-snapmap-midi audition ins_noise
+snapmap-midi
 ```
+
+The name with nothing after it opens it; `snapmap-midi ui song.mid` opens it on a song. Set
+the instrument for every channel, remap drum keys, mute parts, tune the levers, and watch
+what the compile will produce before exporting. Each channel row plots the notes it plays
+against the reach of the instrument you gave it, so a part that cannot fit is visible rather
+than something you find out by listening.
+
+Every choice the window makes is also a line in a settings file, and
+`snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays one. Full detail in
+[`docs/ui.md`](docs/ui.md).
 
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
+| [`docs/ui.md`](docs/ui.md) | the control window, the pitch ruler, and the settings file |
 | [`docs/capabilities.md`](docs/capabilities.md) | every command, flag and tuning lever |
 | [`docs/game-data.md`](docs/game-data.md) | what ships, what doesn't, and the optional overrides |
 | [`docs/architecture.md`](docs/architecture.md) | how a MIDI file becomes a map |
@@ -231,6 +247,7 @@ never the ones above.
 | `src/snapmap_midi/rawmap/` | the map-authoring core — codec, value builders, documents, reference slots, the blank-map template |
 | `src/snapmap_midi/sound/` | the game's sound surface — the palette, event calls, timeline authoring |
 | `src/snapmap_midi/music/` | the MIDI domain — parsing, General MIDI tables, voice allocation |
+| `src/snapmap_midi/ui/` | the control window — its session, its Javascript bridge, its markup |
 | `src/snapmap_midi/data/` | the shipped sound palette, and curated ear-labels for it |
 | `tools/` | maintainer scripts, not part of the installed package |
 | `tests/` | the suite, its fixtures, and the MIDI-input generator |
