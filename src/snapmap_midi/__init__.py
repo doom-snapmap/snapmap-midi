@@ -18,7 +18,8 @@ on its own:
 On top of those sits the product surface:
 
     compile     orchestration: a MIDI file to a finished map
-    audition    build a map that plays candidate sounds in sequence
+    settings    one document holding every choice a compile makes
+    ui/         the control window: pick instruments, tune, export
     cli         the command-line entry point
     paths       optional overrides for the data the product normally ships
 """

@@ -134,7 +134,7 @@ def test_clone_preserves_the_concrete_class(minimal_map):
 _LAYERS = ["rawmap", "sound", "music"]
 
 #: Product-surface modules, which sit above every subsystem.
-_SURFACE = ["compile", "audition", "cli"]
+_SURFACE = ["compile", "settings", "cli", "ui"]
 
 
 _PACKAGE = "snapmap_midi"

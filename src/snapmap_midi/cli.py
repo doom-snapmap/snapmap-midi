@@ -1,21 +1,24 @@
-"""Command-line surface: compile a MIDI file, or build an audition map.
+"""Command-line surface: compile a MIDI file, or open the control window.
 
 The whole surface is one required argument. Everything a compile used to
 demand -- a sound palette to point at, a saved map to inherit a timeline from,
 an output name -- is either shipped, authored, or fixed by the loader.
+
+Typing the name with nothing after it opens the window, because the window is
+now where an instrument gets chosen and this command line is where a choice
+already made gets replayed.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from snapmap_midi import paths
-from snapmap_midi.audition import DEFAULT_GAP_MS, candidates_in_category, legend
-from snapmap_midi.audition import build as build_audition
+from snapmap_midi import settings as settings_module
 from snapmap_midi.compile import compile_to_rawmap
-from snapmap_midi.sound.palette import categories
 
 
 def _baseline_bytes(explicit) -> bytes | None:
@@ -66,6 +69,61 @@ def _report(destination: Path) -> None:
         )
 
 
+#: What a compile does when nobody says otherwise -- the same values the flags
+#: used to carry as their argparse defaults. They live here now because the
+#: flags cannot carry them any more: see `_OVERRIDABLE`.
+_COMPILE_DEFAULTS = {
+    "button_name": "snapmap-midi-song",
+    "drums": "auto",
+    "max_speakers": 32,
+    "release_s": 0.1,
+    "hard_stop": False,
+    "max_events": None,
+}
+
+#: Flags a settings file can also set, mapped to the compiler's own keyword.
+#: Each defaults to None on the parser so that "the user typed 32" stays
+#: distinguishable from "nobody said". argparse cannot tell those apart, and
+#: letting the invisible default win meant `max_speakers: 8` in a file someone
+#: had deliberately loaded compiled at 32 with no flag anywhere on the line --
+#: the quiet wrong answer `_RetiredOut` exists to prevent, in the one feature
+#: whose entire purpose is replaying a session.
+_OVERRIDABLE = {
+    "button": "button_name",
+    "drums": "drums",
+    "max_speakers": "max_speakers",
+    "release": "release_s",
+    "hard_stop": "hard_stop",
+    "max_events": "max_events",
+}
+
+#: `--drums` is three words here and a tri-state in the compiler. Only that one
+#: flag is translated: running every flag through this table turns `--button
+#: off` into a switch named False, which reaches the map as a label nobody can
+#: find again.
+_DRUMS = {"auto": "auto", "on": True, "off": False}
+
+
+def _levers(args) -> dict:
+    """Built-in defaults, then the settings file, then the flags actually typed.
+
+    Three sources in one order, and the order is the feature. A settings file
+    is a decision made earlier and saved; a flag is a decision being made right
+    now, so it goes last. The defaults go first so that a file setting one
+    lever does not silently reset the other forty.
+    """
+    levers = dict(_COMPILE_DEFAULTS)
+    if args.settings:
+        levers.update(settings_module.to_compile_kwargs(settings_module.load(args.settings)))
+    for flag, keyword in _OVERRIDABLE.items():
+        typed = getattr(args, flag)
+        if typed is not None:
+            levers[keyword] = _DRUMS[typed] if flag == "drums" else typed
+    if args.remap:
+        levers["family_overrides"] = dict(kv.split("=", 1) for kv in args.remap.split(","))
+    return levers
+
+
 def _compile(args) -> int:
     # Checked here rather than left to the MIDI reader, which raises a bare
     # FileNotFoundError and prints a traceback at someone who mistyped a path.
@@ -73,19 +131,17 @@ def _compile(args) -> int:
         print("no such MIDI file: {}".format(args.midi))
         return 2
 
-    overrides = dict(kv.split("=", 1) for kv in args.remap.split(",")) if args.remap else None
-    drums = {"auto": "auto", "on": True, "off": False}[args.drums]
-    raw, stats = compile_to_rawmap(
-        args.midi,
-        _baseline_bytes(args.baseline),
-        button_name=args.button,
-        family_overrides=overrides,
-        drums=drums,
-        max_speakers=args.max_speakers,
-        release_s=args.release,
-        hard_stop=args.hard_stop,
-        max_events=args.max_events,
-    )
+    try:
+        levers = _levers(args)
+    except settings_module.SettingsError as exc:
+        # Hand editing is how this file is meant to change, so a bad one is an
+        # ordinary event rather than a bug. The message names the offending
+        # key; a traceback would bury that under a stack about JSON, which is
+        # not the part the reader can do anything about.
+        print("settings: {}".format(exc))
+        return 2
+
+    raw, stats = compile_to_rawmap(args.midi, _baseline_bytes(args.baseline), **levers)
     print("compiled {}: {}".format(args.midi, stats))
     if not stats["notes"]:
         # A map that loads and plays nothing looks exactly like success until
@@ -101,29 +157,27 @@ def _compile(args) -> int:
     return 0
 
 
-def _audition(args) -> int:
-    candidates = candidates_in_category(args.category)
-    if not candidates:
-        print("no sounds in category {!r}".format(args.category))
-        print("available: {}".format(", ".join(sorted(categories()))))
-        return 2
-    raw = build_audition(
-        candidates,
-        _baseline_bytes(args.baseline),
-        gap_ms=args.gap,
-        label="snapmap-midi-audition-" + args.category,
-    )
-    total = len(candidates) * args.gap / 1000.0
-    print(
-        "=== {} ({} sounds, {} ms apart, ~{:.0f}s total) ===".format(
-            args.category, len(candidates), args.gap, total
-        )
-    )
-    print("press the switch once; sounds play in this order:\n")
-    print("\n".join(legend(candidates, args.gap)))
-    print()
-    _report(_write(raw, args.out_dir))
-    return 0
+def _has_display() -> bool:
+    """Whether there is a screen to put a window on.
+
+    Windows always has one, and it is the platform the game runs on, so asking
+    an environment variable there would answer no and refuse to open the window
+    on the only machine that wants it. Everywhere else this asks the display
+    server directly, because `webview.start()` blocks until the window closes
+    and a window nobody can see never closes: in CI or over a remote shell a
+    bare `snapmap-midi` would hang until it was killed, having printed nothing.
+    """
+    if sys.platform == "win32":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _ui(args) -> int:
+    # Imported here so this module stays importable where pywebview is not,
+    # which is every platform but Windows.
+    from snapmap_midi.ui.app import run
+
+    return run(midi=args.midi, settings=args.settings)
 
 
 class _RetiredOut(argparse.Action):
@@ -147,8 +201,15 @@ class _RetiredOut(argparse.Action):
         )
 
 
-def _add_shared(parser) -> None:
-    """Flags both subcommands take, so neither drifts from the other."""
+def _add_compile_flags(parser) -> None:
+    """Every lever a compile takes, all of them optional.
+
+    The tuning flags default to None rather than to their real values, so that
+    `_levers` can tell a typed value from an untyped one. Their defaults are in
+    `_COMPILE_DEFAULTS` and are repeated in the help text here, because with no
+    argparse default to show, `--help` would otherwise be the one place that
+    stopped saying what a compile actually does.
+    """
     parser.add_argument(
         "--out-dir",
         default=None,
@@ -162,6 +223,46 @@ def _add_shared(parser) -> None:
         default=None,
         help="add to this saved map instead of authoring a blank one",
     )
+    parser.add_argument(
+        "--settings",
+        default=None,
+        help="a settings file written by the control window; any flag given here wins over it",
+    )
+    parser.add_argument("--button", default=None, help="switch label (default snapmap-midi-song)")
+    parser.add_argument(
+        "--remap", default=None, help='retimbre families, e.g. "ins_guitar=ins_piano"'
+    )
+    parser.add_argument(
+        "--drums", default=None, choices=["auto", "on", "off"], help="(default auto)"
+    )
+    parser.add_argument(
+        "--max-speakers",
+        type=int,
+        default=None,
+        dest="max_speakers",
+        help="voices available to sustained notes, per layer (default 32)",
+    )
+    parser.add_argument(
+        "--release",
+        type=float,
+        default=None,
+        help="note-off fade time in seconds (default 0.1)",
+    )
+    parser.add_argument(
+        "--hard-stop",
+        action="store_const",
+        const=True,
+        default=None,
+        dest="hard_stop",
+        help="cut notes instead of fading them",
+    )
+    parser.add_argument(
+        "--max-events",
+        type=int,
+        default=None,
+        dest="max_events",
+        help="cap the number of one-shot events",
+    )
 
 
 def main(argv=None) -> int:
@@ -172,40 +273,29 @@ def main(argv=None) -> int:
         description="Compile a MIDI file into a playable in-game music map.",
         allow_abbrev=False,
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    # Not required: a bare `snapmap-midi` opens the window, which is what
+    # someone who came for the window types.
+    sub = parser.add_subparsers(dest="command")
 
     c = sub.add_parser("compile", help="compile a .mid into a map", allow_abbrev=False)
     c.add_argument("midi")
-    _add_shared(c)
-    c.add_argument("--button", default="snapmap-midi-song")
-    c.add_argument("--remap", default=None, help='retimbre families, e.g. "ins_guitar=ins_piano"')
-    c.add_argument("--drums", default="auto", choices=["auto", "on", "off"])
-    c.add_argument("--max-speakers", type=int, default=32, dest="max_speakers")
-    c.add_argument("--release", type=float, default=0.1, help="note-off fade time in seconds")
-    c.add_argument(
-        "--hard-stop",
-        action="store_true",
-        dest="hard_stop",
-        help="cut notes instead of fading them",
-    )
-    c.add_argument(
-        "--max-events",
-        type=int,
-        default=None,
-        dest="max_events",
-        help="cap the number of one-shot events",
-    )
+    _add_compile_flags(c)
     c.set_defaults(func=_compile)
 
-    a = sub.add_parser(
-        "audition", help="build a map that plays candidate sounds", allow_abbrev=False
-    )
-    a.add_argument("category", nargs="?", default="ins_noise")
-    _add_shared(a)
-    a.add_argument("--gap", type=int, default=DEFAULT_GAP_MS)
-    a.set_defaults(func=_audition)
+    u = sub.add_parser("ui", help="open the control window", allow_abbrev=False)
+    u.add_argument("midi", nargs="?", default=None, help="open on this song")
+    u.add_argument("--settings", default=None, help="open with these settings")
+    u.set_defaults(func=_ui)
 
     args = parser.parse_args(argv)
+    if args.command is None:
+        # A bare invocation opens the window. Where there is no display -- CI,
+        # a shell over a remote connection, a container -- opening it would
+        # block forever on a window nobody can see, so print usage instead.
+        if not _has_display():
+            parser.print_help()
+            return 0
+        return _ui(argparse.Namespace(midi=None, settings=None))
     return args.func(args)
 
 
