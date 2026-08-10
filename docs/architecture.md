@@ -230,7 +230,9 @@ exception crossing that boundary reaches Javascript as an opaque `Error` with no
 showing. `chrome.py` removes the drawn Windows caption while retaining the native resize,
 snap, taskbar and system-menu behaviour. `web/` is hand-written HTML, CSS and Javascript —
 no framework, no bundler — and its shared tokens and shell primitives are the exact Snapmap
-Plus design contract.
+Plus design contract. Its eight used Lucide symbols are embedded as a local SVG sprite; the
+full icon library and any runtime dependency stay out of the package, while the upstream
+license ships beside the web assets.
 
 Nothing is served and nothing listens. The markup is loaded from the filesystem through a
 `file:///` URI, so the window has no address and no port;
@@ -247,10 +249,22 @@ song duration behind native scrollbars, draws only the visible viewport plus syn
 pitch and measure rulers, converts MIDI ticks through the supplied tempo map, moves and
 auto-follows the single playhead against Web Audio's output timestamp rather than its
 ahead-of-output scheduling clock, schedules decoded buffers with a rolling look-ahead, and
-forwards settings changes to the bridge. Grid, meter, and zoom are view state and never enter
-the conversion settings document. JavaScript names no palette family or sound in source. The
-grouped 24-category catalog comes from `sound/palette.py`, so the shipped palette stays the
-only source of truth.
+forwards settings changes to the bridge. Each canvas draw computes that output position once;
+the same value selects every event whose half-open time interval contains it and positions the
+playhead, preventing a separate animation clock from drifting away from active-note glow.
+Paused hover hit-testing reuses the rendered note rectangles and is disabled during seeking.
+The playback animation owns canvas painting while audio runs: programmatic auto-follow and
+wheel-driven native scroll events update viewport state but do not enqueue a second frame.
+Direct paints cancel any outstanding idle draw request. The disabled horizontal-scrollbar
+cover retains pointer interception for click and drag, while its non-passive wheel handler
+forwards vertical deltas to the pitch viewport.
+Zoom captures the playhead's viewport coordinate before resizing and restores that coordinate
+against the new time scale. The draggable pane separator stores only the preferred channel
+width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
+high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, and hover are view
+state and never enter the conversion settings document. JavaScript names no palette family or
+sound in source. The grouped 24-category catalog comes from `sound/palette.py`, so the shipped
+palette stays the only source of truth.
 
 ## The authoring core
 

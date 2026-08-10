@@ -149,13 +149,17 @@ window. Choose Automatic mapping, one of the pitched instrument sets, or any exa
 the full 890-sound SnapMap speaker palette for each channel.
 
 There is one Play/Pause control for the whole converted song. Its playhead sweeps across the
-entire note surface and can be dragged to seek, as can the transport scrubber. The roll covers
-all 128 MIDI pitches with synchronized piano keys, measure ruler, vertical and horizontal
-scrollbars, and playback following. Bottom controls set the visual note grid, time signature,
-and coordinated pitch/time zoom without changing the source notes. Conversion limits open in a
-nonblocking inspector instead of an import wizard or a separate tab. If DOOM is installed,
-**Set Up Audio** decodes the local preview cache once; conversion and export continue to work
-without it.
+entire note surface and can be dragged to seek, as can the transport scrubber. Every note under
+the playhead brightens while it sounds, including simultaneous notes across channels; while
+paused, the note under the pointer brightens instead. The roll covers all 128 MIDI pitches with
+synchronized piano keys, measure ruler, vertical and horizontal scrollbars, and playback
+following. Vertical wheel navigation remains responsive during playback, including when the
+pointer is over the disabled horizontal time scrollbar. Dragging the channel/roll divider trades
+width between the two panes, while bottom controls set the visual note grid, time signature, and
+playhead-anchored pitch/time zoom without changing the source notes. Conversion limits open in a
+nonblocking inspector instead of an import wizard or a separate tab. If DOOM is installed, **Set
+Up Audio** decodes the local preview cache once; conversion and export continue to work without
+it.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
 produced it. Open that song again and the choices are already there;

@@ -7,6 +7,10 @@
   'use strict';
 
   var THEME_KEY = 'snapmap_midi_theme';
+  var TRACKS_WIDTH_KEY = 'snapmap_midi_tracks_width';
+  var TRACKS_DEFAULT_WIDTH = 314;
+  var TRACKS_MIN_WIDTH = 220;
+  var ROLL_MIN_WIDTH = 420;
   var LOOKAHEAD_MS = 1300;
   var SCHEDULE_EVERY_MS = 100;
   var CHANNEL_COLORS = [
@@ -49,9 +53,13 @@
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
   var NOTIFICATIONS_OPEN = false;
-  var DRAW_QUEUED = false;
+  var DRAW_FRAME = null;
   var SEEK_DRAG = null;
   var SCRUB_DRAG = null;
+  var NOTE_POINTER = null;
+  var PANE_SPLIT_DRAG = null;
+  var TRACKS_PREFERRED_WIDTH = TRACKS_DEFAULT_WIDTH;
+  var CANVAS_RESIZE_QUEUED = false;
   var PLAY_TOKEN = 0;
 
   var AUDIO = {
@@ -82,6 +90,20 @@
   function baseName(path) { return String(path || '').replace(/^.*[\\/]/, ''); }
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
   function channelColor(channel) { return CHANNEL_COLORS[Number(channel) % CHANNEL_COLORS.length]; }
+  function iconElement(name) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    var use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    svg.setAttribute('class', 'ui-icon');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    use.setAttribute('href', '#icon-' + name);
+    svg.appendChild(use);
+    return svg;
+  }
+  function setIcon(node, name) {
+    var use = node && node.querySelector('use');
+    if (use) { use.setAttribute('href', '#icon-' + name); }
+  }
   function noteName(note) {
     note = Number(note);
     return NOTE_NAMES[((note % 12) + 12) % 12] + (Math.floor(note / 12) - 1);
@@ -449,7 +471,18 @@
     return (Math.min.apply(null, pitches) + Math.max.apply(null, pitches)) / 2;
   }
 
-  function resizeCanvas() {
+  function playheadZoomAnchor() {
+    if (!hasSong()) { return null; }
+    var viewport = el('pianoRollViewport');
+    var position = currentPosition();
+    var viewportX = contentXAtTime(position) - viewport.scrollLeft;
+    if (viewportX < 0 || viewportX > viewport.clientWidth) {
+      viewportX = viewport.clientWidth / 2;
+    }
+    return { position: position, viewportX: viewportX };
+  }
+
+  function resizeCanvas(zoomAnchor) {
     var viewport = el('pianoRollViewport');
     if (!viewport || el('workspace').hidden || viewport.clientWidth < 1 || viewport.clientHeight < 1) { return; }
 
@@ -457,6 +490,9 @@
     var oldHeight = Math.max(1, ROLL.contentHeight);
     var centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / oldWidth;
     var centerY = (viewport.scrollTop + viewport.clientHeight / 2) / oldHeight;
+    var anchoredToPlayhead = zoomAnchor &&
+      typeof zoomAnchor.position === 'number' && isFinite(zoomAnchor.position) &&
+      typeof zoomAnchor.viewportX === 'number' && isFinite(zoomAnchor.viewportX);
     var timeScale = ROLL.zoom / 100;
     var pitchScale = Math.min(3, 1 + Math.log(timeScale) / Math.LN2 * 0.4);
     var provisionalWidth = Math.max(1, viewport.clientWidth);
@@ -492,11 +528,117 @@
       );
       ROLL.pendingInitialScroll = false;
     } else {
-      viewport.scrollLeft = clamp(centerX * ROLL.contentWidth - width / 2, 0, Math.max(0, ROLL.contentWidth - width));
+      viewport.scrollLeft = anchoredToPlayhead
+        ? clamp(
+          contentXAtTime(zoomAnchor.position) - zoomAnchor.viewportX,
+          0,
+          Math.max(0, ROLL.contentWidth - width)
+        )
+        : clamp(centerX * ROLL.contentWidth - width / 2, 0, Math.max(0, ROLL.contentWidth - width));
       viewport.scrollTop = clamp(centerY * ROLL.contentHeight - height / 2, 0, Math.max(0, ROLL.contentHeight - height));
     }
     renderHorizontalScrollLock();
     drawPianoRoll();
+  }
+
+  /* --------------------------------------------------------------- layout */
+
+  function storedTracksWidth() {
+    try {
+      var value = Number(localStorage.getItem(TRACKS_WIDTH_KEY));
+      return isFinite(value) && value > 0 ? value : TRACKS_DEFAULT_WIDTH;
+    } catch (_error) {
+      return TRACKS_DEFAULT_WIDTH;
+    }
+  }
+
+  function paneSplitBounds() {
+    var workspace = el('workspace');
+    var splitter = el('paneSplitter');
+    var available = workspace.clientWidth - splitter.offsetWidth;
+    if (available < 1) { return { min: TRACKS_MIN_WIDTH, max: 720 }; }
+    var maximum = Math.max(TRACKS_MIN_WIDTH, available - ROLL_MIN_WIDTH);
+    return { min: Math.min(TRACKS_MIN_WIDTH, maximum), max: maximum };
+  }
+
+  function queueCanvasResize() {
+    if (CANVAS_RESIZE_QUEUED) { return; }
+    CANVAS_RESIZE_QUEUED = true;
+    requestAnimationFrame(function () {
+      CANVAS_RESIZE_QUEUED = false;
+      resizeCanvas();
+    });
+  }
+
+  function applyTracksWidth(value, persist, keepPreference) {
+    var workspace = el('workspace');
+    var splitter = el('paneSplitter');
+    var bounds = paneSplitBounds();
+    var width = Math.round(clamp(Number(value) || TRACKS_DEFAULT_WIDTH, bounds.min, bounds.max));
+    if (!keepPreference) { TRACKS_PREFERRED_WIDTH = width; }
+    workspace.style.setProperty('--tracks-width', width + 'px');
+    splitter.setAttribute('aria-valuemin', String(Math.round(bounds.min)));
+    splitter.setAttribute('aria-valuemax', String(Math.round(bounds.max)));
+    splitter.setAttribute('aria-valuenow', String(width));
+    splitter.setAttribute('aria-valuetext', width + ' pixels for channels');
+    if (persist) {
+      try { localStorage.setItem(TRACKS_WIDTH_KEY, String(TRACKS_PREFERRED_WIDTH)); } catch (_error) { /* local only */ }
+    }
+    queueCanvasResize();
+  }
+
+  function constrainPaneSplit() {
+    applyTracksWidth(TRACKS_PREFERRED_WIDTH, false, true);
+  }
+
+  function movePaneSplit(event) {
+    if (!PANE_SPLIT_DRAG || PANE_SPLIT_DRAG.pointer !== event.pointerId) { return; }
+    var workspace = el('workspace');
+    var rect = workspace.getBoundingClientRect();
+    applyTracksWidth(event.clientX - rect.left - workspace.clientLeft, false, false);
+  }
+
+  function endPaneSplit(event) {
+    if (!PANE_SPLIT_DRAG || PANE_SPLIT_DRAG.pointer !== event.pointerId) { return; }
+    var splitter = el('paneSplitter');
+    PANE_SPLIT_DRAG = null;
+    splitter.classList.remove('dragging');
+    document.body.classList.remove('pane-resizing');
+    try { splitter.releasePointerCapture(event.pointerId); } catch (_error) { /* already released */ }
+    applyTracksWidth(TRACKS_PREFERRED_WIDTH, true, false);
+  }
+
+  function initPaneSplitter() {
+    var splitter = el('paneSplitter');
+    TRACKS_PREFERRED_WIDTH = storedTracksWidth();
+    applyTracksWidth(TRACKS_PREFERRED_WIDTH, false, true);
+    splitter.addEventListener('pointerdown', function (event) {
+      if (event.button !== 0) { return; }
+      event.preventDefault();
+      PANE_SPLIT_DRAG = { pointer: event.pointerId };
+      splitter.classList.add('dragging');
+      document.body.classList.add('pane-resizing');
+      splitter.setPointerCapture(event.pointerId);
+      movePaneSplit(event);
+    });
+    splitter.addEventListener('pointermove', movePaneSplit);
+    splitter.addEventListener('pointerup', endPaneSplit);
+    splitter.addEventListener('pointercancel', endPaneSplit);
+    splitter.addEventListener('dblclick', function () {
+      TRACKS_PREFERRED_WIDTH = TRACKS_DEFAULT_WIDTH;
+      applyTracksWidth(TRACKS_PREFERRED_WIDTH, true, false);
+    });
+    splitter.addEventListener('keydown', function (event) {
+      var bounds = paneSplitBounds();
+      var width = el('tracksPane').offsetWidth;
+      if (event.key === 'ArrowLeft') { width -= 16; }
+      else if (event.key === 'ArrowRight') { width += 16; }
+      else if (event.key === 'Home') { width = bounds.min; }
+      else if (event.key === 'End') { width = bounds.max; }
+      else { return; }
+      event.preventDefault();
+      applyTracksWidth(width, true, false);
+    });
   }
 
   function timeAtTick(tick) {
@@ -567,6 +709,10 @@
     var ratio = window.devicePixelRatio || 1;
     var context = canvas.getContext('2d');
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    if ('fontKerning' in context) { context.fontKerning = 'normal'; }
+    if ('textRendering' in context) { context.textRendering = 'geometricPrecision'; }
     return context;
   }
 
@@ -650,8 +796,65 @@
     return brightness > 155 ? '#17181b' : '#ffffff';
   }
 
+  function roundedRectPath(context, x, y, width, height, radius) {
+    width = Math.max(0, width);
+    height = Math.max(0, height);
+    radius = Math.max(0, Math.min(radius, width / 2, height / 2));
+    context.beginPath();
+    if (typeof context.roundRect === 'function') {
+      context.roundRect(x, y, width, height, radius);
+      return;
+    }
+    context.moveTo(x + radius, y);
+    context.lineTo(x + width - radius, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + radius);
+    context.lineTo(x + width, y + height - radius);
+    context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    context.lineTo(x + radius, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - radius);
+    context.lineTo(x, y + radius);
+    context.quadraticCurveTo(x, y, x + radius, y);
+    context.closePath();
+  }
+
+  function pianoRollPointer(canvas) {
+    if (!NOTE_POINTER) { return null; }
+    var rect = canvas.getBoundingClientRect();
+    var point = {
+      x: NOTE_POINTER.clientX - rect.left,
+      y: NOTE_POINTER.clientY - rect.top
+    };
+    if (point.x < 0 || point.y < 0 || point.x > rect.width || point.y > rect.height) {
+      return null;
+    }
+    return point;
+  }
+
+  function fillNoteBlock(context, x, y, width, height, radius, color, alpha, glowing) {
+    context.save();
+    context.globalAlpha = glowing ? 1 : alpha;
+    context.fillStyle = color;
+    if (glowing) {
+      context.shadowColor = color;
+      context.shadowBlur = 7;
+    }
+    roundedRectPath(context, x, y, width, height, radius);
+    context.fill();
+    if (glowing) {
+      context.shadowBlur = 0;
+      context.globalAlpha = 0.16;
+      context.fillStyle = '#ffffff';
+      roundedRectPath(context, x, y, width, height, radius);
+      context.fill();
+    }
+    context.restore();
+  }
+
   function drawPianoRoll(positionOverride) {
-    DRAW_QUEUED = false;
+    if (DRAW_FRAME !== null) {
+      cancelAnimationFrame(DRAW_FRAME);
+      DRAW_FRAME = null;
+    }
     var canvas = el('pianoRoll');
     if (!canvas || canvas.width <= 1 || canvas.height <= 1 || canvas.hidden) { return; }
     var width = ROLL.viewportWidth;
@@ -694,37 +897,70 @@
       context.beginPath(); context.moveTo(Math.round(bar.x) + 0.5, 0); context.lineTo(Math.round(bar.x) + 0.5, height); context.stroke();
     });
 
+    var position = positionOverride === undefined ? currentPosition() : positionOverride;
+    var hoverPoint = !AUDIO.playing && !SEEK_DRAG ? pianoRollPointer(canvas) : null;
     var events = previewEvents();
     for (var index = 0; index < events.length; index += 1) {
       var event = events[index];
       if (event.pitch === null || event.pitch === undefined) { continue; }
       var eventPitch = Number(event.pitch);
       if (eventPitch < 0 || eventPitch > 127) { continue; }
-      var startX = contentXAtTime(event.start) - viewport.scrollLeft;
-      var endX = contentXAtTime(Math.max(event.end, event.start + duration / ROLL.contentWidth * 2)) - viewport.scrollLeft;
+      var eventStart = Number(event.start) || 0;
+      var eventEnd = Math.max(eventStart, Number(event.end) || eventStart);
+      var startX = contentXAtTime(eventStart) - viewport.scrollLeft;
+      var endX = contentXAtTime(Math.max(eventEnd, eventStart + duration / ROLL.contentWidth * 2)) - viewport.scrollLeft;
       var eventY = (127 - eventPitch) * ROLL.rowHeight - viewport.scrollTop + 1;
       var eventHeight = Math.max(2, ROLL.rowHeight - 2);
       if (endX < 0 || startX > width || eventY + eventHeight < 0 || eventY > height) { continue; }
-      context.globalAlpha = SELECTED_CHANNEL === null || SELECTED_CHANNEL === event.channel ? 0.88 : 0.25;
+      var eventWidth = Math.max(2, endX - startX);
+      var eventRadius = Math.min(4, eventWidth / 2, eventHeight / 2);
+      var active = AUDIO.playing && position >= eventStart && position < eventEnd;
+      var hovered = !!hoverPoint &&
+        hoverPoint.x >= startX && hoverPoint.x <= startX + eventWidth &&
+        hoverPoint.y >= eventY && hoverPoint.y <= eventY + eventHeight;
+      var glowing = active || hovered;
+      var noteAlpha = SELECTED_CHANNEL === null || SELECTED_CHANNEL === event.channel ? 0.88 : 0.25;
       var color = channelColor(event.channel);
-      context.fillStyle = color;
-      context.fillRect(startX, eventY, Math.max(2, endX - startX), eventHeight);
+      fillNoteBlock(
+        context,
+        startX,
+        eventY,
+        eventWidth,
+        eventHeight,
+        eventRadius,
+        color,
+        noteAlpha,
+        glowing
+      );
       if (SELECTED_CHANNEL === event.channel) {
+        context.globalAlpha = 1;
         context.strokeStyle = text;
         context.lineWidth = 0.7;
-        context.strokeRect(startX + 0.5, eventY + 0.5, Math.max(1, endX - startX - 1), Math.max(1, eventHeight - 1));
+        roundedRectPath(
+          context,
+          startX + 0.5,
+          eventY + 0.5,
+          Math.max(1, eventWidth - 1),
+          Math.max(1, eventHeight - 1),
+          Math.max(0, eventRadius - 0.5)
+        );
+        context.stroke();
       }
       if (ROLL.rowHeight >= 14 && endX - startX >= 25 && startX >= 0) {
+        var label = noteName(eventPitch);
+        var labelSize = clamp(Math.floor(eventHeight * 0.58), 9, 12);
         context.fillStyle = noteTextColor(color);
-        context.font = Math.min(10, eventHeight - 3) + 'px Consolas, monospace';
+        context.font = '600 ' + labelSize + 'px "Segoe UI", Tahoma, Arial, sans-serif';
         context.textAlign = 'left';
         context.textBaseline = 'middle';
-        context.fillText(noteName(eventPitch), startX + 4, eventY + eventHeight / 2);
+        if (context.measureText(label).width <= eventWidth - 8) {
+          context.globalAlpha = glowing || SELECTED_CHANNEL === null || SELECTED_CHANNEL === event.channel ? 1 : 0.55;
+          context.fillText(label, Math.round(startX + 4), Math.round(eventY + eventHeight / 2));
+        }
       }
     }
     context.globalAlpha = 1;
 
-    var position = positionOverride === undefined ? currentPosition() : positionOverride;
     var playheadX = contentXAtTime(position) - viewport.scrollLeft;
     if (playheadX >= -1 && playheadX <= width + 1) {
       context.strokeStyle = accent;
@@ -739,9 +975,11 @@
   }
 
   function queueDraw() {
-    if (DRAW_QUEUED) { return; }
-    DRAW_QUEUED = true;
-    requestAnimationFrame(function () { drawPianoRoll(); });
+    if (DRAW_FRAME !== null) { return; }
+    DRAW_FRAME = requestAnimationFrame(function () {
+      DRAW_FRAME = null;
+      drawPianoRoll();
+    });
   }
 
   function positionFromClientX(clientX) {
@@ -752,6 +990,16 @@
   }
 
   function positionFromCanvas(event) { return positionFromClientX(event.clientX); }
+
+  function updateNotePointer(event) {
+    NOTE_POINTER = { clientX: event.clientX, clientY: event.clientY };
+    if (!AUDIO.playing && !SEEK_DRAG) { queueDraw(); }
+  }
+
+  function clearNotePointer() {
+    NOTE_POINTER = null;
+    if (!AUDIO.playing) { queueDraw(); }
+  }
 
   function revealPlayhead(position, following) {
     var viewport = el('pianoRollViewport');
@@ -822,6 +1070,8 @@
     SEEK_DRAG = null;
     try { el('pianoRoll').releasePointerCapture(event.pointerId); } catch (_error) { /* already released */ }
     if (resume) { startPlayback(); }
+    else if (event.type === 'pointercancel') { clearNotePointer(); }
+    else { updateNotePointer(event); }
   }
 
   /* --------------------------------------------------------------- audio */
@@ -1068,11 +1318,27 @@
     lock.style.right = width + 'px';
   }
 
+  function lockedWheelPixels(event, viewport) {
+    if (event.deltaMode === 1) { return event.deltaY * Math.max(16, ROLL.rowHeight); }
+    if (event.deltaMode === 2) { return event.deltaY * viewport.clientHeight; }
+    return event.deltaY;
+  }
+
+  function forwardLockedScrollWheel(event) {
+    var viewport = el('pianoRollViewport');
+    event.preventDefault();
+    viewport.scrollTop += lockedWheelPixels(event, viewport);
+  }
+
+  function handleRollScroll() {
+    if (!AUDIO.playing) { queueDraw(); }
+  }
+
   function renderTransportState() {
     var playable = hasSong();
     el('transportPlay').disabled = !playable;
     el('scrubber').disabled = !playable;
-    el('playGlyph').innerHTML = AUDIO.playing ? '&#10074;&#10074;' : '&#9654;';
+    setIcon(el('playGlyph'), AUDIO.playing ? 'pause' : 'play');
     el('transportPlay').setAttribute('aria-label', AUDIO.playing ? 'Pause' : 'Play');
     renderHorizontalScrollLock();
     updateMenuState();
@@ -1385,7 +1651,9 @@
     el('winControls').hidden = !custom;
     var grips = document.querySelectorAll('.rz');
     for (var index = 0; index < grips.length; index += 1) { grips[index].hidden = !custom; }
-    el('winMax').title = STATE.window && STATE.window.maximized ? 'Restore' : 'Maximize';
+    var maximized = !!(STATE.window && STATE.window.maximized);
+    el('winMax').title = maximized ? 'Restore' : 'Maximize';
+    setIcon(el('winMax'), maximized ? 'copy' : 'square');
   }
 
   function refreshWindowState() {
@@ -1473,7 +1741,7 @@
       var mark = document.createElement('span');
       mark.className = 'notification-mark';
       mark.setAttribute('aria-hidden', 'true');
-      mark.textContent = '!';
+      mark.appendChild(iconElement('circle-alert'));
       var copy = document.createElement('div');
       copy.className = 'notification-copy';
       copy.textContent = String(message);
@@ -1515,7 +1783,10 @@
     renderStatus();
     renderWindow();
     if (INSPECTOR_OPEN) { syncInspector(); }
-    requestAnimationFrame(resizeCanvas);
+    requestAnimationFrame(function () {
+      constrainPaneSplit();
+      resizeCanvas();
+    });
   }
 
   /* --------------------------------------------------------------- startup */
@@ -1562,9 +1833,14 @@
     var canvas = el('pianoRoll');
     canvas.addEventListener('pointerdown', beginCanvasSeek);
     canvas.addEventListener('pointermove', moveCanvasSeek);
+    canvas.addEventListener('pointermove', updateNotePointer);
+    canvas.addEventListener('pointerleave', clearNotePointer);
     canvas.addEventListener('pointerup', endCanvasSeek);
     canvas.addEventListener('pointercancel', endCanvasSeek);
-    el('pianoRollViewport').addEventListener('scroll', queueDraw);
+    el('pianoRollViewport').addEventListener('scroll', handleRollScroll);
+    el('horizontalScrollLock').addEventListener('wheel', forwardLockedScrollWheel, {
+      passive: false
+    });
     el('gridResolution').addEventListener('change', function () {
       ROLL.gridDenominator = Math.max(1, Number(this.value) || 8);
       queueDraw();
@@ -1576,18 +1852,20 @@
       queueDraw();
     });
     el('rollZoom').addEventListener('input', function () {
+      var zoomAnchor = playheadZoomAnchor();
       var stops = clamp(Number(this.value) || 0, 0, 60);
       ROLL.zoom = Math.pow(2, stops / 10) * 100;
       var label = Math.round(ROLL.zoom) + '%';
       el('rollZoomValue').textContent = label;
       this.setAttribute('aria-valuetext', label);
-      resizeCanvas();
+      resizeCanvas(zoomAnchor);
     });
   }
 
   function init() {
     initMenus();
     initTheme();
+    initPaneSplitter();
     initInspector();
     el('notificationsBtn').addEventListener('click', toggleNotifications);
     el('closeNotifications').addEventListener('click', closeNotifications);
@@ -1602,7 +1880,10 @@
     el('emptyOpenBtn').addEventListener('click', importMidi);
     el('exportBtn').addEventListener('click', exportMap);
     document.addEventListener('keydown', shortcut);
-    window.addEventListener('resize', debounce(resizeCanvas, 40));
+    window.addEventListener('resize', debounce(function () {
+      constrainPaneSplit();
+      resizeCanvas();
+    }, 40));
     if (window.ResizeObserver) { new ResizeObserver(resizeCanvas).observe(document.querySelector('.roll-pane')); }
     render();
     if (api()) { setTimeout(boot, 0); }

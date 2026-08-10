@@ -22,9 +22,10 @@ The application has one persistent workspace:
    follows, and visible keyboard shortcuts.
 2. A transport strip with one global Play/Pause button, current time, total
    time, and a scrubber.
-3. A fixed track column on the left. Every MIDI channel, including percussion,
-   is one row with its channel number, source program, sound assignment, and
-   mute control.
+3. A resizable track column on the left. Every MIDI channel, including
+   percussion, is one row with its channel number, source program, sound
+   assignment, and mute control. Its divider trades width with the roll and
+   preserves the chosen size across sessions.
 4. A piano-roll surface on the right. Time runs horizontally, pitch vertically,
    notes are colored by channel, and a high-contrast playhead sweeps across the
    complete surface during playback.
@@ -105,18 +106,31 @@ A canvas is preferred over one DOM element per note.
   grid use the source tempo map to place note-value subdivisions and measures.
 - Vertical axis: all 128 MIDI pitches behind a native scrollbar, with a fixed
   piano-key ruler and every note named from C-1 through G9.
-- Notes: original pitch and duration, colored consistently by MIDI channel.
+- Notes: original pitch and duration, colored consistently by MIDI channel,
+  with 4 px rounded corners and high-DPI Segoe UI labels when space permits.
+- Active notes: every note intersected by the playhead's output-timestamp
+  position receives the same restrained bright glow, including simultaneous
+  notes and overlaps across channels.
+- Paused hover: only the note rectangle under the pointer glows; seeking
+  temporarily suppresses hover feedback.
 - Muted tracks: hidden or heavily dimmed.
 - Selected track: full opacity; other tracks remain visible at lower opacity.
 - Playhead: accent-colored vertical stroke, always above notes and grid.
+- Playback scrolling: automatic horizontal following owns time navigation,
+  while vertical wheel navigation remains live across the full roll, including
+  over the disabled horizontal scrollbar. Scroll and playback changes are
+  coalesced into one canvas paint per animation frame.
 
 One exponential slider expands the time axis from 100% to 6400%, while pitch
 rows grow to a capped 3x. The different caps allow close horizontal inspection
-without turning each key into the height of the viewport. Zoom preserves its
-center. During playback, the playhead sweeps to the left-third anchor and the
-notes, grid, and ruler then scroll continuously beneath it. At inspection sizes,
-notes carry pitch names. The piano roll remains read-only; note editing is
-outside this product.
+without turning each key into the height of the viewport. Zoom preserves the
+blue playhead's screen position so the notes, grid, and ruler expand around the
+current song position. During playback, the playhead sweeps to the left-third
+anchor and the notes, grid, and ruler then scroll continuously beneath it. One
+position value drives both the active-note test and the blue playhead so the
+glow begins exactly when the line reaches each note. At inspection sizes, notes
+carry pitch names. The piano roll remains read-only; note editing is outside
+this product.
 
 ## Conversion settings inspector
 
@@ -180,8 +194,11 @@ the song from opening.
 
 The shell continues to use Snapmap Plus's exact light/dark tokens, Segoe UI and
 Consolas typography, status bar, toast treatment, native frame, and window
-controls. The workstation layout and conventional menu behavior are new; the
-product identity is not.
+controls. The shared workspace uses Snapmap Plus's 8 px panel radius. A curated
+local Lucide sprite supplies only the eight symbols used by the window,
+transport, notifications, and inspectors at one normalized size; it introduces
+no network or runtime dependency. The workstation layout and conventional menu
+behavior are new; the product identity is not.
 
 Motion is limited to the playhead, drawer, and small state transitions. The
 reduced-motion preference disables decorative transitions but not the playhead,

@@ -75,8 +75,9 @@ def _channel(payload, number) -> dict:
 class _FakeWebview:
     """Stands in for the pywebview module, which is not installed off Windows."""
 
-    OPEN_DIALOG = 10
-    FOLDER_DIALOG = 20
+    class FileDialog:
+        OPEN = 10
+        FOLDER = 20
 
 
 class _FakeWindow:
@@ -765,7 +766,7 @@ def test_choosing_a_song_in_the_dialog_opens_it(monkeypatch, tmp_path):
     assert payload["ok"] is True
     assert payload["analysis"]["path"] == TINY_MIDI
     assert payload["catalog"]["drum_names"]
-    assert window.calls[0][0] == _FakeWebview.OPEN_DIALOG
+    assert window.calls[0][0] == _FakeWebview.FileDialog.OPEN
 
 
 def test_cancelling_a_dialog_changes_nothing(monkeypatch):
@@ -793,7 +794,7 @@ def test_choosing_an_output_folder_records_it(monkeypatch, tmp_path):
     payload = bridge.pick_out_dir()
     assert payload["ok"] is True
     assert payload["settings"]["out_dir"] == str(tmp_path)
-    assert window.calls[0][0] == _FakeWebview.FOLDER_DIALOG
+    assert window.calls[0][0] == _FakeWebview.FileDialog.FOLDER
 
 
 def test_choosing_a_baseline_map_records_it(monkeypatch, tmp_path):

@@ -40,7 +40,9 @@ workspace. The right side is a read-only piano roll for the converted song.
 
 The shell deliberately matches Snapmap Plus: the same light and dark colors, Segoe UI and
 Consolas type, 30 px menu bar, status bar, toast treatment, brand image, window controls,
-native resize behavior, and native Windows snapping.
+8 px rounded workspace shell, native resize behavior, and native Windows snapping. Controls
+use a bundled subset of eight Lucide SVG symbols at consistent optical sizes; the application
+does not download an icon font, contact a CDN, or ship Lucide's full catalog.
 
 ## Traditional menus
 
@@ -128,6 +130,12 @@ Mute removes the channel from preview and export without forgetting its assignme
 channel row to emphasize that channel's notes on the piano roll; click it again to show all
 channels at equal emphasis.
 
+The divider between Channels and the piano roll is draggable in either direction. Moving it
+right gives assignments more room; moving it left expands the song surface. Both panes retain
+useful responsive minimum widths, and the chosen channel width is restored the next time the
+application opens. Focus the divider and use Left/Right Arrow for precise adjustment, Home or
+End for either limit, or double-click it to restore the default width.
+
 Advanced per-key percussion overrides remain valid in the settings sidecar. They are not a
 second instrument screen: Automatic percussion applies them before falling back to the
 built-in General MIDI drum map. A channel-level instrument set or exact sound takes
@@ -146,14 +154,18 @@ The time ruler, piano keys, note surface, and native scrollbars are separate syn
 parts of one viewport. Vertical scrolling moves pitches while the piano keys remain fixed at
 the left. Horizontal scrolling moves through the song while the measure ruler remains fixed
 at the top. At higher zoom levels, note blocks show their pitch name when there is enough
-room.
+room. Note blocks use the same 4 px corner language as Snapmap Plus controls. Labels are drawn
+at the display's native pixel ratio with high-quality smoothing, geometric text rendering,
+normal kerning, and full-contrast Segoe UI text rather than faded canvas glyphs.
 
 The control-plane Zoom slider uses a musical, exponential range from a 100% whole-song
 overview to 6400% horizontal inspection. Increasing it makes pitch rows and note blocks
 taller, spreads the song across substantially more horizontal space, and therefore makes the
 playhead travel the correspondingly larger distance at the same musical speed. Pitch height
 tops out at 3x so horizontal inspection can continue without reducing the viewport to one or
-two enormous keys. Zoom preserves the current viewport center.
+two enormous keys. Zoom is anchored to the blue playhead: its on-screen position stays fixed
+while the notes, grid, and ruler expand or contract around the current song position. If the
+playhead is outside the visible passage, zoom brings that position to the center first.
 
 The piano roll is a visualization and transport surface, not a composition editor. Notes
 cannot be moved, resized, created, or deleted here; those edits belong in the MIDI program
@@ -162,7 +174,11 @@ that authored the source file.
 One accent-colored playhead spans the ruler and visible note surface. During playback it
 sweeps across the first part of a zoomed song, then remains anchored about one third of the
 way across while the notes, grid, and ruler scroll continuously underneath it. The sounding
-event and the playhead use the same millisecond-to-screen transform. To seek:
+events and the playhead use the same output-timestamp position and millisecond-to-screen
+transform. Every note whose time range contains that position brightens slightly, so chords
+and overlapping channels illuminate together exactly as the blue line reaches them. When
+playback is paused, the note block under the pointer uses the same restrained glow for visual
+inspection; seeking suppresses that hover state until the drag ends. To seek:
 
 - drag the transport scrubber;
 - click anywhere in the piano roll; or
@@ -176,7 +192,10 @@ the timeline in that direction, so a seek is not limited to the currently visibl
 While the song is playing, the bottom horizontal scrollbar is covered by a distinct disabled
 track: it does not highlight, click, or drag while automatic playback following owns the time
 viewport. The right vertical scrollbar stays enabled because pitch navigation does not
-conflict with playback following. Pausing immediately restores the horizontal scrollbar.
+conflict with playback following. The mouse wheel continues to move vertically even when its
+pointer is over the disabled horizontal track. Playback and native scrolling share one canvas
+paint per animation frame, keeping pitch navigation responsive in dense arrangements. Pausing
+immediately restores the horizontal scrollbar.
 
 ## Previewing the song
 

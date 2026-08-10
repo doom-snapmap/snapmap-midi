@@ -139,3 +139,51 @@ resolution path.
 - [x] Cover the native horizontal scrollbar with a noninteractive disabled track
   during playback without blocking the vertical pitch scrollbar.
 - [x] Re-run focused and complete validation.
+
+## 12. Anchor zoom and retire deprecated dialogs
+
+- [x] Preserve the blue playhead's on-screen position while horizontal zoom
+  expands or contracts the piano roll.
+- [x] Center the playhead before zooming when its song position is outside the
+  visible passage.
+- [x] Replace pywebview's deprecated open-file and folder-dialog constants with
+  the current `FileDialog` enum.
+- [x] Re-run focused and complete validation.
+
+## 13. Refine the workstation surface and pane layout
+
+- [x] Match Snapmap Plus's 8 px primary-panel radius on the complete shared
+  Channels and piano-roll workspace.
+- [x] Render note blocks with 4 px rounded corners and sharper, full-contrast,
+  high-DPI Segoe UI labels.
+- [x] Add a persistent pointer- and keyboard-adjustable divider with dynamic
+  minimum widths for the channel list and piano roll.
+- [x] Replace text glyphs and bespoke control drawings with a bundled eight-icon
+  Lucide SVG subset and ship its license without a runtime or network fetch.
+- [x] Extend asset coverage and re-run focused and complete validation.
+
+## 14. Synchronize note emphasis with playback and inspection
+
+- [x] Derive every active-note state from the same output-timestamp position
+  used to draw the blue playhead.
+- [x] Brighten all simultaneous and overlapping events under the playhead with
+  a restrained channel-colored glow.
+- [x] Reuse visible note geometry for paused pointer hover while suppressing
+  hover during playback and seek drags.
+- [x] Add source-contract coverage and update user, capability, architecture,
+  design, and implementation-plan documentation.
+- [x] Re-run focused and complete validation.
+
+## 15. Keep pitch scrolling responsive during playback
+
+- [x] Make the playback animation the sole canvas-paint owner while audio is
+  running so auto-follow scroll events cannot enqueue a duplicate frame.
+- [x] Cancel a pending idle draw when a direct playback or resize draw already
+  provides the current viewport.
+- [x] Forward vertical wheel deltas through the disabled horizontal-scrollbar
+  cover without restoring horizontal click or drag behavior.
+- [x] Add regression coverage and update user, capability, architecture,
+  design, and implementation-plan documentation.
+- [x] Bump the package version to 0.3.2 and run complete validation.
+
+Release target: `v0.3.2`, created only after the pushed `main` commit passes CI.

@@ -563,7 +563,7 @@ class Bridge:
         import webview
 
         chosen = self._window.create_file_dialog(
-            webview.OPEN_DIALOG, directory=self._nearby(), file_types=file_types
+            webview.FileDialog.OPEN, directory=self._nearby(), file_types=file_types
         )
         return str(chosen[0]) if chosen else None
 
@@ -573,7 +573,9 @@ class Bridge:
             return None
         import webview
 
-        chosen = self._window.create_file_dialog(webview.FOLDER_DIALOG, directory=self._nearby())
+        chosen = self._window.create_file_dialog(
+            webview.FileDialog.FOLDER, directory=self._nearby()
+        )
         return str(chosen[0]) if chosen else None
 
     def _nearby(self) -> str:

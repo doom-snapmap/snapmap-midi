@@ -151,9 +151,12 @@ controls, and eight resize grips must stay exact. `tests/test_ui_assets.py` pins
 primitives. The traditional File/Playback/Options/View menus, unified track list, canvas
 piano roll, global transport, bottom control plane, and side inspectors extend that language;
 they do not redefine it. The roll's full MIDI axis, synchronized rulers, tempo-aware grid,
-native scrolling, zoom, and playback follow are one coordinate system; a change to one must
-retain the asset-contract tests for all of them. Do not reintroduce tabs or per-row Play
-controls.
+native scrolling, zoom, playback follow, and resizable channel split are one coordinate
+system; a change to one must retain the asset-contract tests for all of them. Control icons
+come only from the curated inline Lucide sprite in `index.html`; add one symbol and its asset
+assertion when a new icon is actually needed rather than adding an icon runtime or external
+fetch. Keep `LUCIDE_LICENSE.txt` in the shipped `web/` assets. Do not reintroduce tabs or
+per-row Play controls.
 
 Audio previews are optional and local. Use the synthetic fixtures for ordinary decoder and
 cache work. Running `snapmap-midi extract` against a real install writes roughly 450 MB under

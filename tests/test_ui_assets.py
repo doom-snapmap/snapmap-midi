@@ -237,6 +237,29 @@ def test_the_custom_frame_has_every_snapmap_plus_move_and_resize_surface():
         assert "api().%s(" % call in _JS
 
 
+def test_the_interface_ships_only_its_curated_lucide_icon_subset():
+    symbols = set(re.findall(r'<symbol id="icon-([a-z-]+)"', _HTML))
+    assert symbols == {
+        "circle-alert",
+        "copy",
+        "minus",
+        "pause",
+        "play",
+        "square",
+        "triangle-alert",
+        "x",
+    }
+    assert "lucide.min.js" not in _HTML
+    assert "unpkg.com" not in _HTML
+    for control in ("winMin", "winMax", "winClose", "transportPlay"):
+        assert re.search(r'id="%s"[^>]*>.*?class="ui-icon"' % control, _HTML)
+    assert "setIcon(el('winMax'), maximized ? 'copy' : 'square')" in _JS
+    assert "setIcon(el('playGlyph'), AUDIO.playing ? 'pause' : 'play')" in _JS
+    license_text = (_WEB / "LUCIDE_LICENSE.txt").read_text(encoding="utf-8")
+    assert "ISC License" in license_text
+    assert "Lucide Icons and Contributors" in license_text
+
+
 def test_the_workstation_is_one_surface_with_one_global_transport():
     assert 'id="trackList"' in _HTML
     assert 'id="pianoRoll"' in _HTML
@@ -272,9 +295,48 @@ def test_the_piano_roll_is_a_full_range_synchronized_scrollable_surface():
     assert "128 * ROLL.rowHeight" in _JS
     assert "viewport.scrollTop" in _JS
     assert "viewport.scrollLeft" in _JS
-    assert "el('pianoRollViewport').addEventListener('scroll', queueDraw)" in _JS
+    assert "el('pianoRollViewport').addEventListener('scroll', handleRollScroll)" in _JS
     assert re.search(r"\.roll-viewport\s*\{[^}]*overflow:\s*auto", _CSS)
     assert re.search(r"#pianoRoll\s*\{[^}]*position:\s*sticky", _CSS)
+
+
+def test_the_workspace_and_notes_use_snapmap_plus_rounding_and_crisp_text():
+    assert re.search(r"\.workspace\s*\{[^}]*border-radius:\s*8px", _CSS)
+    assert "function roundedRectPath(context, x, y, width, height, radius)" in _JS
+    assert "typeof context.roundRect === 'function'" in _JS
+    assert "Math.min(4, eventWidth / 2, eventHeight / 2)" in _JS
+    assert (
+        "function fillNoteBlock(context, x, y, width, height, radius, color, alpha, glowing)" in _JS
+    )
+    assert re.search(r"fillNoteBlock\(\s*context,\s*startX,\s*eventY,\s*eventWidth,", _JS)
+    assert "context.fillRect(startX, eventY" not in _JS
+    assert "context.imageSmoothingQuality = 'high'" in _JS
+    assert "context.fontKerning = 'normal'" in _JS
+    assert "context.textRendering = 'geometricPrecision'" in _JS
+    assert "context.font = '600 ' + labelSize + 'px \"Segoe UI\"" in _JS
+    assert "context.measureText(label).width <= eventWidth - 8" in _JS
+
+
+def test_the_channel_roll_divider_resizes_both_panes_accessibly():
+    assert 'id="tracksPane"' in _HTML
+    assert 'id="paneSplitter" role="separator" tabindex="0"' in _HTML
+    assert 'aria-orientation="vertical"' in _HTML
+    assert re.search(
+        r"\.pane-splitter\s*\{[^}]*flex:\s*0 0 9px;[^}]*cursor:\s*col-resize;"
+        r"[^}]*touch-action:\s*none",
+        _CSS,
+    )
+    assert "var TRACKS_MIN_WIDTH = 220" in _JS
+    assert "var ROLL_MIN_WIDTH = 420" in _JS
+    assert "available - ROLL_MIN_WIDTH" in _JS
+    assert "workspace.style.setProperty('--tracks-width', width + 'px')" in _JS
+    assert "localStorage.setItem(TRACKS_WIDTH_KEY" in _JS
+    assert "splitter.setPointerCapture(event.pointerId)" in _JS
+    for event in ("pointerdown", "pointermove", "pointerup", "pointercancel", "dblclick"):
+        assert "splitter.addEventListener('%s'" % event in _JS
+    for key in ("ArrowLeft", "ArrowRight", "Home", "End"):
+        assert "event.key === '%s'" % key in _JS
+    assert "constrainPaneSplit();\n      resizeCanvas();" in _JS
 
 
 def test_piano_black_keys_and_the_scrollbar_corner_finish_the_rulers():
@@ -308,6 +370,26 @@ def test_playhead_dragging_pans_and_playback_locks_only_the_horizontal_scrollbar
     )
 
 
+def test_playback_coalesces_scroll_redraws_and_preserves_vertical_wheel_input():
+    assert "var DRAW_FRAME = null" in _JS
+    assert "cancelAnimationFrame(DRAW_FRAME)" in _JS
+    assert "DRAW_FRAME = requestAnimationFrame(function ()" in _JS
+    assert "function handleRollScroll()" in _JS
+    assert "if (!AUDIO.playing) { queueDraw(); }" in _JS
+    assert "addEventListener('scroll', handleRollScroll)" in _JS
+    assert "function lockedWheelPixels(event, viewport)" in _JS
+    assert "event.deltaMode === 1" in _JS
+    assert "event.deltaMode === 2" in _JS
+    assert "function forwardLockedScrollWheel(event)" in _JS
+    assert "viewport.scrollTop += lockedWheelPixels(event, viewport)" in _JS
+    assert "event.preventDefault()" in _JS
+    assert re.search(
+        r"horizontalScrollLock'\)\.addEventListener\('wheel', "
+        r"forwardLockedScrollWheel, \{\s*passive: false",
+        _JS,
+    )
+
+
 def test_roll_grid_meter_and_zoom_are_view_controls_in_the_control_plane():
     for control in ("gridResolution", "timeSignature", "rollZoom", "rollZoomValue"):
         assert 'id="%s"' % control in _HTML
@@ -327,17 +409,44 @@ def test_roll_grid_meter_and_zoom_are_view_controls_in_the_control_plane():
 
 
 def test_zoomed_playback_follows_the_sweeping_playhead():
+    assert "function playheadZoomAnchor()" in _JS
+    assert "var viewportX = contentXAtTime(position) - viewport.scrollLeft" in _JS
+    assert "viewportX = viewport.clientWidth / 2" in _JS
+    assert "contentXAtTime(zoomAnchor.position) - zoomAnchor.viewportX" in _JS
+    assert "var zoomAnchor = playheadZoomAnchor()" in _JS
+    assert "resizeCanvas(zoomAnchor)" in _JS
     assert "function revealPlayhead(position, following)" in _JS
     assert "if (AUDIO.playing) { revealPlayhead(position, true); }" in _JS
     assert "var anchor = ROLL.viewportWidth * 0.32" in _JS
     assert "viewport.scrollLeft = clamp(x - anchor" in _JS
     assert "ROLL.contentWidth - ROLL.viewportWidth" in _JS
     assert "function contentXAtTime(timeMs)" in _JS
-    assert "var startX = contentXAtTime(event.start)" in _JS
+    assert "var startX = contentXAtTime(eventStart)" in _JS
     assert "var playheadX = contentXAtTime(position)" in _JS
     assert "function audibleContextTime()" in _JS
     assert "AUDIO.context.getOutputTimestamp()" in _JS
     assert "audibleContextTime() - AUDIO.anchorTime" in _JS
+
+
+def test_playback_and_hover_glow_use_the_same_note_geometry_as_the_playhead():
+    position = (
+        "var position = positionOverride === undefined ? currentPosition() : positionOverride"
+    )
+    active = "var active = AUDIO.playing && position >= eventStart && position < eventEnd"
+    playhead = "var playheadX = contentXAtTime(position) - viewport.scrollLeft"
+    assert position in _JS
+    assert active in _JS
+    assert playhead in _JS
+    assert _JS.index(position) < _JS.index(active) < _JS.index(playhead)
+    assert "var glowing = active || hovered" in _JS
+    assert "context.shadowColor = color" in _JS
+    assert "context.shadowBlur = 7" in _JS
+    assert "context.globalAlpha = 0.16" in _JS
+    assert "var hoverPoint = !AUDIO.playing && !SEEK_DRAG ? pianoRollPointer(canvas) : null" in _JS
+    assert "hoverPoint.x >= startX && hoverPoint.x <= startX + eventWidth" in _JS
+    assert "hoverPoint.y >= eventY && hoverPoint.y <= eventY + eventHeight" in _JS
+    assert "canvas.addEventListener('pointermove', updateNotePointer)" in _JS
+    assert "canvas.addEventListener('pointerleave', clearNotePointer)" in _JS
 
 
 def test_global_preview_is_wired_to_explicit_local_audio_setup():

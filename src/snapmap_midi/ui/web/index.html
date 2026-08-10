@@ -7,6 +7,19 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<!-- Curated Lucide subset: minus, square, copy, x, play, pause, triangle-alert,
+     and circle-alert. The app ships no icon runtime or unused icon catalog.
+     See LUCIDE_LICENSE.txt beside this file. -->
+<svg class="icon-sprite" aria-hidden="true" focusable="false">
+  <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M5 12h14"></path></symbol>
+  <symbol id="icon-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"></rect></symbol>
+  <symbol id="icon-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></symbol>
+  <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></symbol>
+  <symbol id="icon-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path></symbol>
+  <symbol id="icon-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"></rect><rect x="5" y="3" width="5" height="18" rx="1"></rect></symbol>
+  <symbol id="icon-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></symbol>
+  <symbol id="icon-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y1="8" y2="12"></line><line x1="12" x2="12.01" y1="16" y2="16"></line></symbol>
+</svg>
 <!-- Track rows and category controls are built from the Python payload. The
      fixed markup is the one-screen workstation shell: desktop menus, global
      transport, piano roll, side inspectors, bottom control plane, and status
@@ -58,14 +71,14 @@
     <span class="song mono" id="songName"></span>
     <div class="spacer"></div>
     <div class="win-controls" id="winControls" hidden>
-      <div class="win-btn" id="winMin" title="Minimize" role="button" tabindex="0">&#8211;</div>
-      <div class="win-btn" id="winMax" title="Maximize / Restore" role="button" tabindex="0">&#9633;</div>
-      <div class="win-btn" id="winClose" title="Close" role="button" tabindex="0">&#10005;</div>
+      <div class="win-btn" id="winMin" title="Minimize" role="button" tabindex="0"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-minus"></use></svg></div>
+      <div class="win-btn" id="winMax" title="Maximize / Restore" role="button" tabindex="0"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-square"></use></svg></div>
+      <div class="win-btn" id="winClose" title="Close" role="button" tabindex="0"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></div>
     </div>
   </div>
 
   <div class="transport" id="transport">
-    <button type="button" class="transport-play" id="transportPlay" aria-label="Play" disabled><span id="playGlyph">&#9654;</span></button>
+    <button type="button" class="transport-play" id="transportPlay" aria-label="Play" disabled><span id="playGlyph"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg></span></button>
     <span class="transport-time mono" id="currentTime">0:00.0</span>
     <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Song position" disabled>
     <span class="transport-time mono" id="totalTime">0:00.0</span>
@@ -82,10 +95,14 @@
   </div>
 
   <main class="workspace" id="workspace" hidden>
-    <section class="tracks-pane" aria-label="MIDI channels">
+    <section class="tracks-pane" id="tracksPane" aria-label="MIDI channels">
       <div class="pane-head"><span>Channels</span><span class="badge" id="trackCount">0</span></div>
       <div class="track-list" id="trackList"></div>
     </section>
+    <div class="pane-splitter" id="paneSplitter" role="separator" tabindex="0"
+         aria-label="Resize channels and piano roll" aria-orientation="vertical"
+         aria-valuemin="220" aria-valuemax="720" aria-valuenow="314"
+         title="Drag to resize channels; double-click to reset"></div>
     <section class="roll-pane" aria-label="Converted song piano roll">
       <div class="roll-corner" aria-hidden="true"></div>
       <canvas class="time-ruler" id="timeRuler" aria-hidden="true"></canvas>
@@ -106,11 +123,7 @@
 
   <div class="control-plane" id="controlPlane" role="toolbar" aria-label="Workstation controls">
     <button type="button" class="control-button notification-button" id="notificationsBtn" aria-label="Notifications" aria-controls="notificationsInspector" aria-expanded="false" title="Notifications">
-      <svg class="warning-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M12 3.25 21 20H3L12 3.25Z"></path>
-        <path d="M12 8.5v5.25"></path>
-        <circle cx="12" cy="17" r=".85"></circle>
-      </svg>
+      <svg class="ui-icon warning-icon" aria-hidden="true" focusable="false"><use href="#icon-triangle-alert"></use></svg>
       <span class="notification-badge mono" id="notificationBadge" hidden>0</span>
     </button>
     <span class="control-spacer"></span>
@@ -145,7 +158,7 @@
   <aside class="inspector" id="conversionInspector" aria-label="Conversion settings" hidden>
     <div class="inspector-head">
       <div><strong>Conversion settings</strong><div class="muted">SnapMap engine limits</div></div>
-      <button type="button" class="close-button" id="closeInspector" aria-label="Close conversion settings">&#10005;</button>
+      <button type="button" class="close-button" id="closeInspector" aria-label="Close conversion settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body">
       <div class="control-group">
@@ -181,7 +194,7 @@
   <aside class="inspector notifications-inspector" id="notificationsInspector" aria-label="Notifications" hidden>
     <div class="inspector-head">
       <div><strong>Notifications</strong><div class="muted" id="notificationsSummary">No warnings</div></div>
-      <button type="button" class="close-button" id="closeNotifications" aria-label="Close notifications">&#10005;</button>
+      <button type="button" class="close-button" id="closeNotifications" aria-label="Close notifications"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body notifications-body">
       <div class="notification-list" id="notificationList" role="list"></div>
