@@ -31,6 +31,10 @@ from snapmap_midi import paths
 #: The shipped palette, alongside the rest of the package's data.
 _SHIPPED = Path(__file__).resolve().parents[1] / "data" / "sound_palette.json"
 
+#: Ear-labels for sounds whose names misdescribe them. Optional: see
+#: `sound_labels` for why a missing file is not an error here.
+_LABELS = Path(__file__).resolve().parents[1] / "data" / "soundfont_labels.json"
+
 # sound = "<decl>"; text = "..."; desc = "..."; category = "<category>";
 _ITEM = re.compile(
     r'sound\s*=\s*"([^"]+)";\s*text\s*=\s*"[^"]*";\s*desc\s*=\s*"[^"]*";\s*category\s*=\s*"([^"]+)";',
@@ -209,10 +213,14 @@ def cache_clear() -> None:
     file at the same path, the old parse would otherwise be returned for the
     life of the process. The test suite also calls this between tests, since
     the key depends on ambient environment.
+
+    The ear-labels go with it. They are a second file under the same package
+    data, held by the same kind of cache, and stale for the same reason.
     """
     _load.cache_clear()
     _pitches.cache_clear()
     _known_sounds.cache_clear()
+    sound_labels.cache_clear()
 
 
 def categories() -> list:
@@ -258,3 +266,109 @@ def decl_for(category: str, midi_note: int, index: Mapping) -> Optional[str]:
     same_class = [m for m in available if m % 12 == pitch_class]
     pool = same_class or list(available)
     return available[min(pool, key=lambda m: abs(m - midi_note))]
+
+
+def pitched_families() -> list:
+    """Every category a melodic channel can be routed to, in declaration order.
+
+    A category with no pitch index is not a quieter instrument, it is silence:
+    `decl_for` returns None for every note in it, the channel drops out, and
+    the map still loads and runs. Nothing downstream can report that, because
+    nothing downstream can tell it apart from a part the user silenced on
+    purpose -- so the filtering has to happen where the choice is offered.
+
+    `ins_string` is the one that makes this necessary rather than tidy. It is
+    named like an instrument and listed in `SUSTAINED` beside the violins, and
+    it holds twelve unpitched effect samples.
+
+    Filtered, never sorted. Declaration order is the palette's own, and a list
+    that reorders itself moves the option someone is reaching for.
+    """
+    index = build_note_index()
+    return [category for category in categories() if index.get(category)]
+
+
+def family_range(family: str, index: Optional[Mapping] = None) -> Optional[tuple]:
+    """The lowest and highest MIDI note a family has a sound for.
+
+    `index` is injectable because `build_note_index` is a full parse of the
+    palette and is deliberately NOT cached: it returns a mutable defaultdict,
+    for the same reason `load_palette` returns a copy, so it cannot hand the
+    same object to two callers. Asking this for every family in a loop would
+    otherwise reparse the palette once per family.
+
+    Returns None where the family has no pitches at all, rather than a
+    zero-width span, so a caller cannot draw a range at note 0 for a category
+    that has no notes anywhere.
+    """
+    if index is None:
+        index = build_note_index()
+    pitches = index.get(family)
+    if not pitches:
+        return None
+    return (min(pitches), max(pitches))
+
+
+def unpitched_categories() -> list:
+    """The exact complement of `pitched_families`, in declaration order.
+
+    Derived rather than written out, because two hand-kept lists drift: a
+    palette version that adds a category would leave it out of both, and a
+    category in neither list is one no surface can offer and nobody notices
+    is gone.
+    """
+    index = build_note_index()
+    return [category for category in categories() if not index.get(category)]
+
+
+#: The two unpitched categories that are a drum kit. The rest of the unpitched
+#: half is ambience, gore, explosions and interface noise.
+_DRUM_CATEGORIES = ("ins_noise", "ins_percussion")
+
+
+def drum_sound_pool() -> list:
+    """Every sound a percussion key may be remapped to.
+
+    Not "every unpitched sound". That is 365 of them and it includes the
+    looping ambience -- names ending `_lp`, and the whole `amb_` half of the
+    palette. A loop fired as a one-shot is never told to stop, so it holds its
+    emitter open until the engine recycles the slot out from under something
+    else. That recycling is the failure this tool schedules its whole output
+    around, and a picker offering those sounds would be its easiest source.
+
+    A superset of `DRUM_MAP`'s own values, which is what lets someone put a key
+    back the way they found it after trying something else.
+    """
+    pool = []
+    for category in _DRUM_CATEGORIES:
+        pool.extend(sounds_in_category(category))
+    return pool
+
+
+@lru_cache(maxsize=1)
+def sound_labels() -> dict:
+    """{category: {sound: label}} -- what someone actually heard, by ear.
+
+    The names are the game's own and several of them lie about their contents:
+    `play_noise_tom` is a knock on a wooden door, `play_noise_crash` is a
+    shaker. A picker showing only names sends people to the tom for a tom.
+
+    Returns {} on any failure to read the file, and deliberately does not
+    raise. Unlike the palette, absent labels cost a hint and not a compile, so
+    `PaletteUnavailableError` here would take a whole window down over a
+    decoration. The guard is broad rather than narrowed to the two obvious
+    errors because this file is meant to be hand-edited, and a half-finished
+    edit fails in whatever way the editor left it.
+
+    Keys beginning `_` are notes to whoever edits the file, not sounds.
+    Leaving them in puts a row called `_note` in the drum picker.
+
+    Hands out the cached dict itself rather than a copy: these are display
+    hints, and a caller that mutates them costs itself a wrong tooltip, where
+    a mutated palette would change which sounds a compile resolves.
+    """
+    try:
+        payload = json.loads(_LABELS.read_text(encoding="utf-8"))
+        return {key: value for key, value in payload.items() if not key.startswith("_")}
+    except Exception:
+        return {}

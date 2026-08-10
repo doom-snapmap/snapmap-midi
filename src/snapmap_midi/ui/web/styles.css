@@ -1,0 +1,171 @@
+/* snapmap-midi control window.
+
+   The token block below is copied verbatim from snapmap-plus's webview so the
+   two windows read as one family of tools rather than two products. Segoe UI at
+   11px is the shell; Consolas at 11.5px is every number, note name and path --
+   the same split that tool uses, for the same reason: data lines up, prose does
+   not have to.
+
+   The one place this window is bolder than its sibling is the pitch ruler. Its
+   geometry arrives from Python as percentages; nothing here computes a position
+   from a MIDI note. */
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; height: 100%; }
+:root {
+  --bg:#eef0f3; --chrome:#f7f8fa; --panel:#ffffff; --panel2:#fbfbfc; --border:#e4e6ea; --border2:#d3d6db;
+  --text:#1b1d21; --muted:#6b7280; --accent:#2f7ad6; --accentText:#ffffff; --sel:#e7f0fb; --selText:#123a63;
+  --link:#2a68b8; --field:#ffffff; --danger:#a3352f;
+  --tkKey:#0550ae; --tkStr:#9a3b22; --tkNum:#116329; --tkBool:#8250df; --sqErr:#d1372c; --sqWarn:#b58a1f;
+  color-scheme: light;
+}
+:root.dark {
+  --bg:#191a1d; --chrome:#232428; --panel:#26272b; --panel2:#2b2d31; --border:#33353b; --border2:#45474e;
+  --text:#e7e8ea; --muted:#9aa0a8; --accent:#4a9eff; --accentText:#0c1116; --sel:#2d4257; --selText:#cfe4fb;
+  --link:#6fb2ff; --field:#1f2024; --danger:#c9483d;
+  --tkKey:#7cb5ff; --tkStr:#ce9178; --tkNum:#9fd394; --tkBool:#c39ce8; --sqErr:#f14c4c; --sqWarn:#d7a944;
+  color-scheme: dark;
+}
+
+[hidden] { display: none !important; }
+
+.app { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); }
+.mono { font-family: Consolas, "Courier New", monospace; font-size: 11.5px; }
+.spacer { flex: 1; }
+.muted { color: var(--muted); }
+
+/* ---- menubar ---- */
+.menubar { display: flex; align-items: center; height: 30px; background: var(--chrome); border-bottom: 1px solid var(--border); padding: 0 8px; gap: 8px; flex-shrink: 0; }
+.menubar .mark { width: 14px; height: 14px; border-radius: 3px; background: var(--accent); flex-shrink: 0; }
+.menubar .brand { font-weight: 600; }
+.menubar .song { color: var(--muted); max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-toggle { display: inline-flex; border: 1px solid var(--border2); border-radius: 20px; overflow: hidden; }
+.theme-toggle button { padding: 3px 11px; color: var(--muted); background: transparent; border: 0; font: inherit; cursor: pointer; }
+.theme-toggle button.on { background: var(--accent); color: var(--accentText); }
+
+/* ---- tab strip ---- */
+.tabstrip { display: flex; align-items: center; background: var(--chrome); border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 6px; gap: 2px; }
+.tab { padding: 7px 14px; color: var(--muted); border: 0; border-bottom: 2px solid transparent; background: transparent; font: inherit; cursor: pointer; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab:hover:not(.active) { color: var(--text); }
+
+/* ---- panels ---- */
+.content { flex: 1; display: flex; overflow: hidden; background: var(--bg); min-height: 0; padding: 8px; gap: 8px; }
+.content[hidden] { display: none; }
+.panel { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.panel.narrow { flex: 0 0 420px; }
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; min-height: 36px; border-bottom: 1px solid var(--border); background: var(--panel2); flex-shrink: 0; }
+.panel-title { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.badge { background: var(--sel); color: var(--selText); border-radius: 10px; padding: 1px 7px; font-size: 10px; }
+.panel-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.panel-actions .hint { color: var(--muted); font-style: italic; }
+.panel-toolbar { padding: 6px 10px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; color: var(--muted); flex-wrap: wrap; }
+.panel-toolbar label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.panel-body { flex: 1; overflow-y: auto; min-height: 0; }
+.panel-body.pad { padding: 12px; }
+.placeholder { display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); padding: 20px; }
+.list-empty { padding: 12px; color: var(--muted); font-style: italic; }
+
+/* ---- controls ---- */
+input[type=text], input[type=number], select, textarea {
+  background: var(--field); color: var(--text); border: 1px solid var(--border2); border-radius: 5px;
+  padding: 4px 7px; font-size: 11px; font-family: inherit;
+}
+input[readonly] { color: var(--muted); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+input[type=checkbox] { accent-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.btn { padding: 4px 12px; border: 1px solid var(--border2); background: var(--panel2); color: var(--text); cursor: pointer; border-radius: 5px; font-size: 11px; font-family: inherit; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accentText); }
+
+/* ---- empty state ---- */
+.empty-state { flex-direction: column; gap: 12px; }
+.empty-state p { margin: 0; font-size: 13px; color: var(--text); }
+
+/* ---- channel rows ---- */
+.chan-row { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.chan-row:last-child { border-bottom: 0; }
+.chan-row.off { opacity: 0.55; }
+.chan-top { display: flex; align-items: center; gap: 10px; }
+.chan-no { width: 44px; flex-shrink: 0; color: var(--muted); }
+.chan-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chan-count { width: 86px; text-align: right; color: var(--muted); flex-shrink: 0; }
+.chan-family { width: 244px; flex-shrink: 0; }
+.chan-kit { width: 244px; flex-shrink: 0; color: var(--muted); font-style: italic; }
+.chan-mute { display: flex; align-items: center; gap: 5px; color: var(--muted); flex-shrink: 0; white-space: nowrap; }
+.chan-note { color: var(--muted); min-height: 14px; }
+.chan-note.err { color: var(--sqErr); }
+.chan-note.warn { color: var(--sqWarn); }
+
+/* ---- the pitch ruler ---- */
+.ruler{ position:relative; height:20px; background:var(--panel2);
+        border:1px solid var(--border); border-radius:3px; }
+.ruler-inst{ position:absolute; top:0; bottom:0; border-radius:2px;
+             background:repeating-linear-gradient(135deg,
+               var(--border2) 0 3px, transparent 3px 6px);
+             transition:left 180ms ease, width 180ms ease; }
+.ruler-inst.disjoint{ box-shadow:inset 0 0 0 1px var(--sqErr); }
+.ruler-cell{ position:absolute; top:3px; bottom:3px; background:var(--accent); }
+.ruler-cell.out{ background:var(--sqWarn); }
+.ruler-grid{ position:absolute; top:0; bottom:0; width:1px; background:var(--border); }
+@media (prefers-reduced-motion: reduce){
+  *{ animation:none !important; transition:none !important; }
+}
+.ruler-cell { min-width: 2px; border-radius: 1px; }
+
+/* the C-octave scale, labelled once beneath the list rather than on every row.
+   The warnings speak note names too, so the window has one vocabulary. */
+.axis { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--border); padding: 3px 10px 5px; }
+.axis-strip { position: relative; height: 14px; color: var(--muted); }
+.axis-tick { position: absolute; top: 0; border-left: 1px solid var(--border2); padding-left: 3px; white-space: nowrap; font-family: Consolas, "Courier New", monospace; font-size: 10px; }
+
+/* ---- drum rows ---- */
+.drum-row { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--border); }
+.drum-row:last-child { border-bottom: 0; }
+.drum-key { width: 52px; flex-shrink: 0; color: var(--muted); }
+.drum-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drum-pick { width: 300px; flex-shrink: 0; }
+.drum-state { width: 84px; flex-shrink: 0; text-align: right; color: var(--muted); }
+.drum-state.warn { color: var(--sqWarn); }
+
+/* ---- forms ---- */
+.form-row { display: grid; grid-template-columns: 168px 132px 1fr; gap: 8px 10px; align-items: center; padding: 4px 0; }
+.form-row > label { color: var(--muted); }
+.form-row .hint { color: var(--muted); }
+.form-row input[type=text], .form-row input[type=number] { width: 100%; }
+.form-row .wide { grid-column: 2 / span 2; display: flex; align-items: center; gap: 6px; }
+.form-row .wide input { flex: 1; min-width: 0; }
+.section-label { display: flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 14px 0 4px; }
+.fam-table { width: 100%; border-collapse: collapse; }
+.fam-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.fam-table td { padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.fam-table input[type=number] { width: 90px; }
+.readout { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
+.readout b { font-family: Consolas, "Courier New", monospace; font-size: 11.5px; }
+.actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+
+/* ---- warnings ---- */
+.warnbar { flex-shrink: 0; max-height: 118px; overflow-y: auto; background: var(--panel); border-top: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 3px; }
+/* Not `.warn`: that is already a modifier on .chan-note and .drum-state, and a
+   shared name would put this row's display:flex on both. */
+.warn-row { display: flex; gap: 7px; }
+.warn-row .sev { color: var(--sqWarn); font-weight: 600; flex-shrink: 0; }
+
+/* ---- status bar ---- */
+.statusbar { flex-shrink: 0; display: flex; align-items: center; gap: 14px; background: var(--panel2); border-top: 1px solid var(--border); color: var(--muted); padding: 6px 10px; font-size: 11px; }
+.statusbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 5px; }
+.statusbar .dot.ok { background: #2e9e5b; }
+.statusbar .dot.no { background: #c9483d; }
+.statusbar b { color: var(--text); font-family: Consolas, "Courier New", monospace; font-size: 11.5px; }
+
+/* ---- toasts ---- */
+#toastHost { position: fixed; top: 40px; right: 12px; display: flex; flex-direction: column; gap: 8px; z-index: 2000; pointer-events: none; }
+.toast { min-width: 150px; max-width: 340px; padding: 8px 12px; background: #333; color: #fff; border-radius: 6px; font-size: 11px; box-shadow: 0 4px 14px rgba(0,0,0,0.32); opacity: 0; transform: translateX(120%); transition: opacity .28s ease, transform .28s cubic-bezier(.2,.8,.2,1); }
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast.ok   { background: #2e7d46; }
+.toast.warn { background: #9a6a1a; }
+.toast.err  { background: #a3352f; }

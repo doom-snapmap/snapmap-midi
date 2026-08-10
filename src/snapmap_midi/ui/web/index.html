@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>snapmap-midi</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- The panels below are deliberately empty. Every row, dropdown and field is
+     built once by app.js from what the bridge hands over, then patched in place;
+     the only fixed content here is the shell, the headings, the tab buttons and
+     the status-bar slots. -->
+<div class="app">
+
+  <div class="menubar">
+    <div class="mark"></div>
+    <div class="brand">snapmap-midi</div>
+    <button type="button" class="btn" id="openBtn">Open</button>
+    <button type="button" class="btn" id="reopenBtn" title="Read this file again from disk" disabled>Reopen</button>
+    <span class="song mono" id="songName"></span>
+    <div class="spacer"></div>
+    <div class="theme-toggle" id="themeToggle" role="group" aria-label="Theme">
+      <button type="button" class="on" id="segLight" aria-pressed="true">Light</button>
+      <button type="button" id="segDark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+
+  <div class="tabstrip" role="tablist" aria-label="Sections">
+    <button type="button" class="tab active" id="tab-channels" role="tab" aria-selected="true" aria-controls="panel-channels" data-tab="channels">Channels</button>
+    <button type="button" class="tab" id="tab-drums" role="tab" aria-selected="false" aria-controls="panel-drums" data-tab="drums">Drums</button>
+    <button type="button" class="tab" id="tab-tuning" role="tab" aria-selected="false" aria-controls="panel-tuning" data-tab="tuning">Tuning</button>
+    <button type="button" class="tab" id="tab-export" role="tab" aria-selected="false" aria-controls="panel-export" data-tab="export">Export</button>
+  </div>
+
+  <div class="content" id="panel-empty">
+    <div class="panel">
+      <div class="panel-body placeholder empty-state">
+        <p>Open a MIDI file to begin.</p>
+        <button type="button" class="btn primary" id="emptyOpenBtn">Open</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="content" id="panel-channels" role="tabpanel" aria-labelledby="tab-channels" tabindex="0" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Channels</span><span class="badge" id="chanBadge">0</span>
+        <div class="panel-actions">
+          <span class="hint">Each row plots the notes the channel plays against the reach of its instrument.</span>
+        </div>
+      </div>
+      <div class="panel-body" id="channelList"></div>
+    </div>
+  </div>
+
+  <div class="content" id="panel-drums" role="tabpanel" aria-labelledby="tab-drums" tabindex="0" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Drums</span><span class="badge" id="drumBadge">0</span>
+        <div class="panel-actions">
+          <span class="hint">A key with no sound plays nothing.</span>
+        </div>
+      </div>
+      <div class="panel-toolbar">
+        <label for="drumMode">Drum channel</label>
+        <select id="drumMode">
+          <option value="auto">Automatic</option>
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+        <span class="muted" id="drumModeHint"></span>
+      </div>
+      <div class="panel-body" id="drumList"></div>
+    </div>
+  </div>
+
+  <div class="content" id="panel-tuning" role="tabpanel" aria-labelledby="tab-tuning" tabindex="0" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Tuning</span>
+        <div class="panel-actions">
+          <span class="hint">How many notes may sound at once, and for how long.</span>
+        </div>
+      </div>
+      <div class="panel-body pad" id="tuningBody"></div>
+    </div>
+  </div>
+
+  <div class="content" id="panel-export" role="tabpanel" aria-labelledby="tab-export" tabindex="0" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Export</span>
+        <div class="panel-actions">
+          <span class="hint">Writes one rawmap.json.</span>
+        </div>
+      </div>
+      <div class="panel-body pad" id="exportBody"></div>
+    </div>
+  </div>
+
+  <div class="warnbar" id="warnBar" hidden></div>
+
+  <div class="statusbar">
+    <span><span class="dot" id="bridgeDot"></span><b id="bridgeName">snapmap-midi</b> <span id="bridgeText">connecting...</span></span>
+    <span id="slotNotes" hidden>Notes <b id="statNotes">0</b></span>
+    <span id="slotVoices" hidden>Peak voices <b id="statVoices">0</b></span>
+    <span id="slotSustain" hidden>Long sustains <b id="statSustain">0</b></span>
+    <span id="slotLength" hidden>Length <b id="statLength">0</b></span>
+    <span class="spacer"></span>
+    <span id="busyText" hidden>Working...</span>
+    <span id="stamp"></span>
+  </div>
+
+</div>
+
+<div id="toastHost" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

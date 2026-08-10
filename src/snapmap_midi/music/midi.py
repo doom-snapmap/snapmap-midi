@@ -68,6 +68,8 @@ def parse_notes(
     low_split=None,
     drum_overrides=None,
     note_index=None,
+    channel_mutes=None,
+    drum_key_overrides=None,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -75,12 +77,26 @@ def parse_notes(
     default family, then a family-wide override, then a per-channel override,
     then a pitch split that sends the low register somewhere else. The last
     one to apply wins.
+
+    `channel_mutes` silences whole channels. A muted note is skipped before
+    anything else is decided about it and is NOT counted in `dropped`:
+    `dropped` means the palette had no sound for a note, which is a problem
+    worth reporting, and a muted note was asked for. Folding the two together
+    would make the one number that says something is wrong fire every time
+    somebody used a mute.
+
+    `drum_key_overrides` gives a percussion key its sound by MIDI key number,
+    which is the only lever that reaches the exotic keys `DRUM_MAP` drops on
+    purpose. It is keyed by key rather than by shader precisely so it can name
+    a key that currently resolves to nothing at all.
     """
     import mido
 
     family_overrides = family_overrides or {}
     drum_overrides = drum_overrides or {}
+    drum_key_overrides = drum_key_overrides or {}
     channel_families = channel_families or {}
+    channel_mutes = channel_mutes or frozenset()
     no_sustain = set(decaying_families or ())
     low_cut, low_family = low_split or (0, None)
 
@@ -101,10 +117,19 @@ def parse_notes(
         if msg.type == "program_change":
             program[msg.channel] = msg.program
         elif msg.type == "note_on" and msg.velocity > 0:
+            if msg.channel in channel_mutes:
+                continue
             if msg.channel == DRUM_CHANNEL and drums_on:
-                shader, sustained, family = DRUM_MAP.get(msg.note), False, "drums"
-                if shader:
-                    shader = drum_overrides.get(shader, shader)
+                # The per-key choice is the user's and is final. `drum_overrides`
+                # is keyed by resolved shader and exists to retimbre what the
+                # TABLE picked, so applying it after a per-key override would
+                # silently replace the sound someone had just chosen.
+                shader = drum_key_overrides.get(msg.note)
+                if shader is None:
+                    shader = DRUM_MAP.get(msg.note)
+                    if shader:
+                        shader = drum_overrides.get(shader, shader)
+                sustained, family = False, "drums"
             else:
                 family = gm_to_family(program.get(msg.channel, 0))
                 family = family_overrides.get(family, family)

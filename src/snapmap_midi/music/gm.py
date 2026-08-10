@@ -14,6 +14,10 @@ group is audible: a sustained note with no note-off rings its whole sample.
 
 from __future__ import annotations
 
+import json
+from functools import lru_cache
+from pathlib import Path
+
 #: Families whose samples hold at full volume and must be stopped explicitly.
 SUSTAINED = {
     "ins_violin",
@@ -87,3 +91,38 @@ DRUM_MAP = {
     76: "play_wood_block_01",
     77: "play_wood_block_01",
 }
+
+
+@lru_cache(maxsize=1)
+def _gm_names() -> dict:
+    """The General MIDI name tables, read once.
+
+    Shipped as data rather than written inline because 128 names in a source
+    file is a wall nobody reads, and unlike the tables above these are a
+    published specification rather than a taste call.
+    """
+    path = Path(__file__).resolve().parents[1] / "data" / "gm_programs.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def gm_program_name(program: int) -> str:
+    """The General MIDI name for a program number.
+
+    Raises past 127 rather than clamping. A program number out of range means
+    the caller has a bug, and naming it "Gunshot" hides that behind a plausible
+    answer -- the same failure the retired `--out` flag produced.
+    """
+    names = _gm_names()["programs"]
+    if not 0 <= program < len(names):
+        raise IndexError("no General MIDI program %r" % program)
+    return names[program]
+
+
+def gm_drum_name(key: int) -> str:
+    """The General MIDI percussion name for a key, or the bare key number.
+
+    Unlike programs, keys outside the standard set are ordinary -- files use
+    them and `DRUM_MAP` drops them. Showing the number is what lets someone
+    find that row in the picker and give it a sound.
+    """
+    return _gm_names()["percussion"].get(str(key), "Key %d" % key)

@@ -55,12 +55,18 @@ def compile_to_rawmap(
     low_split=None,
     drum_overrides: Optional[dict] = None,
     note_index=None,
+    channel_mutes: Optional[set] = None,
+    drum_key_overrides: Optional[dict] = None,
 ):
     """Compile a MIDI file into finished map bytes plus a statistics summary.
 
     `baseline_bytes` is optional. Omit it and the song is staged in a blank
     room authored from nothing; pass a saved map and the song is added to it,
     reusing that map's timeline if it has one.
+
+    `channel_mutes` and `drum_key_overrides` are handed straight to
+    `parse_notes`; both are inert when empty, which is what lets a caller pass
+    them on every compile without moving a byte.
     """
     data = blank_map() if baseline_bytes is None else json.loads(baseline_bytes)
     doc = SnapMapDocument(data=data, palette_refs=PRODUCT_PALETTE_REFS)
@@ -78,6 +84,8 @@ def compile_to_rawmap(
         low_split,
         drum_overrides,
         note_index=note_index,
+        channel_mutes=channel_mutes,
+        drum_key_overrides=drum_key_overrides,
     )
     decaying = [n for n in notes if not n.sustained]
     sustained = [n for n in notes if n.sustained]
@@ -125,6 +133,7 @@ def compile_to_rawmap(
         layers.setdefault(n.chan, []).append(n)
 
     voices_used = 0
+    peak_voices = 0
     speaker_index = 0
     for channel in sorted(layers):
         layer = layers[channel]
@@ -132,6 +141,10 @@ def compile_to_rawmap(
             layer = thin_polyphony(layer, max_poly)
         count = allocate_voices(layer, max_speakers)
         voices_used += count
+        # Voices are allocated PER LAYER against `max_speakers`, so the running
+        # total can pass it while no single layer is anywhere near it. The
+        # worst layer is the one that says whether anything was thinned.
+        peak_voices = max(peak_voices, count)
 
         by_voice = {}
         for n in layer:
@@ -176,6 +189,13 @@ def compile_to_rawmap(
             "sustained": len(sustained),
             "voices": voices_used,
             "events": sum(len(e) for _, e in groups),
+            # The engine recycles emitter slots under load and only the
+            # sustained path holds one. `events` is dominated by immune
+            # one-shots, so it is the wrong number to judge a map by; these two
+            # are what `docs/limits.md` actually names.
+            "long_sustains": sum(1 for n in sustained if n.duration > 1000),
+            "peak_voices": peak_voices,
+            "max_speakers": max_speakers,
         }
     )
     return serialize(doc.data), stats
