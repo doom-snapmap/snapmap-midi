@@ -162,14 +162,11 @@ resolution path.
   Lucide SVG subset and ship its license without a runtime or network fetch.
 - [x] Extend asset coverage and re-run focused and complete validation.
 
-## 14. Synchronize note emphasis with playback and inspection
+## 14. Keep note emphasis available for inspection
 
-- [x] Derive every active-note state from the same output-timestamp position
-  used to draw the blue playhead.
-- [x] Brighten all simultaneous and overlapping events under the playhead with
-  a restrained channel-colored glow.
-- [x] Reuse visible note geometry for paused pointer hover while suppressing
-  hover during playback and seek drags.
+- [x] Brighten only the note under the pointer with a restrained channel-colored
+  glow, independently of the blue playhead.
+- [x] Keep hover inspection active during playback, pause, and seek drags.
 - [x] Add source-contract coverage and update user, capability, architecture,
   design, and implementation-plan documentation.
 - [x] Re-run focused and complete validation.
@@ -187,3 +184,25 @@ resolution path.
 - [x] Bump the package version to 0.3.2 and run complete validation.
 
 Release target: `v0.3.2`, created only after the pushed `main` commit passes CI.
+
+## 16. Virtualize dense piano-roll rendering
+
+- [x] Normalize the preview once into pitch buckets with start-time ordering and
+  prefix end-time indexes, then query only visible pitch/time overlaps.
+- [x] Split the static roll and rulers from pointer-transparent playhead and hover
+  overlays so ordinary playback does not repaint notes, labels, or grid lines.
+- [x] Rasterize the full 100% overview within a fixed pixel budget and blit the
+  visible vertical slice during wheel scrolling.
+- [x] Batch tiny overview notes while preserving rounded blocks and labels at
+  inspection sizes.
+- [x] Cache theme, tempo, timing-line, ruler, and transport work; cap backing
+  canvas density at 2x and bound timing-line sampling by viewport pixels.
+- [x] Advance playback following in sections so the static roll changes only
+  when the visible time passage changes.
+- [x] Keep note glow pointer-only during playback as well as pause.
+- [x] Add regression coverage and update user, capability, architecture, design,
+  and implementation-plan documentation.
+- [x] Bump the package version to 0.3.3 and run complete validation.
+- [x] Run focused and complete validation.
+
+Release target: `v0.3.3`, created only after the pushed `main` commit passes CI.
