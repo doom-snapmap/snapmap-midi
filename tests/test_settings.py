@@ -246,9 +246,19 @@ def test_a_channel_may_choose_any_exact_sound_in_the_shipped_palette():
     assert doc["channels"]["0"] == {"family": None, "sound": sound, "muted": False}
 
 
-def test_an_exact_sound_outside_the_shipped_palette_is_refused():
-    with pytest.raises(settings.SettingsError, match="not a sound"):
-        _patch({"channels": {"0": {"sound": "play_not_a_real_snapmap_sound"}}})
+def test_a_full_game_play_event_is_valid_without_reading_the_install():
+    sound = "Play_Wpn_Shotgun_Fire"
+    doc = _patch({"channels": {"0": {"sound": sound}}})
+    assert doc["channels"]["0"]["sound"] == sound
+
+
+@pytest.mark.parametrize(
+    "sound",
+    ["stop_wpn_shotgun_fire", "../Play_escape", "Play_", "Play_" + "x" * 60],
+)
+def test_an_invalid_exact_event_identifier_is_refused(sound):
+    with pytest.raises(settings.SettingsError, match="valid DOOM Play_ event"):
+        _patch({"channels": {"0": {"sound": sound}}})
 
 
 def test_a_channel_cannot_choose_a_family_and_an_exact_sound_together():

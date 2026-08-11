@@ -59,6 +59,30 @@ def channel_is_percussion(mid, drum_map=DRUM_MAP) -> bool:
     return total > 0 and len(pitches) <= 20 and recognised / total >= 0.6
 
 
+def _exact_sound_sustained(
+    shader: str, family: str, no_sustain, event_is_looping, event_looping_cache
+) -> bool:
+    """Whether an exact assignment needs a paired stop event.
+
+    Palette sounds retain their established family behavior. For a full-game
+    event, installed catalog metadata decides. An unknown manually entered Play
+    event is treated as looping because failing to stop a loop leaks an emitter,
+    while stopping a one-shot that already ended is harmless.
+    """
+    if family != "exact":
+        return (
+            family in SUSTAINED or family.startswith("amb_")
+        ) and family not in no_sustain
+    if shader not in event_looping_cache:
+        try:
+            event_looping_cache[shader] = (
+                event_is_looping(shader) if event_is_looping is not None else None
+            )
+        except Exception:
+            event_looping_cache[shader] = None
+    return event_looping_cache[shader] is not False
+
+
 def parse_notes(
     mid_path,
     drums="auto",
@@ -71,6 +95,7 @@ def parse_notes(
     channel_mutes=None,
     drum_key_overrides=None,
     channel_sounds=None,
+    event_is_looping=None,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -100,6 +125,7 @@ def parse_notes(
     channel_sounds = channel_sounds or {}
     channel_mutes = channel_mutes or frozenset()
     no_sustain = set(decaying_families or ())
+    event_looping_cache = {}
     low_cut, low_family = low_split or (0, None)
     sound_categories = palette.sound_categories()
 
@@ -127,12 +153,16 @@ def parse_notes(
             if exact_sound is not None:
                 shader = exact_sound
                 family = sound_categories.get(shader, "exact")
-                # Explicitly assigned ambience is potentially looping and must
-                # be stopped. Known sustained instruments keep their ordinary
-                # scheduling; short effects and percussion keep their tails.
-                sustained = (
-                    family in SUSTAINED or family.startswith("amb_")
-                ) and family not in no_sustain
+                # Full-game exact events take their loop behavior from the
+                # installed event catalog. Curated palette assignments preserve
+                # the established family scheduling rules.
+                sustained = _exact_sound_sustained(
+                    shader,
+                    family,
+                    no_sustain,
+                    event_is_looping,
+                    event_looping_cache,
+                )
             elif chosen_family is not None:
                 # A pitched family selected for channel 10 is still a pitched
                 # instrument. The explicit track choice wins over automatic

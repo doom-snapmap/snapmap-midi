@@ -50,27 +50,49 @@ Only one menu may be open. Clicking outside it or pressing Escape closes it.
 Disabled commands remain visible when no song is open so the menu does not
 rearrange itself.
 
-## Track sound assignment
+## Track sound assignment and full-game browser
 
-The current product exposes only twelve pitched families to melodic channels
-and seventy percussion choices to drum keys. The workstation exposes the full
-shipped SnapMap speaker palette in one grouped picker on every channel.
+Every channel opens the same modal assignment browser. The three meanings remain:
 
-Each selection has one of three meanings:
+- **Automatic** preserves General MIDI family selection or the General MIDI percussion map.
+- **Pitched instrument set** resolves each MIDI pitch through one of the 12 curated
+  pitch-capable categories.
+- **Exact sound** triggers one selected DOOM Play event for every note on the channel.
 
-- **Automatic** preserves General MIDI family selection, or the General MIDI
-  percussion map for an automatically detected percussion channel.
-- **Pitched instrument set** resolves every MIDI pitch to the closest available
-  sound in that palette category.
-- **Exact sound** triggers that same SnapMap sound for every note on the channel.
+The exact-event layer is the installed game's full Play-event catalog, not only the shipped
+SnapMap palette. It is loaded lazily from soundbanksinfo.events and augmented with XML duration
+types. The reference retail install declares 7,589 Play events; 7,353 resolve through the
+indexed retail banks to standalone media for local audition, while engine-only composites stay
+selectable for export. Automatic mapping remains on the 890-name curated palette because the
+rest of the game catalog has no dependable instrument or pitch model.
 
-The picker groups choices for navigation, but grouping never removes a sound.
-Percussion may still use its automatic per-key map; an advanced per-key override
-may remain available through the track inspector, never through a separate tab.
+The modal follows the SnapMap Plus contract exactly: a fixed rgba(0,0,0,0.45) background
+overlay, panel and border tokens, 10 px radius, and the shared 0 12px 34px shadow. The dialog
+contains:
 
-`rawmap.json` contains references only to sounds the arrangement actually uses.
-It never embeds the audio library. Preview indexes the user's installed retail
-banks and decodes only the sounds selected by the current arrangement.
+- a global search field matching readable names, exact event strings, folders, buses,
+  environments, and numeric Wwise IDs;
+- a left file tree derived from Wwise authoring paths, with Automatic and Pitched instruments
+  as first-class choices above the installed folders;
+- paginated exact-event rows with readable title, event string, path, bus, duration, loop
+  behavior, preview availability, numeric ID, and a one-event audition control where available;
+- Cancel and Use sound actions with the current choice summarized in the footer.
+
+The UI humanizes installed event strings and overlays the 16 shipped curated ear labels; it
+does not pretend to ship hand labels for thousands of game events. Numeric IDs are search and
+diagnostic metadata. Export writes the exact Play string.
+
+The result list never materializes the complete catalog at once. A bounded page keeps the DOM
+small while search and the tree filter the in-memory metadata. Escape, the close control, or
+the darkened backdrop cancels the modal.
+
+An exact sound is not retuned. Choosing one piano sample repeats that sample; choosing a
+pitched family follows MIDI pitch. Infinite and Mixed events receive paired stops so an
+infinite branch cannot leak a speaker emitter.
+
+rawmap export contains references only to events used by the arrangement. It never embeds the
+audio library. Preview reads the user's installed retail banks and decodes only an auditioned
+event or sounds selected by the current arrangement.
 
 ## Full-song preview and transport
 
@@ -198,8 +220,8 @@ and export still work and a non-blocking banner reports preview as unavailable.
 The shell continues to use Snapmap Plus's exact light/dark tokens, Segoe UI and
 Consolas typography, status bar, toast treatment, native frame, and window
 controls. The shared workspace uses Snapmap Plus's 8 px panel radius. A curated
-local Lucide sprite supplies only the eight symbols used by the window,
-transport, notifications, and inspectors at one normalized size; it introduces
+local Lucide sprite supplies only the symbols used by the window, transport,
+notifications, inspectors, and sound browser at one normalized size; it introduces
 no network or runtime dependency. The workstation layout and conventional menu
 behavior are new; the product identity is not.
 
@@ -234,7 +256,7 @@ characterful typography is confined to MIDI's own numeric notation.
 +-----------------------------+--------------------------------------------+
 | unified channel assignments | converted piano roll                       |
 | percussion included         | one full-height sweeping playhead          |
-| full palette per row        | drag anywhere in time to seek              |
+| full-game browser per row   | drag anywhere in time to seek              |
 +-----------------------------+--------------------------------------------+
 | [notifications]        Grid [1/8]  Time signature [4/4]  Zoom [---] 100%   |
 +--------------------------------------------------------------------------+

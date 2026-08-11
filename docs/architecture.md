@@ -12,7 +12,7 @@ the ones above, and a test asserts exactly that.
 ```
    compile.py / cli.py / settings.py / ui/  the product surface
                   |
-   audio/     locate, wwise, library        direct preview, optional offline fallback
+   audio/     locate, wwise, library        installed catalog, direct preview, fallback
                   |
    music/     midi, gm, voices, analysis    notes: pairing, timbre, density
                   |
@@ -75,65 +75,34 @@ number maps to a percussion sound; and a set names which families sustain rather
 These are data, not logic — the module has no behaviour worth testing beyond the tables
 being well-formed, and one test that every name in them exists in the shipped palette.
 
-### `music/analysis.py` — channel identity before conversion
+### sound/palette.py — the curated pitch index
 
-`parse_notes` cannot answer what a MIDI file contains. By the time it returns, a program
-number has become a family and the channel's own identity — which instrument the composer
-asked for — is gone. Choosing an instrument per channel needs the question asked before that
-collapse, so this reads the file separately and reports per channel: the program and its
-General MIDI name, a per-note histogram, the extremes, whether it is the kit, and the family
-the automatic mapping would pick.
-
-It keeps the whole histogram rather than only the extremes because range warnings need to
-say how many written notes a chosen pitched family cannot reach. Lowest and highest alone
-cannot distinguish one stray note from a phrase that lives outside the available range.
-
-`ruler_segments` remains a tested compatibility API for clients that want density geometry.
-The current workstation's piano roll instead draws the effective events returned by
-`Session.preview_manifest`: after sound resolution, duration caps, polyphony thinning, and
-speaker allocation. That makes the visible notes agree with what Play and Export actually
-use. The manifest also carries a compact source timing map: ticks per beat, absolute tempo
-change points, and time-signature change points. That lets the browser draw musical note
-divisions and measures against the same millisecond axis as the converted events, including
-files that change tempo, without parsing MIDI in JavaScript.
-
-### `sound/palette.py` — the sound index
-
-Builds an index of every sound a speaker can play. **The palette ships with the package**;
-see [`game-data.md`](game-data.md) for where the line between identifiers and content is
-drawn. Resolution is two-step: narrow to the family, then pick the sound whose nominal pitch
-is nearest the note's, preferring the same pitch class in another octave over a nearer
-absolute pitch that would be out of key.
+The shipped palette is the deterministic conversion vocabulary, not a claim that only 890
+sounds exist in DOOM. It contains 890 event identifiers across 24 categories and records the
+pitch relationships automatic MIDI conversion needs. Resolution is two-step: narrow to a
+family, then pick the sound whose nominal pitch is nearest the note, preferring the same pitch
+class in another octave over a nearer absolute pitch that would be out of key.
 
 #### Reading a pitch out of a name is ambiguous
 
-A sound spells its note at the end of its name, and `b` is both a note and a flat marker. So
-`play_fluteb4` reads two ways:
+A sound spells its note at the end of its name, and b is both a note and a flat marker. For
+example, play_fluteb4 can split as play_flute plus b4, which is B4, or play_flut plus eb4,
+which is the wrong E-flat interpretation. The instrument stem settles it. The stem is chosen
+per category as the prefix that lets the most names parse, and the note is read from what
+follows it.
 
-| Split | Reads as | Right? |
-|---|---|---|
-| `play_flute` + `b4` | B4 | yes |
-| `play_flut` + `eb4` | E-flat 4 | no — but the pattern cannot tell |
+Matching the suffix alone previously read every wind B as a flat a tritone away and treated
+play_clave1 as a pitched E from the final letter of clave. A name the curated palette knows
+and gives no pitch is unpitched and is not guessed again.
 
-Nothing in the name settles it. **The instrument stem does**, so pitch is resolved against the
-palette rather than by pattern: the stem is chosen per category as the prefix that lets the
-most names parse, and the note is read from what follows it.
+The palette also derives which categories can play a pitch at all. Twelve of the 24 can.
+Names such as ins_string and ins_synth look instrument-like but contain no usable pitch index,
+so prefix-based classification would silently route an entire channel to nothing.
 
-This is not hypothetical. Matching the pattern alone read every wind `b` as a flat a tritone
-away, and because the misreads collided with the genuine flats, `ins_flute` ended up holding
-36 sounds for 39 names with B absent entirely. `play_clave1` likewise read as a pitched E off
-the `e` in "clave". A name the palette knows and gives no pitch to is unpitched and is not
-then guessed at; only a name the palette has never seen falls back to the pattern.
-
-Reads are cached per source, because every surface that asks a question about sound asks this
-module for the palette first, and a multi-layer compile used to re-parse it per layer.
-
-The palette also answers which categories can play a pitch at all. Twelve of the twenty-four
-can; `pitched_families` derives that list from the pitch index rather than from the `ins_`
-prefix, because `ins_string` and `ins_synth` carry the prefix and hold no pitched sound
-between them. A channel routed to either as a pitched instrument set would resolve every note
-to nothing, so the workstation offers them only through its exact-sound choices. The grouped
-catalog still carries every one of the palette's 890 sound names.
+The installed full-game catalog is deliberately separate. It supplies thousands of exact
+manual choices, but those events generally have no instrument family or chromatic coverage.
+Automatic mapping therefore remains on the curated index. Selecting an exact full-game event
+bypasses pitch resolution and repeats that same event for every MIDI note on the channel.
 
 ### The split that defines the design
 
@@ -200,29 +169,43 @@ and hands arguments to `compile.py`, which are both at or above the layer it wou
 occupy. Its defaults mirror `compile_to_rawmap`'s own, named rather than imported, and the
 byte gate is what keeps the two from drifting.
 
+Exact palette names are accepted directly. Other channel sound assignments must match the
+measured Play-event alphabet and maximum length, but validation does not require the current
+game install. That keeps sidecars loadable after DOOM moves and permits an explicit mod event;
+the UI itself offers the Play events declared by the installed retail catalog.
+
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
 every mistake a hand edit makes here is a quiet one. See
 [`ui.md`](ui.md#the-settings-sidecar).
 
-### `audio/` — optional local previews
+### audio/ — installed catalog and optional local preview
 
-This layer never participates in compilation. `locate.py` finds a usable DOOM install from
-the explicit override or Steam's own records. `wwise.py` indexes the retail bank and pack
-tables, resolves event names to media, and decodes the IMA ADPCM variant into WAV bytes without
-an external codec. Indexing seeks past media payloads; it does not decode or copy the full
-library. A process-local `DoomSounds` instance keeps that index, and one serialized batch decodes
-only the missing unique sounds requested by the current conversion.
+This layer supplies local sound metadata to the UI and preview bytes to Web Audio; rawmap
+authoring still does not embed or copy audio. locate.py finds a usable DOOM install from the
+explicit override or Steam records. wwise.py indexes the language-neutral retail banks and
+one localization, resolves event hashes through HIRC to the first available medium, and
+decodes the measured Wwise IMA ADPCM format without an external codec.
 
-`library.py` chooses direct installed-bank audio first and accepts a complete, versioned cache
-under the user's local application data as a legacy/offline fallback. The explicit `extract`
-command owns cache creation; the UI never invokes it. The decoder stays rooted at
-`base/sound/soundbanks/pc` and does not recursively merge runtime-injected mod banks, preventing
-a colliding mod event or media ID from overriding the stock SnapMap palette.
+HIRC stores hashes rather than names, so it cannot enumerate a sound browser. The generated
+soundbanksinfo.events file supplies event strings, Wwise paths, buses, environments, numeric
+IDs, and compact duration data. The larger soundbanksinfo.xml overlay distinguishes Mixed
+duration events from ordinary one-shots. DoomSounds joins the two metadata sources and keeps
+every Play event string while separately recording whether it resolves to a standalone local
+medium. The reference retail installation contains 7,589 Play events across 7,649 catalog
+records; 7,353 support local decoding.
 
-The package carries only sound names. Every WAV is derived on the user's machine from their
-own install, never committed or distributed, and preview failure cannot stop the editor or
-change a compile. Real-install tests carry the `gamedata` marker; the parser, provider, fallback,
-and mod-isolation behavior are otherwise exercised against small synthetic banks.
+library.py exposes that full catalog lazily, overlays the small curated label set, and falls
+back to the shipped 890-name palette when installed metadata is absent. Direct audition and
+song preview decode only requested sounds. Engine-only composite events remain exportable,
+have a disabled audition control, and are skipped with a warning if used in song preview. The
+explicit extract command remains a 890-sound, versioned offline cache; expanding it to every
+event would defeat the in-place architecture.
+
+The decoder remains rooted at the retail base soundbank directory and never recursively merges
+runtime-injected mod banks, preventing a colliding mod event or media ID from overriding stock
+content. Every decoded byte is derived on the user's machine, preview failure cannot stop the
+editor or change a compile, and synthetic tests cover parser, provider, localization, fallback,
+and mod isolation without redistributing game data.
 
 ### `ui/` — the MIDI workstation
 
@@ -237,9 +220,9 @@ exception crossing that boundary reaches Javascript as an opaque `Error` with no
 showing. `chrome.py` removes the drawn Windows caption while retaining the native resize,
 snap, taskbar and system-menu behaviour. `web/` is hand-written HTML, CSS and Javascript —
 no framework, no bundler — and its shared tokens and shell primitives are the exact Snapmap
-Plus design contract. Its eight used Lucide symbols are embedded as a local SVG sprite; the
-full icon library and any runtime dependency stay out of the package, while the upstream
-license ships beside the web assets.
+Plus design contract. Its purpose-trimmed Lucide symbols are embedded as a local SVG sprite; the full icon library
+and any runtime dependency stay out of the package, while the upstream license ships beside
+the web assets.
 
 Nothing is served and nothing listens. The markup is loaded from the filesystem through a
 `file:///` URI, so the window has no address and no port;
@@ -285,9 +268,10 @@ Zoom captures the playhead's viewport coordinate before resizing and restores th
 against the new time scale. The draggable pane separator stores only the preferred channel
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
 high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, and hover are view
-state and never enter the conversion settings document. JavaScript names no palette family or
-sound in source. The grouped 24-category catalog comes from `sound/palette.py`, so the shipped
-palette stays the only source of truth.
+state and never enter the conversion settings document. JavaScript names no palette family or game event in source. The small startup catalog comes
+from the curated palette; the full installed event catalog crosses a separate lazy bridge only
+when the modal opens. Results are folder-indexed and paginated so thousands of events do not
+become thousands of live DOM controls.
 
 ## The authoring core
 

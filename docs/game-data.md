@@ -21,42 +21,68 @@ timeline entity from. A fresh install could not compile anything until someone w
 
 | Ships with the package | Never ships |
 |---|---|
-| sound **names**, grouped by category | the speaker declaration itself |
-| engine class names and stock declaration paths | any audio |
+| the curated 890 sound identifiers used for automatic MIDI mapping | the complete game event catalog |
+| category, pitch, drum-map, and 16 curated ear-label records | the speaker declaration or Wwise metadata |
+| engine class names and stock declaration paths | any audio or soundbank |
 | the structural shape of a map | any saved map |
 
-A sound name like `play_pianoc4` is an identifier. It is how the map format refers to a
-sound the game already owns; it carries none of the sound. The General MIDI drum table in
-`music/gm.py` has always listed twenty of these inline, and nobody considered that
-redistribution — because it isn't. `data/sound_palette.json` is the same thing at full size:
-890 names across 24 categories.
+A sound name such as play_pianoc4 is an identifier. It is how the map format refers to a
+sound the game already owns; it carries none of the sound. The General MIDI drum table has
+always listed a small set of these identifiers inline. The shipped sound_palette.json applies
+the same rule at the conversion layer: 890 names across 24 categories, enough to provide a
+stable pitch index and deterministic automatic mapping on a machine with no game installed.
 
-The declaration those names were read out of is game content and is not in this repository.
-CI enforces that: a committed `.decl` fails the build, as does any JSON that looks like a
-map.
+The complete catalog is not copied into this package. When the user opens the sound browser,
+snapmap-midi reads the installed game's own soundbanksinfo.events file for event strings,
+Wwise folders, buses, environments, durations, and numeric IDs. The generated
+soundbanksinfo.xml overlay identifies Infinite and Mixed duration types. This is metadata read
+in place from the user's installation, not redistributed package data.
 
-### Preview reads the installed game in place
+CI enforces the boundary: a committed declaration fails the build, as does JSON that looks
+like a saved map. Audio and soundbank files are never accepted.
 
-The MIDI workstation finds a copy of DOOM the user already owns, indexes the stock retail
-soundbank tables, and decodes only the sounds selected by the current song. The banks remain
-where Steam installed them and decoded samples remain in memory; normal preview creates no
-audio library on disk. Nothing is downloaded, packaged, committed, or copied into an export.
+### Preview and the full catalog read the installed game in place
 
-The optional `snapmap-midi extract` command can still build a resumable offline cache under
-`%LOCALAPPDATA%\snapmap-midi\sounds`. It is roughly 450 MB, safe to delete, and used only as
-a fallback when the installed game is unavailable. The workstation never runs extraction as a
-setup step.
+The workstation finds a copy of DOOM the user already owns and indexes the language-neutral
+retail banks plus one installed localization. It does not recursively ingest every language
+or mod bank. Every catalog event whose string starts with Play is offered because that string
+is a valid game-side SnapMap timeline choice. Stop, Pause, Resume, and Set records are controls
+rather than channel sounds and remain excluded.
 
-No compile depends on either preview source. With no game and no valid offline cache, the only
-missing capability is playing the complete converted song in the workstation. The sound pickers
-still expose all 890 names and export still writes references to the sounds the arrangement uses.
+On the reference retail installation, 7,649 metadata records contain 7,589 unique Play events.
+Of those, 7,353 resolve through HIRC to a standalone medium that snapmap-midi can decode for
+local audition. The other 236 are mostly interactive music graphs, state transitions, legacy
+references, or DLC entries: the game can execute their event strings, but there is no single
+local sample for this decoder to render. The explorer marks that distinction and disables
+only the audition control. The exact counts can vary with edition and localization.
 
-Normal discovery is deliberately limited to `<DOOM>\base\sound\soundbanks\pc`. It does not
-recursively scan `<DOOM>\mods`, so dynamically injected DoomForge banks cannot shadow a stock
-event or media ID in workstation preview. Supporting custom mod sounds later requires an explicit
-catalog, SnapMap-compatibility rules, and deterministic bank precedence rather than silently
-merging every bank found under the game directory. See
-[`ui.md`](ui.md#previewing-the-song) for source and fallback behaviour.
+The event string is the value written into a SnapMap timeline sound call. The numeric Wwise ID
+is shown for search and diagnostics, but it cannot replace the event string in rawmap export.
+
+The banks remain where Steam installed them. Opening the browser reads names and hierarchy;
+audition or full-song preview decodes only the requested sounds into memory. Normal use creates
+no audio library on disk. Nothing is downloaded, packaged, committed, or copied into an
+export.
+
+The optional snapmap-midi extract command can still build a resumable offline cache under
+the user's local application-data snapmap-midi/sounds directory. It is roughly 450 MB, safe
+to delete, and intentionally contains only the 890 curated palette sounds. Expanding it to
+the full catalog would recreate the multi-gigabyte duplication this direct-bank design avoids.
+The workstation never runs extraction as a setup step.
+
+No compile depends on either preview source. With no game and no valid offline cache, the
+browser falls back to the curated 890-name palette, assignments and export still work, and
+only audio preview is unavailable. A sidecar containing a valid Play event string remains
+loadable if DOOM is later moved or temporarily absent. If an installed in-game-only event is
+assigned to a channel, full-song preview skips that event and raises a notification while the
+export keeps the exact requested string.
+
+Normal discovery is deliberately limited to the retail soundbank directory under the DOOM
+base directory. It does not recursively scan the mods directory, so dynamically injected
+DoomForge banks cannot shadow a stock event or media ID in workstation preview. Supporting
+custom mod sounds later requires an explicit catalog, SnapMap-compatibility rules, and
+deterministic bank precedence rather than silently merging every bank found under the game
+directory. See the UI documentation for source and fallback behavior.
 
 ### Regenerating the palette
 

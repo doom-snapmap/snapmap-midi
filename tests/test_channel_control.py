@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import mido
+import pytest
 
 from snapmap_midi.compile import compile_to_rawmap
 from snapmap_midi.music.gm import DRUM_MAP
@@ -151,6 +152,46 @@ def test_an_exact_sound_wins_and_keeps_the_written_midi_pitch(tmp_path):
     assert {note.fam for note in notes} == {"amb_air"}
     assert [note.pitch for note in notes] == [48, 72]
     assert all(note.sustained for note in notes)
+
+
+@pytest.mark.parametrize(
+    ("catalog_looping", "sustained"),
+    [(False, False), (True, True), (None, True)],
+)
+def test_a_full_game_exact_event_uses_catalog_loop_metadata(
+    tmp_path, catalog_looping, sustained
+):
+    mid = _write_midi(tmp_path, [(0, 60)], programs={0: 0})
+
+    notes, _stats = parse_notes(
+        mid,
+        drums=False,
+        channel_sounds={0: "Play_Wpn_Shotgun_Fire"},
+        event_is_looping=lambda _name: catalog_looping,
+    )
+
+    assert notes[0].fam == "exact"
+    assert notes[0].sustained is sustained
+
+
+def test_exact_event_loop_metadata_is_read_once_per_channel_sound(tmp_path):
+    sound = "Play_Wpn_Shotgun_Fire"
+    mid = _write_midi(tmp_path, [(0, 60), (0, 62), (0, 64)], programs={0: 0})
+    calls = []
+
+    def event_is_looping(name):
+        calls.append(name)
+        return False
+
+    notes, _ = parse_notes(
+        mid,
+        drums=False,
+        channel_sounds={0: sound},
+        event_is_looping=event_is_looping,
+    )
+
+    assert len(notes) == 3
+    assert calls == [sound]
 
 
 def test_a_pitched_family_selected_on_the_drum_channel_bypasses_the_kit(tmp_path):

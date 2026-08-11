@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -62,6 +63,12 @@ _MAX_RELEASE_S = 10.0
 
 _DRUM_MODES = ("auto", "on", "off")
 _CHANNEL_KEYS = frozenset({"family", "sound", "muted"})
+
+#: Stock event names measured from soundbanksinfo.events use this complete
+#: alphabet and are at most 64 characters. Accepting the identifier rather than
+#: requiring the installed catalog keeps a sidecar usable when DOOM is moved,
+#: and permits an explicitly named mod event at compile time.
+_PLAY_EVENT = re.compile(r"(?i)^play_[a-z0-9_-]{1,59}$")
 
 #: The tuning levers the window may set, with the values `compile_to_rawmap`
 #: uses when nobody sets them. `decaying_families` and `family_caps` are empty
@@ -209,6 +216,13 @@ def _known_family(family: str, what: str, families) -> str:
 
 
 def _channels(section, families, sounds) -> dict:
+    """Validate per-channel automatic, family, or exact event choices.
+
+    The UI offers the installed catalog's named Play events and marks local
+    preview availability separately. Validation is intentionally
+    install-independent: settings files must still load when the game moves,
+    and a custom Play event can be compiled for a modded game.
+    """
     section = _mapping(section, "channels")
     out = {}
     for key, entry in section.items():
@@ -223,9 +237,12 @@ def _channels(section, families, sounds) -> dict:
         if family is not None:
             _known_family(family, "channel %s" % channel, families)
         sound = entry.get("sound")
-        if sound is not None and sound not in sounds:
+        if sound is not None and (
+            not isinstance(sound, str)
+            or (sound not in sounds and _PLAY_EVENT.fullmatch(sound) is None)
+        ):
             raise SettingsError(
-                "channel %s: %r is not a sound in the shipped SnapMap speaker palette"
+                "channel %s: %r is not a valid DOOM Play_ event identifier"
                 % (channel, sound)
             )
         if family is not None and sound is not None:

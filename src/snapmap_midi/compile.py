@@ -32,6 +32,20 @@ from snapmap_midi.sound.palette import shader_pitch
 from snapmap_midi.sound.timeline import add_button, ensure_timeline
 
 
+def installed_event_is_looping(name: str):
+    """Loop metadata for an exact installed Play event, when available.
+
+    Kept in the orchestration layer so the independently usable MIDI parser
+    does not import upward into the optional installed-game audio subsystem.
+    """
+    try:
+        from snapmap_midi.audio import library
+
+        return library.event_is_looping(name)
+    except Exception:
+        return None
+
+
 def compile_to_rawmap(
     mid_path,
     baseline_bytes: Optional[bytes] = None,
@@ -88,6 +102,7 @@ def compile_to_rawmap(
         channel_mutes=channel_mutes,
         drum_key_overrides=drum_key_overrides,
         channel_sounds=channel_sounds,
+        event_is_looping=installed_event_is_looping,
     )
     decaying = [n for n in notes if not n.sustained]
     sustained = [n for n in notes if n.sustained]

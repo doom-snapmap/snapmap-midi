@@ -10,7 +10,8 @@ rejected promise it can only apologise for.
 
 Nothing here decides how a map is built. `Session` owns that state and every
 rule about it; this turns its answers into payloads, resolves local preview
-samples through the shared palette, and turns exceptions into sentences.
+samples through installed soundbanks or the compatibility cache, and turns
+exceptions into sentences.
 Keeping that split is what lets the whole bridge be tested with no browser
 engine present, and the file dialogs are careful to preserve it: they answer
 None before they reach `import webview`, so `tests/test_ui_api.py` runs on a
@@ -35,6 +36,7 @@ lose every one of them.
 from __future__ import annotations
 
 import base64
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -50,6 +52,9 @@ _MIDI_TYPES = ("MIDI files (*.mid;*.midi)", "All files (*.*)")
 
 #: A saved map is JSON, and the loader's own is literally `rawmap.json`.
 _MAP_TYPES = ("Saved maps (*.json)", "All files (*.*)")
+
+#: The complete stock event-name alphabet and measured maximum length.
+_PLAY_EVENT = re.compile(r"(?i)^play_[a-z0-9_-]{1,59}$")
 
 
 def _fail(exc: Exception) -> dict:
@@ -347,10 +352,25 @@ class Bridge:
         return None
 
     def catalog(self) -> dict:
-        """The full grouped palette plus compatibility percussion metadata."""
+        """The grouped automatic-conversion palette and drum metadata."""
         try:
             payload = {"ok": True}
             payload.update(self._catalog())
+            return payload
+        except Exception as exc:
+            return _fail(exc)
+
+    def sound_catalog(self) -> dict:
+        """The lazy full-game sound browser catalog.
+
+        Kept out of startup so thousands of event records never delay the first
+        workstation frame for someone who does not open the sound browser.
+        """
+        try:
+            from snapmap_midi.audio import library
+
+            payload = {"ok": True}
+            payload.update(library.sound_catalog())
             return payload
         except Exception as exc:
             return _fail(exc)
@@ -371,8 +391,8 @@ class Bridge:
         """One game-bank or offline-cache WAV as a local-page data URI."""
         from snapmap_midi.audio import library
 
-        if sound not in set(library.expected_names()):
-            raise ValueError("%r is not a sound in the shipped palette" % sound)
+        if _PLAY_EVENT.fullmatch(sound) is None:
+            raise ValueError("%r is not a valid DOOM Play_ event identifier" % sound)
         data = library.read_wav(sound)
         if data is None:
             return {
@@ -406,7 +426,7 @@ class Bridge:
             return _fail(exc)
 
     def preview_sound(self, sound) -> dict:
-        """Return one exact palette sound for compatibility preview callers."""
+        """Return one installed exact event for the sound-browser audition."""
         try:
             if not isinstance(sound, str) or not sound:
                 raise ValueError("a sound name is required")

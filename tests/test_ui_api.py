@@ -382,6 +382,31 @@ def test_opening_a_song_carries_a_fresh_catalog_with_it():
     assert payload["catalog"]["families"] == bridge.catalog()["families"]
 
 
+def test_the_full_game_catalog_is_lazy_and_has_its_own_bridge_call(monkeypatch):
+    from snapmap_midi.audio import library
+
+    calls = []
+    payload = {
+        "source": "game",
+        "install": "D:/DOOM",
+        "language": "English(US)",
+        "count": 1,
+        "events": [{"name": "Play_Test", "path": "doom_test/"}],
+    }
+
+    def sound_catalog():
+        calls.append(True)
+        return payload
+
+    monkeypatch.setattr(library, "sound_catalog", sound_catalog)
+    bridge = Bridge()
+
+    assert bridge.startup()["ok"] is True
+    assert calls == []
+    assert bridge.sound_catalog() == {"ok": True, **payload}
+    assert calls == [True]
+
+
 # ---- local audio preview ----
 
 
@@ -397,7 +422,7 @@ def test_a_cached_sound_crosses_the_bridge_as_a_playable_data_uri(monkeypatch):
     }
 
 
-def test_a_sound_outside_the_palette_is_refused_before_the_cache_is_read(monkeypatch):
+def test_an_invalid_event_identifier_is_refused_before_the_banks_are_read(monkeypatch):
     from snapmap_midi.audio import library
 
     monkeypatch.setattr(library, "expected_names", lambda: ["play_one"])
@@ -408,7 +433,7 @@ def test_a_sound_outside_the_palette_is_refused_before_the_cache_is_read(monkeyp
     )
     result = Bridge().preview_sound("../elsewhere")
     assert result["ok"] is False
-    assert "shipped palette" in result["error"]
+    assert "valid DOOM Play_ event" in result["error"]
 
 
 def test_an_unavailable_sound_names_both_preview_sources(monkeypatch):

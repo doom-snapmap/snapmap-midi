@@ -21,7 +21,7 @@ import pytest
 
 from snapmap_midi import paths
 from snapmap_midi.audio import library, locate, wwise
-from test_wwise import build_bank, frame, wem, write_install
+from test_wwise import build_bank, build_event_catalog, frame, wem, write_install
 
 #: What the synthesised install can play. Two is enough to tell "skipped the
 #: right one" from "skipped everything".
@@ -121,6 +121,89 @@ def test_installed_banks_are_ready_without_extracting(fake_install, small_palett
     assert state["source"] == "game"
     assert (state["bank_count"], state["cache_count"]) == (2, 0)
     assert not library.cache_dir().exists()
+
+
+def test_no_install_uses_the_shipped_palette_as_the_browser_catalog(no_install):
+    catalog = library.sound_catalog()
+
+    assert catalog["source"] == "palette"
+    assert catalog["count"] == 890
+    assert all(event["palette"] for event in catalog["events"])
+    assert all(event["path"].startswith("snapmap_palette/") for event in catalog["events"])
+
+
+def test_the_installed_browser_catalog_exposes_all_named_events_and_previewability(
+    fake_install, monkeypatch
+):
+    folder = fake_install / wwise.SOUND_SUBDIR
+    (folder / wwise.EVENT_CATALOG_NAME).write_bytes(
+        build_event_catalog(
+            [
+                {
+                    "name": "Play_One",
+                    "path": "doom_test/one/",
+                    "bus": "SFX_Test",
+                    "looping": True,
+                    "duration_min": 1.0,
+                    "duration_max": 2.0,
+                },
+                {
+                    "name": "PLAY_TWO",
+                    "path": "doom_test/two/",
+                    "bus": "SFX_Test",
+                    "looping": False,
+                    "duration_min": 0.5,
+                    "duration_max": 0.5,
+                },
+                {"name": "Play_Missing", "path": "doom_test/missing/"},
+            ]
+        )
+    )
+    (folder / wwise.EVENT_XML_NAME).write_text(
+        '<Root><Event Name="play_one" DurationType="Infinite"/>'
+        '<Event Name="play_two" DurationType="OneShot"/>'
+        '<Event Name="play_missing" DurationType="OneShot"/></Root>',
+        encoding="utf-8",
+    )
+    from snapmap_midi.sound import palette
+
+    monkeypatch.setattr(locate, "doom_install", lambda: fake_install)
+    monkeypatch.setattr(
+        palette,
+        "sound_categories",
+        lambda: {"play_one": "ins_piano", "play_two": "ins_noise"},
+    )
+    monkeypatch.setattr(library, "_labels", lambda: {"play_one": "Reference piano"})
+    library.reset_source()
+
+    catalog = library.sound_catalog()
+
+    assert catalog["source"] == "game"
+    assert catalog["count"] == 3
+    assert catalog["previewable_count"] == 2
+    assert [event["name"] for event in catalog["events"]] == [
+        "Play_One",
+        "PLAY_TWO",
+        "Play_Missing",
+    ]
+    assert [event["previewable"] for event in catalog["events"]] == [True, True, False]
+    assert catalog["events"][0]["path"] == "doom_test/one/"
+    assert catalog["events"][0]["bus"] == "SFX_Test"
+    assert catalog["events"][0]["palette"] is True
+    assert catalog["events"][0]["category"] == "ins_piano"
+    assert catalog["events"][0]["label"] == "Reference piano"
+    assert library.event_is_looping("PLAY_ONE") is True
+    assert library.event_is_looping("play_two") is False
+    assert library.event_is_looping("play_missing") is False
+
+
+def test_a_game_without_named_metadata_falls_back_to_the_palette(fake_install, monkeypatch):
+    monkeypatch.setattr(locate, "doom_install", lambda: fake_install)
+
+    catalog = library.sound_catalog(refresh=True)
+
+    assert catalog["source"] == "palette"
+    assert catalog["count"] == 890
 
 
 def test_a_direct_sound_decodes_in_memory_without_creating_a_wav(

@@ -32,6 +32,12 @@ long notes live.
 This limit is also why the compiler splits decaying sounds from sustained ones at all. A
 decaying sound needs no slot held open, so it is immune. Only the sustained path is exposed.
 
+For an exact full-game assignment, the installed Wwise duration metadata makes that decision.
+OneShot events stay decaying; Infinite and Mixed events receive a dedicated speaker and paired
+stop. If a valid manually entered Play event is not present in the current install, compilation
+uses the conservative sustained path: an unnecessary stop is harmless, while an unstopped loop
+can leak an emitter for the rest of the song.
+
 ## The byte-gate honesty rule
 
 Three tests compare compiler output against a recorded artifact, byte for byte. Each is

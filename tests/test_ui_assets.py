@@ -238,15 +238,23 @@ def test_the_custom_frame_has_every_snapmap_plus_move_and_resize_surface():
 
 
 def test_the_interface_ships_only_its_curated_lucide_icon_subset():
-    symbols = set(re.findall(r'<symbol id="icon-([a-z-]+)"', _HTML))
+    symbols = set(re.findall(r'<symbol id="icon-([a-z0-9-]+)"', _HTML))
     assert symbols == {
+        "chevron-down",
+        "chevron-left",
+        "chevron-right",
         "circle-alert",
         "copy",
+        "folder",
+        "folder-open",
         "minus",
+        "music-2",
         "pause",
         "play",
+        "search",
         "square",
         "triangle-alert",
+        "volume-2",
         "x",
     }
     assert "lucide.min.js" not in _HTML
@@ -269,7 +277,42 @@ def test_the_workstation_is_one_surface_with_one_global_transport():
     assert "tabstrip" not in _HTML
     assert 'role="tab"' not in _HTML
     assert "preview_note" not in _JS
-    assert "preview_sound" not in _JS
+    assert _JS.count("api().preview_sound(") == 1
+    assert 'id="soundBrowserOverlay"' in _HTML
+
+
+def test_the_channel_sound_browser_is_a_lazy_searchable_file_explorer():
+    for control in (
+        "soundBrowserOverlay",
+        "soundBrowserSearch",
+        "soundTree",
+        "soundResultList",
+        "soundPagePrevious",
+        "soundPageNext",
+        "soundBrowserUse",
+    ):
+        assert 'id="%s"' % control in _HTML
+    assert "api().sound_catalog()" in _JS
+    assert "pageSize: 160" in _JS
+    assert "makeSoundTree" in _JS
+    assert "Search all DOOM soundbanks" in _JS
+    assert "track-sound-picker" in _JS
+    assert "event.previewable = event.previewable !== false" in _JS
+    assert "audition.disabled = !previewable" in _JS
+    assert "In-game only; local preview unavailable" in _JS
+    assert "fillSoundPicker" not in _JS
+    assert 'class="track-sound"' not in _HTML
+
+
+def test_the_sound_browser_uses_the_snapmap_plus_modal_contract():
+    assert ".modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45);" in _CSS
+    assert (
+        ".modal { background: var(--panel); border: 1px solid var(--border2); "
+        "border-radius: 10px; padding: 16px 18px; "
+        "box-shadow: 0 12px 34px rgba(0,0,0,0.42);"
+    ) in _CSS
+    assert 'class="modal sound-browser-modal"' in _HTML
+    assert 'aria-modal="true"' in _HTML
 
 
 def test_the_playhead_and_scrubber_both_seek_the_whole_song():
@@ -505,6 +548,10 @@ def test_global_preview_uses_direct_song_scoped_audio_without_setup_extraction()
     assert "api().preview_samples(missing)" in _JS
     assert "requiredAudioNames()" in _JS
     assert "retainRequiredBuffers()" in _JS
+    assert "AUDIO.unavailable[name] = true" in _JS
+    assert (
+        "Song preview skips those events; exported maps still use their exact event strings." in _JS
+    )
     assert "invalidateAudio(true)" in _JS, "a different song cannot reuse prior buffers"
     assert "invalidateAudio(false)" in _JS, "settings changes retain overlapping buffers"
     assert "prepareSongAudio();" in _JS

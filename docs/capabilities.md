@@ -121,13 +121,28 @@ queries only notes overlapping the visible pitch and time ranges. Vertical wheel
 active over the disabled horizontal scrollbar. A persistent draggable divider trades width
 between the channel list and roll while preserving useful minimums for both. Percussion stays
 with the other channels. Every channel can use Automatic mapping, one of the 12 pitched
-instrument sets, or any exact sound in all 24 categories and all 890 shipped palette names.
-Export writes the map and a settings file beside the song, so the next session opens where this
-one stopped.
+instrument sets, or an exact event from the installed full-game sound browser. The browser
+falls back to the 890 curated palette names when installed metadata is unavailable. Export
+writes the map and a settings file beside the song, so the next session opens where this one
+stopped.
 
 It needs pywebview, which is an ordinary dependency on Windows and the `[ui]` extra
 everywhere else. [`ui.md`](ui.md) covers the complete workstation and the settings document
 both surfaces share.
+
+### The full-game sound browser
+
+The exact-event catalog is loaded only when the modal opens. Installed event strings are read
+from soundbanksinfo.events and organized by their Wwise authoring paths. Search covers names,
+readable labels, folders, buses, environments, numeric IDs, and preview availability. Results
+are paginated. Direct-media events can be auditioned one at a time; engine-only composite
+entries remain selectable for export and are clearly marked.
+
+The reference retail installation contains 7,589 Play events, of which 7,353 support local
+preview; those counts can vary with localization and edition. Exact assignment repeats the
+chosen event for every note and does not pitch-shift it. Infinite and Mixed Wwise events use
+the sustained speaker path and receive a stop; known one-shots remain fire-and-forget. The
+full catalog is a manual layer only and does not widen General MIDI automatic mapping.
 
 ### The palette's categories
 
@@ -152,9 +167,9 @@ The rest of the unpitched half is ambience, gore and interface noise, and a loop
 fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 
 The workstation can play the entire converted arrangement directly from an installed game's
-retail soundbanks, with a valid offline cache as fallback. Preview uses the same channel
-assignments and engine-limit processing as export and decodes only samples the current song
-uses. See [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
+retail soundbanks, with a valid 890-sound offline cache as fallback. The same direct source
+auditions full-catalog events in the browser. Preview uses the same channel assignments and
+engine-limit processing as export and decodes only samples the current song uses. See [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
 
 ## Tuning levers
 
@@ -184,7 +199,7 @@ promoting one to a flag is a welcome pull request.
 | `family_caps` | — | dict | one instrument is monopolising voices; cap per family |
 | `decaying_families` | — | set | force a family down the fire-and-forget path |
 | `channel_families` | — | dict | override the family for a whole MIDI channel |
-| `channel_sounds` | — | dict | trigger one exact palette sound for every note on a MIDI channel |
+| `channel_sounds` | — | dict | trigger one exact DOOM Play event for every note on a MIDI channel |
 | `channel_mutes` | — | set | silence whole channels; the notes are not counted as dropped |
 | `drop_shaders` | — | set | one specific sound is wrong; exclude it |
 | `drum_overrides` | — | dict | retimbre whatever the drum table picked, keyed by sound |

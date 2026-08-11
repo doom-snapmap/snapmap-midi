@@ -1,7 +1,8 @@
-"""The sound palette: which sounds exist, and which one plays a given pitch.
+"""The curated conversion palette and the sound that plays a given pitch.
 
-The palette is a list of every sound a speaker may play, grouped into
-categories. Pitched instrument sounds encode their note in the name --
+The palette is the stable musical subset used by automatic mapping, grouped
+into categories. The installed full-game browser is deliberately broader.
+Pitched instrument sounds encode their note in the name --
 `play_violindb6` is D-flat in octave 6 -- so the pitch index is built by
 parsing names rather than from any separate table.
 

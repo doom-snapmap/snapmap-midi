@@ -41,7 +41,7 @@ workspace. The right side is a read-only piano roll for the converted song.
 The shell deliberately matches Snapmap Plus: the same light and dark colors, Segoe UI and
 Consolas type, 30 px menu bar, status bar, toast treatment, brand image, window controls,
 8 px rounded workspace shell, native resize behavior, and native Windows snapping. Controls
-use a bundled subset of eight Lucide SVG symbols at consistent optical sizes; the application
+use a bundled, purpose-trimmed Lucide SVG subset at consistent optical sizes; the application
 does not download an icon font, contact a CDN, or ship Lucide's full catalog.
 
 ## Traditional menus
@@ -57,7 +57,7 @@ The menu bar keeps infrequent commands out of the note surface.
 
 The main shortcuts are `Ctrl+I` to import, `Ctrl+E` to export, `Ctrl+R` to reopen, `Ctrl+,`
 for Conversion settings, `Space` to play or pause, and `Home` to return to zero. Press
-`Escape` to close an open menu, the Conversion inspector, or the Notifications inspector.
+`Escape` to close an open menu, the sound browser, the Conversion inspector, or the Notifications inspector.
 
 Drag an unused part of the top menu bar to move the window. The menu labels and window
 buttons remain clickable rather than acting as drag handles. The invisible edge grips use
@@ -106,25 +106,53 @@ It groups the ruler into numbered measures and moves the stronger bar lines. Cha
 a visual override only; it does not rewrite the file's time-signature events or change
 playback timing.
 
-## Channels and the complete sound palette
+## Channels and the full DOOM sound catalog
 
 Every channel row shows its one-based MIDI channel number, source General MIDI program,
 sound assignment, and mute control. A percussion channel is labeled in the same list instead
-of moved to a Drums tab.
+of moved to a Drums tab. The assignment control opens a modal sound browser rather than a
+native dropdown.
 
-Each sound picker has three kinds of choice:
+The browser has three kinds of choice:
 
 - **Automatic** uses the General MIDI program-to-family mapping. On an automatically
   detected percussion channel it uses the General MIDI percussion map by note number.
 - **Pitched instrument set** maps every MIDI pitch to the closest available sound in one of
-  the 12 pitch-capable SnapMap categories.
-- **Exact sound** triggers the selected sound for every note on the channel. All 890 sounds
-  in all 24 shipped palette categories are available, including percussion, ambience,
-  effects, interface sounds, and the pitched samples themselves.
+  the 12 measured pitch-capable SnapMap categories.
+- **Exact sound** triggers one selected DOOM event for every note on the channel.
+
+With DOOM installed, the exact-sound view is built lazily from the game's own
+soundbanksinfo.events hierarchy. The reference retail installation contains 7,589 Play
+events, including weapons, monsters, ambience, voices, UI, music, SnapMap instruments, and
+effects; 7,353 resolve to standalone media for local audition. The remaining engine-only
+music/state/legacy/DLC events are still valid export choices and stay visible with their
+preview limitation marked. Counts can vary with edition and localization. A folder tree
+preserves Wwise's authoring organization. Search matches the event string, humanized name,
+folder, bus, environment, numeric Wwise ID, and preview availability, and results are
+paginated so opening the browser never creates thousands of live rows.
+
+Each result shows a readable title, the exact Play event string, its folder and bus,
+one-shot or looping behavior, preview availability, duration, and numeric ID. The Play event
+string is what rawmap export writes. The numeric ID is useful for searching and diagnostics
+but cannot replace the string in a SnapMap timeline sound call. A speaker button auditions
+only that event; it is disabled for engine-only composites and is never another song transport.
+
+The package does not ship thousands of hand-authored labels. It reads all event strings and
+folders from the user's installed game, humanizes those names for display, and overlays the
+16 curated ear labels shipped for misleading SnapMap palette names. Without an installed
+event catalog, the exact-sound browser falls back to all 890 identifiers in the curated
+24-category SnapMap palette.
+
+Automatic conversion does not guess among the full event catalog. Most game events have no
+musical pitch coverage, so widening that algorithm would turn instrument selection into
+arbitrary effects. Automatic and Pitched instrument set remain on the curated pitch index;
+the full catalog is an explicit manual override.
 
 An exact sound is intentionally exact: choosing one piano sample does not retune it across
 the keyboard. Choose the piano instrument set when the melody should follow MIDI pitch;
-choose one exact sound when every note should trigger that same SnapMap sound.
+choose one exact sound when every note should trigger the same DOOM event. Installed Wwise
+duration metadata determines whether that event is fire-and-forget or needs a paired stop.
+Mixed events are treated as looping so an infinite branch cannot leak a speaker emitter.
 
 Mute removes the channel from preview and export without forgetting its assignment. Click a
 channel row to emphasize that channel's notes on the piano roll; click it again to show all
@@ -207,7 +235,8 @@ overlapping the viewport. Pausing immediately restores the horizontal scrollbar.
 
 There is exactly one transport Play/Pause control. It plays the entire converted
 arrangement from the current position; pressing it again pauses without returning to zero.
-There are no per-channel or per-sound Play buttons.
+There are no per-channel song controls. The sound browser's audition button plays one event
+for identification and never starts a channel or arrangement.
 
 Preview uses the same resolved notes, sound assignments, duration caps, polyphony thinning,
 speaker allocation, voice stealing, hard stops, and releases as export. It is not the
@@ -215,14 +244,18 @@ computer's General MIDI synthesizer. When a later note reuses a SnapMap speaker,
 hard-cuts the earlier note at that same point just as the exported timeline does.
 
 The package contains no audio. When the workstation starts or imports a song, it finds the
-user's DOOM installation and indexes the stock retail soundbanks in place. Indexing reads bank
-metadata and media offsets; it does not decode or copy the full library. Python then decodes
-only the missing unique sounds used by the current converted arrangement into memory. Web
-Audio reuses those buffers and schedules them with a rolling look-ahead.
+user's DOOM installation and indexes the language-neutral retail banks plus one installed
+localization in place. Opening the sound browser lazily reads the complete generated Play
+event hierarchy and records which entries resolve to standalone media. Indexing reads metadata
+and offsets; it does not decode or copy the full library. Python then decodes only an auditioned
+event or the missing unique sounds used by the current converted arrangement into memory. Web
+Audio reuses song buffers and schedules them with a rolling look-ahead. An engine-only event
+is skipped in local song playback with a notification; export still writes its exact string.
 
 **Options > Refresh Audio Source** repeats install discovery and source validation. There is no
-required setup step, background download, or persistent audio copy. The sound pickers always
-show all 890 stock SnapMap identifiers even when preview is unavailable.
+required setup step, background download, or persistent audio copy. With installed metadata
+the browser exposes the complete retail Play-event catalog. Without it, the 890-name curated
+palette remains available for assignment and export.
 
 If the game is absent or its banks are unsupported, a valid previously built offline cache can
 still provide preview audio. Without either source, the song can still be opened, configured,
@@ -278,10 +311,10 @@ writes `rawmap.json` to the current output directory, which defaults to the load
 `%LOCALAPPDATA%\snapmap-plus\`. The filename is fixed because that is the only filename the
 loader reads. The window reports when an existing map was replaced.
 
-The exported map does **not** contain the 890-sound audio library. It contains timeline
-references only to sounds used by the current converted arrangement. DOOM already owns the
-sound data and resolves those names when the map plays. Installed-bank preview and the optional
-offline cache are workstation-only audio sources.
+The exported map does **not** contain an audio library or a soundbank. It contains timeline
+references only to event strings used by the current converted arrangement. DOOM already owns
+the sound data and resolves those names when the map plays. Installed-bank preview and the
+optional 890-sound offline cache are workstation-only audio sources.
 
 Export also writes the current settings beside the MIDI. Open the song later and those
 choices return automatically. `snapmap-midi compile song.mid --settings
@@ -329,8 +362,10 @@ parser.
 
 `null` disables optional duration and polyphony limits. `decaying_families` and
 `family_caps` accept any real palette category, including unpitched categories used by exact
-sound assignments. Unknown keys, nonexistent sounds, incompatible family-and-sound pairs,
-and out-of-range values are rejected by name rather than silently ignored.
+sound assignments. Unknown keys, malformed Play event identifiers,
+incompatible family-and-sound pairs, and out-of-range values are rejected by name rather than
+silently ignored. A syntactically valid exact event remains loadable when DOOM has moved, so a
+sidecar is not coupled to the current install path.
 
 A broken sidecar never prevents the MIDI from opening. The workstation opens the song with
 defaults and reports why that sidecar was ignored. A sidecar that cannot be written does not

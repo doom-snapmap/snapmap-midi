@@ -84,10 +84,31 @@
   var CANVAS_RESIZE_QUEUED = false;
   var PLAY_TOKEN = 0;
 
+  var SOUND_BROWSER = {
+    open: false,
+    loading: false,
+    request: 0,
+    channel: null,
+    catalog: null,
+    tree: null,
+    byName: {},
+    expanded: {},
+    mode: "events",
+    path: "",
+    candidate: null,
+    page: 0,
+    pageSize: 160,
+    audition: null,
+    auditionToken: 0,
+    buffers: {},
+    bufferOrder: []
+  };
+
   var AUDIO = {
     context: null,
     master: null,
     buffers: {},
+    unavailable: {},
     key: '',
     loading: null,
     playing: false,
@@ -110,7 +131,21 @@
   function channels() { return (STATE.analysis && STATE.analysis.channels) || []; }
   function previewEvents() { return (STATE.preview && STATE.preview.events) || []; }
   function tuning() { return (STATE.settings && STATE.settings.tuning) || {}; }
-  function warningMessages() { return (STATE.stats && STATE.stats.warnings) || []; }
+  function audioUnavailableNames() { return Object.keys(AUDIO.unavailable || {}).sort(); }
+  function warningMessages() {
+    var warnings = ((STATE.stats && STATE.stats.warnings) || []).slice();
+    var unavailable = audioUnavailableNames();
+    if (unavailable.length) {
+      var sample = unavailable.slice(0, 3).join(', ');
+      if (unavailable.length > 3) { sample += ', +' + (unavailable.length - 3) + ' more'; }
+      warnings.push(
+        unavailable.length + ' selected in-game event' + (unavailable.length === 1 ? '' : 's') +
+        ' cannot be rendered as standalone local audio (' + sample +
+        '). Song preview skips those events; exported maps still use their exact event strings.'
+      );
+    }
+    return warnings;
+  }
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
   function baseName(path) { return String(path || '').replace(/^.*[\\/]/, ''); }
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
@@ -295,107 +330,115 @@
     return (STATE.settings && STATE.settings.channels && STATE.settings.channels[String(channel)]) || {};
   }
 
-  function assignmentValue(channel) {
-    var entry = channelEntry(channel);
-    if (entry.sound) { return 'sound:' + entry.sound; }
-    if (entry.family) { return 'family:' + entry.family; }
-    return '';
+  function channelByNumber(channel) {
+    var list = channels();
+    for (var index = 0; index < list.length; index += 1) {
+      if (Number(list[index].channel) === Number(channel)) { return list[index]; }
+    }
+    return null;
   }
 
-  function option(parent, value, text) {
-    var node = document.createElement('option');
-    node.value = value;
-    node.textContent = text;
-    parent.appendChild(node);
+  function humanSoundName(name) {
+    return String(name || "")
+      .replace(/^play_/i, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, function (letter) { return letter.toUpperCase(); });
   }
 
-  function fillSoundPicker(select, channel) {
-    select.textContent = '';
-    option(
-      select,
-      '',
-      channel.is_drums
-        ? 'Automatic — General MIDI percussion map'
-        : 'Automatic — ' + (channel.auto_family || channel.program_name)
-    );
-
-    var families = (STATE.catalog && STATE.catalog.families) || [];
-    var familyGroup = document.createElement('optgroup');
-    familyGroup.label = 'Pitched instrument sets';
-    families.forEach(function (family) {
-      option(familyGroup, 'family:' + family.name, humanCategory(family.name));
-    });
-    select.appendChild(familyGroup);
-
+  function paletteSoundLabel(name) {
     var groups = (STATE.catalog && STATE.catalog.sound_groups) || [];
-    groups.forEach(function (group) {
-      var node = document.createElement('optgroup');
-      node.label = humanCategory(group.name) + ' — exact sounds';
-      group.sounds.forEach(function (sound) {
-        option(node, 'sound:' + sound.name, sound.label || sound.name);
-      });
-      select.appendChild(node);
-    });
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+      var sounds = groups[groupIndex].sounds || [];
+      for (var soundIndex = 0; soundIndex < sounds.length; soundIndex += 1) {
+        if (sounds[soundIndex].name === name) {
+          return sounds[soundIndex].label || humanSoundName(name);
+        }
+      }
+    }
+    return humanSoundName(name);
+  }
+
+  function browserSoundEvent(name) {
+    return SOUND_BROWSER.byName[String(name || "").toLowerCase()] || null;
+  }
+
+  function exactSoundLabel(name) {
+    var event = browserSoundEvent(name);
+    return event && (event.label || humanSoundName(event.name)) || paletteSoundLabel(name);
+  }
+
+  function assignmentLabel(channel) {
+    var entry = channelEntry(channel.channel);
+    if (entry.sound) { return exactSoundLabel(entry.sound); }
+    if (entry.family) { return humanCategory(entry.family); }
+    return channel.is_drums
+      ? "Automatic \u2014 General MIDI percussion"
+      : "Automatic \u2014 " + humanCategory(channel.auto_family || channel.program_name);
+  }
+
+  function assignmentTitle(channel) {
+    var entry = channelEntry(channel.channel);
+    if (entry.sound) { return assignmentLabel(channel) + "\n" + entry.sound; }
+    if (entry.family) { return "Pitched family: " + entry.family; }
+    return assignmentLabel(channel);
   }
 
   function trackShapeKey() {
-    var groups = (STATE.catalog && STATE.catalog.sound_groups) || [];
-    return channels().map(function (channel) { return channel.channel + ':' + channel.program; }).join('|')
-      + '#' + groups.length + ':' + ((STATE.catalog && STATE.catalog.sound_count) || 0);
+    var families = (STATE.catalog && STATE.catalog.families) || [];
+    return channels().map(function (channel) {
+      return channel.channel + ":" + channel.program;
+    }).join("|") + "#" + families.length;
   }
 
   function buildTracks() {
-    var list = el('trackList');
-    list.textContent = '';
+    var list = el("trackList");
+    list.textContent = "";
     channels().forEach(function (channel) {
-      var row = document.createElement('div');
-      row.className = 'track-row';
+      var row = document.createElement("div");
+      row.className = "track-row";
       row.dataset.channel = String(channel.channel);
-      row.style.setProperty('--track-color', channelColor(channel.channel));
+      row.style.setProperty("--track-color", channelColor(channel.channel));
 
-      var number = document.createElement('div');
-      number.className = 'track-channel';
+      var number = document.createElement("div");
+      number.className = "track-channel";
       number.textContent = String(channel.channel + 1);
-      number.title = 'MIDI channel ' + (channel.channel + 1);
+      number.title = "MIDI channel " + (channel.channel + 1);
       row.appendChild(number);
 
-      var name = document.createElement('div');
-      name.className = 'track-name';
-      name.textContent = channel.program_name + (channel.is_drums ? ' · Percussion' : '');
-      name.title = channel.notes + ' notes · ' + noteName(channel.lowest) + '–' + noteName(channel.highest);
+      var name = document.createElement("div");
+      name.className = "track-name";
+      name.textContent = channel.program_name + (channel.is_drums ? " \u00b7 Percussion" : "");
+      name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest);
       row.appendChild(name);
 
-      var select = document.createElement('select');
-      select.className = 'track-sound';
-      select.setAttribute('aria-label', 'Sound for MIDI channel ' + (channel.channel + 1));
-      fillSoundPicker(select, channel);
-      select.addEventListener('change', function () {
-        var value = this.value;
-        var body = { family: null, sound: null };
-        if (value.indexOf('family:') === 0) { body.family = value.slice(7); }
-        if (value.indexOf('sound:') === 0) { body.sound = value.slice(6); }
-        var patch = { channels: {} };
-        patch.channels[String(channel.channel)] = body;
-        applyPatch(patch, true);
-      });
-      row.appendChild(select);
+      var picker = document.createElement("button");
+      picker.type = "button";
+      picker.className = "track-sound-picker";
+      picker.setAttribute("aria-haspopup", "dialog");
+      picker.setAttribute("aria-label", "Choose sound for MIDI channel " + (channel.channel + 1));
+      var pickerCopy = document.createElement("span");
+      pickerCopy.className = "track-sound-copy";
+      picker.appendChild(pickerCopy);
+      picker.appendChild(iconElement("chevron-down"));
+      picker.addEventListener("click", function () { openSoundBrowser(channel.channel); });
+      row.appendChild(picker);
 
-      var mute = document.createElement('label');
-      mute.className = 'track-mute';
-      var check = document.createElement('input');
-      check.type = 'checkbox';
-      check.setAttribute('aria-label', 'Mute MIDI channel ' + (channel.channel + 1));
-      check.addEventListener('change', function () {
+      var mute = document.createElement("label");
+      mute.className = "track-mute";
+      var check = document.createElement("input");
+      check.type = "checkbox";
+      check.setAttribute("aria-label", "Mute MIDI channel " + (channel.channel + 1));
+      check.addEventListener("change", function () {
         var patch = { channels: {} };
         patch.channels[String(channel.channel)] = { muted: this.checked };
         applyPatch(patch, true);
       });
       mute.appendChild(check);
-      mute.appendChild(document.createTextNode('Mute'));
+      mute.appendChild(document.createTextNode("Mute"));
       row.appendChild(mute);
 
-      row.addEventListener('click', function (event) {
-        if (event.target.closest('select, input, label')) { return; }
+      row.addEventListener("click", function (event) {
+        if (event.target.closest("button, input, label")) { return; }
         SELECTED_CHANNEL = SELECTED_CHANNEL === channel.channel ? null : channel.channel;
         patchTracks();
         invalidateRollSurface();
@@ -406,15 +449,20 @@
   }
 
   function patchTracks() {
-    var rows = el('trackList').querySelectorAll('.track-row');
+    var rows = el("trackList").querySelectorAll(".track-row");
     for (var index = 0; index < rows.length; index += 1) {
       var row = rows[index];
-      var channel = Number(row.dataset.channel);
-      var entry = channelEntry(channel);
-      row.classList.toggle('selected', SELECTED_CHANNEL === channel);
-      row.classList.toggle('muted-track', !!entry.muted);
-      row.querySelector('.track-sound').value = assignmentValue(channel);
-      row.querySelector('.track-mute input').checked = !!entry.muted;
+      var channelNumber = Number(row.dataset.channel);
+      var channel = channelByNumber(channelNumber);
+      var entry = channelEntry(channelNumber);
+      row.classList.toggle("selected", SELECTED_CHANNEL === channelNumber);
+      row.classList.toggle("muted-track", !!entry.muted);
+      var picker = row.querySelector(".track-sound-picker");
+      if (channel && picker) {
+        picker.querySelector(".track-sound-copy").textContent = assignmentLabel(channel);
+        picker.title = assignmentTitle(channel);
+      }
+      row.querySelector(".track-mute input").checked = !!entry.muted;
     }
   }
 
@@ -425,7 +473,632 @@
       buildTracks();
     }
     patchTracks();
-    el('trackCount').textContent = String(channels().length);
+    el("trackCount").textContent = String(channels().length);
+  }
+
+  function normalizeSoundPath(path) {
+    return String(path || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  }
+
+  function folderLabel(name) {
+    return String(name || "All DOOM sounds")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, function (letter) { return letter.toUpperCase(); });
+  }
+
+  function makeSoundTree(events) {
+    var root = { name: "All DOOM sounds", path: "", count: 0, children: {} };
+    events.forEach(function (event) {
+      var current = root;
+      current.count += 1;
+      var partial = [];
+      normalizeSoundPath(event.path).split("/").filter(Boolean).forEach(function (segment) {
+        partial.push(segment);
+        if (!current.children[segment]) {
+          current.children[segment] = {
+            name: segment,
+            path: partial.join("/"),
+            count: 0,
+            children: {}
+          };
+        }
+        current = current.children[segment];
+        current.count += 1;
+      });
+    });
+    return root;
+  }
+
+  function expandSoundPath(path) {
+    var parts = normalizeSoundPath(path).split("/").filter(Boolean);
+    var partial = [];
+    parts.forEach(function (part) {
+      partial.push(part);
+      SOUND_BROWSER.expanded[partial.join("/")] = true;
+    });
+  }
+
+  function prepareSoundCatalog(payload) {
+    var events = (payload && payload.events) || [];
+    SOUND_BROWSER.byName = {};
+    events.forEach(function (event) {
+      event.previewable = event.previewable !== false;
+      event._path = normalizeSoundPath(event.path);
+      event._search = [
+        event.name,
+        event.label || "",
+        event._path,
+        event.bus || "",
+        event.environment || "",
+        event.previewable ? "local preview" : "in game only preview unavailable",
+        String(event.id === undefined ? "" : event.id)
+      ].join(" ").toLowerCase();
+      SOUND_BROWSER.byName[event.name.toLowerCase()] = event;
+    });
+    events.sort(function (left, right) {
+      var pathOrder = left._path.localeCompare(right._path);
+      return pathOrder || left.name.localeCompare(right.name);
+    });
+    SOUND_BROWSER.catalog = payload;
+    SOUND_BROWSER.tree = makeSoundTree(events);
+    if (SOUND_BROWSER.candidate && SOUND_BROWSER.candidate.kind === "sound") {
+      var current = browserSoundEvent(SOUND_BROWSER.candidate.value);
+      if (current) {
+        SOUND_BROWSER.path = current._path;
+        expandSoundPath(current._path);
+        SOUND_BROWSER.candidate.label = current.label || humanSoundName(current.name);
+      }
+    }
+  }
+
+  function clearSoundBrowserCatalog() {
+    stopSoundAudition();
+    SOUND_BROWSER.request += 1;
+    SOUND_BROWSER.loading = false;
+    SOUND_BROWSER.catalog = null;
+    SOUND_BROWSER.tree = null;
+    SOUND_BROWSER.byName = {};
+    SOUND_BROWSER.expanded = {};
+    SOUND_BROWSER.buffers = {};
+    SOUND_BROWSER.bufferOrder = [];
+  }
+
+  function candidateForChannel(channel) {
+    var entry = channelEntry(channel.channel);
+    if (entry.sound) {
+      return { kind: "sound", value: entry.sound, label: exactSoundLabel(entry.sound) };
+    }
+    if (entry.family) {
+      return { kind: "family", value: entry.family, label: humanCategory(entry.family) };
+    }
+    return {
+      kind: "automatic",
+      value: "",
+      label: channel.is_drums
+        ? "Automatic \u2014 General MIDI percussion"
+        : "Automatic \u2014 " + humanCategory(channel.auto_family || channel.program_name)
+    };
+  }
+
+  function candidateMatches(kind, value) {
+    var candidate = SOUND_BROWSER.candidate;
+    return !!candidate && candidate.kind === kind && String(candidate.value || "") === String(value || "");
+  }
+
+  function updateSoundSelection() {
+    var rows = el("soundResultList").querySelectorAll(".sound-result-row");
+    for (var index = 0; index < rows.length; index += 1) {
+      var selected = candidateMatches(rows[index].dataset.kind, rows[index].dataset.value);
+      rows[index].classList.toggle("selected", selected);
+      rows[index].setAttribute("aria-selected", selected ? "true" : "false");
+    }
+    var candidate = SOUND_BROWSER.candidate;
+    var summary = el("soundSelection");
+    summary.textContent = "";
+    if (!candidate) {
+      summary.textContent = "Choose an automatic mapping, pitched family, or exact sound.";
+      el("soundBrowserUse").disabled = true;
+      return;
+    }
+    var strong = document.createElement("strong");
+    strong.textContent = candidate.label;
+    summary.appendChild(strong);
+    if (candidate.kind === "sound") {
+      summary.appendChild(document.createTextNode("  \u00b7  " + candidate.value));
+    } else if (candidate.kind === "family") {
+      summary.appendChild(document.createTextNode("  \u00b7  Pitched instrument family"));
+    } else {
+      summary.appendChild(document.createTextNode("  \u00b7  Follows the MIDI channel"));
+    }
+    el("soundBrowserUse").disabled = false;
+  }
+
+  function setSoundCandidate(kind, value, label) {
+    SOUND_BROWSER.candidate = { kind: kind, value: value || "", label: label };
+    updateSoundSelection();
+  }
+
+  function soundTreeButton(label, icon, count, selected, depth, onClick, expanded, hasChildren) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "sound-tree-button" + (selected ? " selected" : "");
+    button.style.paddingLeft = (8 + depth * 14) + "px";
+
+    var chevron = document.createElement("span");
+    chevron.className = "tree-chevron";
+    if (hasChildren) { chevron.appendChild(iconElement(expanded ? "chevron-down" : "chevron-right")); }
+    button.appendChild(chevron);
+
+    var folder = iconElement(icon);
+    folder.classList.add("tree-folder");
+    button.appendChild(folder);
+
+    var copy = document.createElement("span");
+    copy.className = "tree-label";
+    copy.textContent = label;
+    button.appendChild(copy);
+
+    if (count !== null && count !== undefined) {
+      var tally = document.createElement("span");
+      tally.className = "tree-count";
+      tally.textContent = String(count);
+      button.appendChild(tally);
+    }
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function selectSoundMode(mode) {
+    SOUND_BROWSER.mode = mode;
+    SOUND_BROWSER.page = 0;
+    el("soundBrowserSearch").value = "";
+    renderSoundBrowser();
+  }
+
+  function appendFolderTree(host, node, depth) {
+    Object.keys(node.children).sort(function (left, right) {
+      return left.localeCompare(right);
+    }).forEach(function (key) {
+      var child = node.children[key];
+      var childKeys = Object.keys(child.children);
+      var expanded = !!SOUND_BROWSER.expanded[child.path];
+      var selected = SOUND_BROWSER.mode === "events" && SOUND_BROWSER.path === child.path;
+      host.appendChild(soundTreeButton(
+        folderLabel(child.name),
+        expanded ? "folder-open" : "folder",
+        child.count,
+        selected,
+        depth,
+        function () {
+          SOUND_BROWSER.mode = "events";
+          SOUND_BROWSER.page = 0;
+          el("soundBrowserSearch").value = "";
+          if (selected && childKeys.length) {
+            SOUND_BROWSER.expanded[child.path] = !expanded;
+          } else {
+            SOUND_BROWSER.path = child.path;
+            if (childKeys.length) { SOUND_BROWSER.expanded[child.path] = true; }
+          }
+          renderSoundBrowser();
+        },
+        expanded,
+        childKeys.length > 0
+      ));
+      if (expanded) { appendFolderTree(host, child, depth + 1); }
+    });
+  }
+
+  function renderSoundTree() {
+    var host = el("soundTree");
+    host.textContent = "";
+    var familyCount = ((STATE.catalog && STATE.catalog.families) || []).length;
+    host.appendChild(soundTreeButton(
+      "Automatic MIDI mapping", "music-2", null,
+      SOUND_BROWSER.mode === "automatic", 0,
+      function () { selectSoundMode("automatic"); }, false, false
+    ));
+    host.appendChild(soundTreeButton(
+      "Pitched instruments", "music-2", familyCount,
+      SOUND_BROWSER.mode === "families", 0,
+      function () { selectSoundMode("families"); }, false, false
+    ));
+    var divider = document.createElement("div");
+    divider.className = "sound-tree-divider";
+    host.appendChild(divider);
+
+    if (!SOUND_BROWSER.tree) {
+      var loading = document.createElement("div");
+      loading.className = "sound-result-empty";
+      loading.textContent = SOUND_BROWSER.loading ? "Reading installed soundbanks..." : "Sound catalog unavailable.";
+      host.appendChild(loading);
+      return;
+    }
+    var root = SOUND_BROWSER.tree;
+    host.appendChild(soundTreeButton(
+      root.name, "folder-open", root.count,
+      SOUND_BROWSER.mode === "events" && SOUND_BROWSER.path === "", 0,
+      function () {
+        SOUND_BROWSER.mode = "events";
+        SOUND_BROWSER.path = "";
+        SOUND_BROWSER.page = 0;
+        el("soundBrowserSearch").value = "";
+        renderSoundBrowser();
+      },
+      true,
+      Object.keys(root.children).length > 0
+    ));
+    appendFolderTree(host, root, 1);
+  }
+
+  function resultRow(kind, value, title, identifier, metadata, eventRecord) {
+    var row = document.createElement("div");
+    row.className = "sound-result-row" + (kind === "sound" ? "" : " sound-special-row");
+    row.setAttribute("role", "option");
+    row.setAttribute("tabindex", "0");
+    row.dataset.kind = kind;
+    row.dataset.value = value || "";
+
+    var main = document.createElement("div");
+    main.className = "sound-result-main";
+    var name = document.createElement("div");
+    name.className = "sound-result-name";
+    name.textContent = title;
+    main.appendChild(name);
+    if (identifier) {
+      var id = document.createElement("div");
+      id.className = "sound-result-id mono";
+      id.textContent = identifier;
+      main.appendChild(id);
+    }
+    if (metadata && metadata.length) {
+      var meta = document.createElement("div");
+      meta.className = "sound-result-meta";
+      metadata.forEach(function (text) {
+        if (!text) { return; }
+        var item = document.createElement("span");
+        item.textContent = text;
+        meta.appendChild(item);
+      });
+      main.appendChild(meta);
+    }
+    row.appendChild(main);
+
+    if (eventRecord) {
+      var audition = document.createElement("button");
+      var previewable = eventRecord.previewable !== false;
+      audition.type = "button";
+      audition.className = "sound-audition";
+      audition.title = previewable
+        ? "Audition " + eventRecord.name
+        : "This game event has no standalone local preview";
+      audition.setAttribute(
+        "aria-label",
+        previewable ? "Audition " + eventRecord.name : "Local preview unavailable for " + eventRecord.name
+      );
+      audition.disabled = !previewable;
+      audition.appendChild(iconElement("volume-2"));
+      if (previewable) {
+        audition.addEventListener("click", function (event) {
+          event.stopPropagation();
+          auditionSound(eventRecord, audition);
+        });
+      }
+      row.appendChild(audition);
+    } else {
+      row.appendChild(document.createElement("span"));
+    }
+
+    function choose() { setSoundCandidate(kind, value, title); }
+    row.addEventListener("click", function (event) {
+      if (!event.target.closest("button")) { choose(); }
+    });
+    row.addEventListener("dblclick", function (event) {
+      if (event.target.closest("button")) { return; }
+      choose();
+      useSoundBrowserSelection();
+    });
+    row.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        choose();
+      }
+    });
+    return row;
+  }
+
+  function eventDuration(event) {
+    var low = Number(event.duration_min || 0);
+    var high = Number(event.duration_max || 0);
+    if (!isFinite(high) || high <= 0) { return ""; }
+    if (Math.abs(high - low) < 0.01) { return high.toFixed(2) + " s"; }
+    return low.toFixed(2) + "\u2013" + high.toFixed(2) + " s";
+  }
+
+  function filteredSoundEvents() {
+    var events = (SOUND_BROWSER.catalog && SOUND_BROWSER.catalog.events) || [];
+    var query = el("soundBrowserSearch").value.trim().toLowerCase();
+    if (query) {
+      return events.filter(function (event) { return event._search.indexOf(query) >= 0; });
+    }
+    var path = SOUND_BROWSER.path;
+    if (!path) { return events; }
+    return events.filter(function (event) {
+      return event._path === path || event._path.indexOf(path + "/") === 0;
+    });
+  }
+
+  function renderSoundResults() {
+    var list = el("soundResultList");
+    list.textContent = "";
+    var breadcrumb = el("soundBreadcrumb");
+    var count = el("soundResultCount");
+    var pageCount = 1;
+
+    if (SOUND_BROWSER.mode === "automatic") {
+      var channel = channelByNumber(SOUND_BROWSER.channel);
+      breadcrumb.textContent = "Automatic MIDI mapping";
+      count.textContent = "1 choice";
+      if (channel) {
+        var automatic = candidateForChannel(channel);
+        automatic.kind = "automatic";
+        automatic.value = "";
+        automatic.label = channel.is_drums
+          ? "Automatic \u2014 General MIDI percussion"
+          : "Automatic \u2014 " + humanCategory(channel.auto_family || channel.program_name);
+        list.appendChild(resultRow(
+          "automatic", "", automatic.label, "",
+          ["Uses MIDI program changes and the curated pitched palette"], null
+        ));
+      }
+    } else if (SOUND_BROWSER.mode === "families") {
+      var families = (STATE.catalog && STATE.catalog.families) || [];
+      breadcrumb.textContent = "Pitched instruments";
+      count.textContent = families.length + (families.length === 1 ? " family" : " families");
+      families.forEach(function (family) {
+        list.appendChild(resultRow(
+          "family",
+          family.name,
+          humanCategory(family.name),
+          family.name,
+          [noteName(family.lowest) + "\u2013" + noteName(family.highest), "Pitch follows each MIDI note"],
+          null
+        ));
+      });
+    } else {
+      var query = el("soundBrowserSearch").value.trim();
+      var events = filteredSoundEvents();
+      pageCount = Math.max(1, Math.ceil(events.length / SOUND_BROWSER.pageSize));
+      SOUND_BROWSER.page = clamp(SOUND_BROWSER.page, 0, pageCount - 1);
+      var start = SOUND_BROWSER.page * SOUND_BROWSER.pageSize;
+      var page = events.slice(start, start + SOUND_BROWSER.pageSize);
+      breadcrumb.textContent = query
+        ? "Search all DOOM soundbanks"
+        : (SOUND_BROWSER.path ? SOUND_BROWSER.path : "All DOOM sounds");
+      count.textContent = events.length.toLocaleString() + (events.length === 1 ? " sound" : " sounds");
+      if (!page.length) {
+        var empty = document.createElement("div");
+        empty.className = "sound-result-empty";
+        empty.textContent = SOUND_BROWSER.loading
+          ? "Reading installed soundbanks..."
+          : "No sounds match this view.";
+        list.appendChild(empty);
+      }
+      page.forEach(function (event) {
+        var metadata = [
+          event._path || "Unfiled",
+          event.bus ? "Bus: " + event.bus : "",
+          event.looping_known === false
+            ? "Loop behavior unknown"
+            : (event.looping ? "Looping" : "One-shot"),
+          event.previewable ? "Local preview" : "In-game only; local preview unavailable",
+          eventDuration(event),
+          "Wwise ID " + event.id
+        ];
+        list.appendChild(resultRow(
+          "sound",
+          event.name,
+          event.label || humanSoundName(event.name),
+          event.name,
+          metadata,
+          event
+        ));
+      });
+    }
+
+    var paginationVisible = SOUND_BROWSER.mode === "events";
+    el("soundPagePrevious").hidden = !paginationVisible;
+    el("soundPageNext").hidden = !paginationVisible;
+    el("soundPageStatus").hidden = !paginationVisible;
+    el("soundPagePrevious").disabled = SOUND_BROWSER.page <= 0;
+    el("soundPageNext").disabled = SOUND_BROWSER.page >= pageCount - 1;
+    el("soundPageStatus").textContent = "Page " + (SOUND_BROWSER.page + 1) + " of " + pageCount;
+    list.scrollTop = 0;
+    updateSoundSelection();
+  }
+
+  function renderSoundBrowser() {
+    if (!SOUND_BROWSER.open) { return; }
+    var catalog = SOUND_BROWSER.catalog;
+    if (SOUND_BROWSER.loading) {
+      el("soundBrowserSource").textContent = "Reading soundbanks...";
+    } else if (catalog) {
+      var total = Number(catalog.count || 0);
+      var previewable = Number(catalog.previewable_count || 0);
+      if (catalog.source === "game") {
+        el("soundBrowserSource").textContent =
+          total.toLocaleString() + " installed events \u00b7 " +
+          previewable.toLocaleString() + " local previews";
+      } else {
+        el("soundBrowserSource").textContent = total.toLocaleString() + " palette fallback";
+      }
+    } else {
+      el("soundBrowserSource").textContent = "Catalog unavailable";
+    }
+    renderSoundTree();
+    renderSoundResults();
+  }
+
+  function loadSoundBrowserCatalog() {
+    if (SOUND_BROWSER.catalog || SOUND_BROWSER.loading || !api()) { return; }
+    SOUND_BROWSER.loading = true;
+    var token = ++SOUND_BROWSER.request;
+    renderSoundBrowser();
+    api().sound_catalog().then(function (response) {
+      if (token !== SOUND_BROWSER.request) { return; }
+      SOUND_BROWSER.loading = false;
+      if (!response || !response.ok) {
+        fail(response);
+        renderSoundBrowser();
+        return;
+      }
+      prepareSoundCatalog(response);
+      renderSoundBrowser();
+      patchTracks();
+    }, function (error) {
+      if (token !== SOUND_BROWSER.request) { return; }
+      SOUND_BROWSER.loading = false;
+      fail(error);
+      renderSoundBrowser();
+    });
+  }
+
+  function stopSoundAudition() {
+    SOUND_BROWSER.auditionToken += 1;
+    if (SOUND_BROWSER.audition) {
+      try { SOUND_BROWSER.audition.stop(); } catch (_error) { /* already ended */ }
+      SOUND_BROWSER.audition = null;
+    }
+  }
+
+  function rememberAuditionBuffer(name, buffer) {
+    if (!SOUND_BROWSER.buffers[name]) { SOUND_BROWSER.bufferOrder.push(name); }
+    SOUND_BROWSER.buffers[name] = buffer;
+    while (SOUND_BROWSER.bufferOrder.length > 24) {
+      delete SOUND_BROWSER.buffers[SOUND_BROWSER.bufferOrder.shift()];
+    }
+  }
+
+  function playAuditionBuffer(eventRecord, buffer, token) {
+    if (token !== SOUND_BROWSER.auditionToken || !SOUND_BROWSER.open) { return; }
+    var context = ensureAudioContext();
+    return context.resume().then(function () {
+      if (token !== SOUND_BROWSER.auditionToken || !SOUND_BROWSER.open) { return; }
+      var source = context.createBufferSource();
+      var gain = context.createGain();
+      source.buffer = buffer;
+      gain.gain.value = 0.34;
+      source.connect(gain);
+      gain.connect(AUDIO.master);
+      SOUND_BROWSER.audition = source;
+      source.onended = function () {
+        if (SOUND_BROWSER.audition === source) { SOUND_BROWSER.audition = null; }
+      };
+      source.start();
+      if (buffer.duration > 8) { source.stop(context.currentTime + 8); }
+    });
+  }
+
+  function auditionSound(eventRecord, button) {
+    stopSoundAudition();
+    var token = SOUND_BROWSER.auditionToken;
+    var cached = SOUND_BROWSER.buffers[eventRecord.name];
+    button.disabled = true;
+    var promise;
+    if (cached) {
+      promise = Promise.resolve(cached);
+    } else if (!api()) {
+      promise = Promise.reject(new Error("The audio bridge is not available"));
+    } else {
+      promise = api().preview_sound(eventRecord.name).then(function (response) {
+        if (!response || !response.ok) {
+          throw new Error(response && response.error || "The sound could not be previewed");
+        }
+        var context = ensureAudioContext();
+        return decodeDataUri(context, response.data_uri).then(function (buffer) {
+          rememberAuditionBuffer(eventRecord.name, buffer);
+          return buffer;
+        });
+      });
+    }
+    promise.then(function (buffer) {
+      return playAuditionBuffer(eventRecord, buffer, token);
+    }).catch(fail).finally(function () {
+      if (button && button.isConnected) { button.disabled = false; }
+    });
+  }
+
+  function openSoundBrowser(channelNumber) {
+    var channel = channelByNumber(channelNumber);
+    if (!channel) { return; }
+    closeMenus();
+    closeInspector();
+    closeNotifications();
+    pausePlayback();
+    SOUND_BROWSER.open = true;
+    SOUND_BROWSER.channel = channelNumber;
+    SOUND_BROWSER.candidate = candidateForChannel(channel);
+    SOUND_BROWSER.page = 0;
+    SOUND_BROWSER.path = "";
+    SOUND_BROWSER.mode = SOUND_BROWSER.candidate.kind === "family"
+      ? "families"
+      : (SOUND_BROWSER.candidate.kind === "automatic" ? "automatic" : "events");
+    el("soundBrowserSearch").value = "";
+    el("soundBrowserSubtitle").textContent =
+      "MIDI channel " + (channelNumber + 1) + " \u00b7 " + channel.program_name;
+    el("soundBrowserOverlay").hidden = false;
+    if (SOUND_BROWSER.candidate.kind === "sound") {
+      var event = browserSoundEvent(SOUND_BROWSER.candidate.value);
+      if (event) {
+        SOUND_BROWSER.path = event._path;
+        expandSoundPath(event._path);
+      }
+    }
+    renderSoundBrowser();
+    loadSoundBrowserCatalog();
+    setTimeout(function () { el("soundBrowserSearch").focus(); }, 0);
+  }
+
+  function closeSoundBrowser() {
+    if (!SOUND_BROWSER.open) { return; }
+    stopSoundAudition();
+    SOUND_BROWSER.open = false;
+    SOUND_BROWSER.channel = null;
+    el("soundBrowserOverlay").hidden = true;
+  }
+
+  function useSoundBrowserSelection() {
+    var candidate = SOUND_BROWSER.candidate;
+    var channel = SOUND_BROWSER.channel;
+    if (!candidate || channel === null || channel === undefined) { return; }
+    var body = { family: null, sound: null };
+    if (candidate.kind === "family") { body.family = candidate.value; }
+    if (candidate.kind === "sound") { body.sound = candidate.value; }
+    var patch = { channels: {} };
+    patch.channels[String(channel)] = body;
+    closeSoundBrowser();
+    applyPatch(patch, false);
+  }
+
+  function initSoundBrowser() {
+    el("soundBrowserClose").addEventListener("click", closeSoundBrowser);
+    el("soundBrowserCancel").addEventListener("click", closeSoundBrowser);
+    el("soundBrowserUse").addEventListener("click", useSoundBrowserSelection);
+    el("soundBrowserOverlay").addEventListener("pointerdown", function (event) {
+      if (event.target === this) { closeSoundBrowser(); }
+    });
+    el("soundBrowserSearch").addEventListener("input", debounce(function () {
+      SOUND_BROWSER.mode = "events";
+      SOUND_BROWSER.page = 0;
+      renderSoundBrowser();
+    }, 70));
+    el("soundPagePrevious").addEventListener("click", function () {
+      SOUND_BROWSER.page = Math.max(0, SOUND_BROWSER.page - 1);
+      renderSoundResults();
+    });
+    el("soundPageNext").addEventListener("click", function () {
+      SOUND_BROWSER.page += 1;
+      renderSoundResults();
+    });
   }
 
   /* ----------------------------------------------------------- piano roll */
@@ -1552,10 +2225,13 @@
 
   function retainRequiredBuffers() {
     var keep = {};
+    var unavailable = {};
     requiredAudioNames().forEach(function (name) {
       if (AUDIO.buffers[name]) { keep[name] = AUDIO.buffers[name]; }
+      if (AUDIO.unavailable[name]) { unavailable[name] = true; }
     });
     AUDIO.buffers = keep;
+    AUDIO.unavailable = unavailable;
   }
 
   function invalidateAudio(clearBuffers) {
@@ -1566,6 +2242,7 @@
     if (clearBuffers) {
       AUDIO.generation += 1;
       AUDIO.buffers = {};
+      AUDIO.unavailable = {};
       AUDIO.loading = null;
       AUDIO.preparing = false;
     } else {
@@ -1582,7 +2259,9 @@
     if (!api()) { return Promise.reject(new Error('The audio bridge is not available')); }
 
     var key = audioKey();
-    var missing = requiredAudioNames().filter(function (name) { return !AUDIO.buffers[name]; });
+    var missing = requiredAudioNames().filter(function (name) {
+      return !AUDIO.buffers[name] && !AUDIO.unavailable[name];
+    });
     if (!missing.length) {
       AUDIO.key = key;
       AUDIO.prepareError = null;
@@ -1608,10 +2287,8 @@
       if (!response || !response.ok) {
         throw new Error(response && response.error || 'Song audio could not be loaded');
       }
-      if (response.missing && response.missing.length) {
-        throw new Error(
-          response.missing.length + ' sounds are unavailable from the game banks and offline cache'
-        );
+      if (generation === AUDIO.generation) {
+        (response.missing || []).forEach(function (name) { AUDIO.unavailable[name] = true; });
       }
       var names = Object.keys(response.samples || {});
       return Promise.all(names.map(function (name) {
@@ -1627,7 +2304,9 @@
         if (stillRequired[pair[0]]) { AUDIO.buffers[pair[0]] = pair[1]; }
       });
       retainRequiredBuffers();
-      var currentMissing = requiredAudioNames().some(function (name) { return !AUDIO.buffers[name]; });
+      var currentMissing = requiredAudioNames().some(function (name) {
+        return !AUDIO.buffers[name] && !AUDIO.unavailable[name];
+      });
       AUDIO.key = currentMissing ? '' : audioKey();
       AUDIO.prepareError = null;
     }).catch(function (error) {
@@ -1641,6 +2320,7 @@
         AUDIO.loading = null;
         AUDIO.preparing = false;
         renderAudio();
+        renderWarnings();
       }
     });
     AUDIO.loading = { key: key, promise: promise };
@@ -1878,7 +2558,9 @@
 
   function usedFamilies() {
     var seen = {};
-    previewEvents().forEach(function (event) { if (event.family) { seen[event.family] = true; } });
+    previewEvents().forEach(function (event) {
+      if (event.family && event.family !== "exact") { seen[event.family] = true; }
+    });
     return Object.keys(seen).sort();
   }
 
@@ -2105,6 +2787,7 @@
     if (!api()) { return; }
     var resume = AUDIO.playing;
     pausePlayback();
+    clearSoundBrowserCatalog();
     var sequence = nextRequest();
     setBusy(true, 'Checking DOOM audio...');
     api().audio_status().then(function (response) {
@@ -2245,6 +2928,9 @@
     if (!state) { return; }
     if (AUDIO.preparing) { el('audioText').textContent = 'preparing'; }
     else if (AUDIO.prepareError) { el('audioText').textContent = 'retry on play'; }
+    else if (audioUnavailableNames().length) {
+      el('audioText').textContent = audioUnavailableNames().length + ' game-only';
+    }
     else if (state.source === 'game') { el('audioText').textContent = 'game banks'; }
     else if (state.source === 'game+cache') { el('audioText').textContent = 'game + cache'; }
     else if (state.source === 'cache') { el('audioText').textContent = 'offline cache'; }
@@ -2338,11 +3024,13 @@
     var target = event.target;
     var editing = target && target.closest && target.closest('input, select, textarea');
     if (event.key === 'Escape') {
-      if (OPEN_MENU) { closeMenus(); }
+      if (SOUND_BROWSER.open) { event.preventDefault(); closeSoundBrowser(); }
+      else if (OPEN_MENU) { closeMenus(); }
       else if (NOTIFICATIONS_OPEN) { closeNotifications(); }
       else if (INSPECTOR_OPEN) { closeInspector(); }
       return;
     }
+    if (SOUND_BROWSER.open) { return; }
     if (event.ctrlKey && !event.shiftKey && !event.altKey) {
       var key = event.key.toLowerCase();
       if (key === 'i') { event.preventDefault(); importMidi(); }
@@ -2412,6 +3100,7 @@
     initTheme();
     initPaneSplitter();
     initInspector();
+    initSoundBrowser();
     el('notificationsBtn').addEventListener('click', toggleNotifications);
     el('closeNotifications').addEventListener('click', closeNotifications);
     initTransport();

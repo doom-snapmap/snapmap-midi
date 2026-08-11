@@ -135,6 +135,26 @@ def build_pack(entries) -> bytes:
     )
 
 
+def build_event_catalog(records) -> bytes:
+    """A generated soundbanksinfo.events file from dictionaries."""
+    body = struct.pack(">I", len(records))
+    for record in records:
+        name = record["name"]
+        body += struct.pack(">I", record.get("id", wwise.fnv1_32(name)))
+        for field in ("name", "path", "bus", "environment"):
+            encoded = record.get(field, "").encode("utf-8")
+            body += struct.pack("<I", len(encoded)) + encoded
+        trailer = bytearray(wwise.EVENT_RECORD_TRAILER_BYTES)
+        trailer[0] = 1 if record.get("looping") else 0
+        trailer[5:13] = struct.pack(
+            ">ff",
+            float(record.get("duration_min", 0.0)),
+            float(record.get("duration_max", 0.0)),
+        )
+        body += trailer
+    return body + b"generated-footer"
+
+
 def frame(predictor: int = 0, step_index: int = 0, nibbles=()) -> bytes:
     """One 36-byte ADPCM frame: predictor, step index, pad, then 32 body bytes.
 
@@ -160,7 +180,7 @@ def wem(frames: bytes, channels: int = 1, rate: int = 22050) -> bytes:
     return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
 
 
-def write_install(root, banks=(), packs=()) -> Path:
+def write_install(root, banks=(), packs=(), events=None) -> Path:
     """A directory shaped like an install, holding the given bank/pack bytes."""
     folder = Path(root) / wwise.SOUND_SUBDIR
     folder.mkdir(parents=True, exist_ok=True)
@@ -168,7 +188,66 @@ def write_install(root, banks=(), packs=()) -> Path:
         (folder / ("synth%02d.bnk" % index)).write_bytes(blob)
     for index, blob in enumerate(packs):
         (folder / ("synth%02d.pck" % index)).write_bytes(blob)
+    if events is not None:
+        (folder / wwise.EVENT_CATALOG_NAME).write_bytes(events)
     return Path(root)
+
+
+# ---- named event catalog ----
+
+
+def test_the_event_catalog_preserves_names_hierarchy_and_mixed_endianness(tmp_path):
+    path = tmp_path / wwise.EVENT_CATALOG_NAME
+    path.write_bytes(
+        build_event_catalog(
+            [
+                {
+                    "id": 0xF0123456,
+                    "name": "Play_Test_Loop",
+                    "path": "doom_test/folder/",
+                    "bus": "SFX_Test",
+                    "environment": "amb_quiet_300_1200",
+                    "looping": True,
+                    "duration_min": 1.25,
+                    "duration_max": 2.5,
+                }
+            ]
+        )
+    )
+
+    assert wwise.parse_event_catalog(path) == (
+        wwise.SoundEvent(
+            0xF0123456,
+            "Play_Test_Loop",
+            "doom_test/folder/",
+            "SFX_Test",
+            "amb_quiet_300_1200",
+            True,
+            1.25,
+            2.5,
+        ),
+    )
+
+
+def test_a_truncated_event_catalog_is_refused_by_record_number(tmp_path):
+    path = tmp_path / wwise.EVENT_CATALOG_NAME
+    path.write_bytes(struct.pack(">I", 1) + b"\x00\x01")
+    with pytest.raises(ValueError, match="record 0"):
+        wwise.parse_event_catalog(path)
+
+
+def test_the_xml_overlay_marks_infinite_and_mixed_events_as_looping(tmp_path):
+    path = tmp_path / wwise.EVENT_XML_NAME
+    path.write_text(
+        '<Root><Event Name="Play_One" DurationType="OneShot"/>'
+        '<Event Name="Play_Mixed" DurationType="Mixed"/>'
+        '<Event Name="Play_Loop" DurationType="Infinite"/></Root>',
+        encoding="utf-8",
+    )
+    assert wwise.parse_looping_event_names(path) == {
+        "play_mixed",
+        "play_loop",
+    }
 
 
 # ---- what it is allowed to depend on ----
@@ -478,6 +557,96 @@ def test_names_reports_only_what_it_can_actually_play(tmp_path):
     assert sounds.names(["play_synth", "play_absent"]) == {"play_synth"}
 
 
+
+def test_the_browser_catalog_keeps_all_play_events_and_marks_local_previewability(tmp_path):
+    audio = wem(frame(nibbles=[4]))
+    records = build_event_catalog(
+        [
+            {"name": "Play_Synth", "path": "test/synth/", "bus": "SFX"},
+            {"name": "Stop_Synth", "path": "test/synth/", "bus": "SFX"},
+            {"name": "Play_Missing", "path": "test/missing/", "bus": "SFX"},
+        ]
+    )
+    write_install(
+        tmp_path,
+        banks=[
+            build_bank(
+                [("Play_Synth", 1), ("Stop_Synth", 2), ("Play_Missing", 3)],
+                media={1: audio, 2: audio},
+            )
+        ],
+        events=records,
+    )
+
+    folder = Path(tmp_path) / wwise.SOUND_SUBDIR
+    (folder / wwise.EVENT_XML_NAME).write_text(
+        '<Root><Event Name="Play_Synth" DurationType="Mixed"/></Root>',
+        encoding="utf-8",
+    )
+    sounds = wwise.DoomSounds(tmp_path)
+
+    assert [event.name for event in sounds.event_catalog()] == ["Play_Synth", "Play_Missing"]
+    assert sounds.event("play_synth").path == "test/synth/"
+    assert sounds.event("play_synth").looping is True
+    assert sounds.event_is_looping("play_synth") is True
+    assert sounds.can_preview("play_synth") is True
+    assert sounds.can_preview("play_missing") is False
+    assert sounds.event("play_missing") is not None
+    assert sounds.event("stop_synth") is None
+
+
+def test_a_later_available_container_source_is_playable(tmp_path):
+    name = "Play_Multi"
+    first_sound = 0x41000000
+    second_sound = first_sound + 1
+    container = first_sound + 2
+    action = first_sound + 3
+    objects = [
+        hirc_object(2, sound_payload(first_sound, 100)),
+        hirc_object(2, sound_payload(second_sound, 101)),
+        hirc_object(5, container_payload(container, [first_sound, second_sound])),
+        hirc_object(3, action_payload(action, container)),
+        hirc_object(4, event_payload(wwise.fnv1_32(name), [action])),
+    ]
+    bank = chunk(b"BKHD", struct.pack("<IIII", wwise.BANK_VERSION, 1, 0, 0))
+    audio = wem(frame(nibbles=[4]))
+    bank += chunk(b"DIDX", struct.pack("<III", 101, 0, len(audio)))
+    bank += chunk(b"DATA", audio)
+    bank += chunk(b"HIRC", struct.pack("<I", len(objects)) + b"".join(objects))
+    write_install(
+        tmp_path,
+        banks=[bank],
+        events=build_event_catalog([{"name": name, "path": "test/multi/"}]),
+    )
+
+    sounds = wwise.DoomSounds(tmp_path)
+
+    assert sounds.names([name]) == {name}
+    assert sounds.event(name).name == name
+    assert sounds.wav_bytes(name)[:4] == b"RIFF"
+
+
+def test_the_selected_localised_voice_banks_join_the_retail_banks(tmp_path):
+    name = "Play_Voice_Line"
+    folder = Path(tmp_path) / wwise.SOUND_SUBDIR
+    folder.mkdir(parents=True)
+    locale = folder / wwise.DEFAULT_LANGUAGE
+    locale.mkdir()
+    (locale / "voice.bnk").write_bytes(
+        build_bank([(name, 7)], media={7: wem(frame(predictor=700))})
+    )
+    (folder / wwise.EVENT_CATALOG_NAME).write_bytes(
+        build_event_catalog([{"name": name, "path": "doom_vo/test/"}])
+    )
+
+    sounds = wwise.DoomSounds(tmp_path)
+
+    assert sounds.language == wwise.DEFAULT_LANGUAGE
+    assert sounds.event(name).name == name
+    assert sounds.event_is_looping(name) is None
+    assert sounds.pcm(name)[2][0][0] == 700
+
+
 def test_wav_bytes_is_a_readable_wav(tmp_path):
     import io
     import wave
@@ -540,6 +709,16 @@ def test_a_known_pitched_sound_decodes(real_sounds):
     assert len(per_channel[0]) % 64 == 0
     assert len(per_channel[0]) > 64
     assert any(sample != 0 for sample in per_channel[0])
+
+
+@pytest.mark.gamedata
+def test_the_full_named_catalog_exposes_every_play_event_and_previewable_media(real_sounds):
+    events = real_sounds.event_catalog()
+    assert len(events) >= 7500
+    assert sum(real_sounds.can_preview(event.name) for event in events) >= 7300
+    assert real_sounds.event("play_pianoc4") is not None
+    assert real_sounds.can_preview("play_pianoc4") is True
+    assert all(event.name.lower().startswith("play_") for event in events)
 
 
 @pytest.mark.gamedata

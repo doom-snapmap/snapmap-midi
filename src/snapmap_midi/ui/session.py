@@ -30,7 +30,7 @@ from threading import RLock
 
 from snapmap_midi import paths
 from snapmap_midi import settings as settings_module
-from snapmap_midi.compile import compile_to_rawmap
+from snapmap_midi.compile import compile_to_rawmap, installed_event_is_looping
 from snapmap_midi.music import analysis
 from snapmap_midi.music.midi import parse_notes
 from snapmap_midi.music.voices import allocate_voices, thin_polyphony
@@ -376,6 +376,7 @@ class Session:
                 note_index=self._note_index,
                 channel_mutes=levers["channel_mutes"],
                 drum_key_overrides=levers["drum_key_overrides"],
+                event_is_looping=installed_event_is_looping,
             )
             decaying = [note for note in notes if not note.sustained]
             sustained = [note for note in notes if note.sustained]
@@ -553,6 +554,7 @@ class Session:
             note_index=self._note_index,
             channel_mutes=levers["channel_mutes"],
             drum_key_overrides=levers["drum_key_overrides"],
+            event_is_looping=installed_event_is_looping,
         )
         sustained = [note for note in notes if note.sustained]
         _apply_caps(sustained, levers)

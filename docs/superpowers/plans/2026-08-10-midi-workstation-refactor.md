@@ -13,7 +13,7 @@ resolution path.
 
 - [x] Extend channel settings with an optional exact `sound` choice while
   preserving existing `family` sidecars.
-- [x] Validate exact choices against all names in the shipped speaker palette.
+- [x] Validate curated exact choices directly and other exact choices as bounded DOOM Play event identifiers.
 - [x] Make selection precedence explicit: mute, exact sound, selected pitched
   family, automatic percussion map, automatic General MIDI family.
 - [x] Allow a selected pitched family on a percussion channel without requiring
@@ -158,7 +158,7 @@ resolution path.
   high-DPI Segoe UI labels.
 - [x] Add a persistent pointer- and keyboard-adjustable divider with dynamic
   minimum widths for the channel list and piano roll.
-- [x] Replace text glyphs and bespoke control drawings with a bundled eight-icon
+- [x] Replace text glyphs and bespoke control drawings with a purpose-trimmed
   Lucide SVG subset and ship its license without a runtime or network fetch.
 - [x] Extend asset coverage and re-run focused and complete validation.
 
@@ -222,3 +222,31 @@ Release target: `v0.3.3`, created only after the pushed `main` commit passes CI.
 - [x] Bump the package version to 0.3.4 and run complete validation.
 
 Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
+
+## 18. Expose the installed full-game sound catalog
+
+- [x] Reverse and parse the generated soundbanksinfo.events catalog for event names,
+  Wwise paths, buses, environments, numeric IDs, durations, and loop flags.
+- [x] Stream soundbanksinfo.xml as a duration-type overlay so Mixed events are stopped
+  like Infinite events instead of leaking an emitter.
+- [x] Index language-neutral banks plus one installed localization and resolve the first
+  available media source for each event.
+- [x] Offer every named Play event while excluding Stop/control records. Mark direct-media
+  events as locally previewable and retain engine-only music/state/legacy/DLC events for
+  export. The reference retail install has 7,589 choices and 7,353 local previews.
+- [x] Keep automatic MIDI and pitched-family mapping on the curated 890-name palette.
+  Treat the full catalog as an exact manual channel override with no pitch shifting.
+- [x] Replace the channel select with a lazy searchable file-explorer modal, organized by
+  Wwise folders and paginated to bound live DOM rows.
+- [x] Show readable names, exact event strings, paths, buses, loop behavior, durations,
+  numeric IDs, preview availability, and per-event audition controls where available.
+- [x] Match the SnapMap Plus modal overlay, token, radius, border, and shadow contract;
+  extend only the purpose-trimmed local Lucide subset.
+- [x] Fall back to the 890-name palette when installed metadata is unavailable and keep
+  the optional extract command limited to that offline palette.
+- [x] Add synthetic parser, localization, source-fallback, settings, scheduling, bridge,
+  asset-contract, and real-install catalog coverage.
+- [x] Update README, user, capability, game-data, architecture, contributor, design, and
+  implementation-plan documentation.
+- [x] Run complete automated validation.
+- [ ] Receive user acceptance before assigning a release target.

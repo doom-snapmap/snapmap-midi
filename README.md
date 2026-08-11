@@ -6,11 +6,16 @@ DOOM (2016)'s SnapMap editor.**
 Feed it a `.mid`; it builds a room with a switch that plays the song. Seven real songs have
 been verified end to end in game.
 
-**This repo ships NO game data** — no declaration files, no saved maps, no audio. It ships
-the *names* of the sounds the game already has, which is what lets it work out of the box.
-Preview reads your own DOOM install in place and decodes only the sounds the current song uses
-into memory. There is no audio setup or download step; an optional CLI-built offline cache is
-still available, and neither source is ever part of the package or repository.
+**This repo ships NO game data** — no declaration files, saved maps, event catalogs, or
+audio. It ships a curated 890-name, 24-category palette for deterministic automatic MIDI
+mapping. When DOOM is installed, the workstation reads the game's own named-event metadata
+and retail soundbanks in place. The reference retail installation exposes all 7,589 named
+Play events; 7,353 of those also resolve to standalone media for local audition. Complex
+interactive-music, state, legacy, and DLC events remain valid in-game export choices and are
+marked accordingly instead of being hidden. Counts can vary with game edition and installed
+localization. The optional CLI-built offline cache remains limited to the curated 890-sound
+palette.
+
 Every line here is our own implementation, built from our own reverse-engineering of the map
 format; no decompiled or copied content.
 
@@ -146,8 +151,10 @@ snapmap-midi
 That plain command is the application launcher; there is no audition command. Import a MIDI
 file and the complete converted arrangement appears on one screen: every channel, including
 percussion, lives in the left column and the read-only piano roll fills the rest of the
-window. Choose Automatic mapping, one of the pitched instrument sets, or any exact sound in
-the full 890-sound SnapMap speaker palette for each channel.
+window. Choose Automatic mapping, one of the pitched instrument sets, or open the searchable
+sound browser for an exact event. With DOOM installed, that browser presents the complete
+retail Play-event catalog as a folder tree and marks which events support local audition;
+without installed metadata it falls back to the 890 curated SnapMap palette.
 
 There is one Play/Pause control for the whole converted song. Its playhead sweeps across the
 entire note surface and can be dragged to seek, as can the transport scrubber. The note under the
@@ -159,9 +166,10 @@ responsive during playback, including when the pointer is over the disabled hori
 scrollbar. Dragging the channel/roll divider trades width between the two panes, while bottom
 controls set the visual note grid, time signature, and playhead-anchored pitch/time zoom without
 changing the source notes. Conversion limits open in a nonblocking inspector instead of an import
-wizard or a separate tab. If DOOM is installed, preview indexes its retail soundbanks in place
-and prepares only the sounds selected by the current song. There is no audio setup step;
-conversion and export continue to work when preview audio is unavailable.
+wizard or a separate tab. If DOOM is installed, preview indexes its retail soundbanks and generated event hierarchy in
+place, including one installed localization, and prepares only the sounds selected by the
+current song. There is no audio setup step; conversion and export continue to work when preview
+audio is unavailable.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
 produced it. Open that song again and the choices are already there;
@@ -200,8 +208,11 @@ snapmap-midi compile song.mid --out-dir D:/songs/bach
 ## How it works
 
 A MIDI file streams note-on and note-off events. snapmap-midi pairs them into notes, maps
-each note's instrument program to a family of available sounds and its pitch to the nearest
-sound in that family, then schedules the result as timed events on a timeline entity.
+each note's instrument program to a curated pitched family and its pitch to the nearest sound
+in that family, then schedules the result as timed events on a timeline entity. That automatic
+algorithm deliberately remains constrained to sounds with measured pitch coverage. A manually
+chosen full-game event bypasses pitch mapping and triggers that exact event for every note on
+its channel.
 
 The arrangement then splits in two, because the halves must be scheduled differently:
 
@@ -266,7 +277,7 @@ never the ones above.
 | `src/snapmap_midi/rawmap/` | the map-authoring core — codec, value builders, documents, reference slots, the blank-map template |
 | `src/snapmap_midi/sound/` | the game's sound surface — the palette, event calls, timeline authoring |
 | `src/snapmap_midi/music/` | the MIDI domain — parsing, General MIDI tables, voice allocation |
-| `src/snapmap_midi/audio/` | local preview — installed-bank discovery, Wwise decoding, optional offline cache |
+| `src/snapmap_midi/audio/` | local preview — installed event catalog, bank discovery, Wwise decoding, optional offline cache |
 | `src/snapmap_midi/ui/` | the desktop workstation — its session, preview manifest, Javascript bridge, native chrome, and markup |
 | `src/snapmap_midi/data/` | the shipped sound palette, and curated ear-labels for it |
 | `tools/` | maintainer scripts, not part of the installed package |

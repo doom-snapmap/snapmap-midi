@@ -7,8 +7,8 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<!-- Curated Lucide subset: minus, square, copy, x, play, pause, triangle-alert,
-     and circle-alert. The app ships no icon runtime or unused icon catalog.
+<!-- Curated Lucide subset for window chrome, transport, notifications, and
+     the sound browser. The app ships no icon runtime or unused icon catalog.
      See LUCIDE_LICENSE.txt beside this file. -->
 <svg class="icon-sprite" aria-hidden="true" focusable="false">
   <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M5 12h14"></path></symbol>
@@ -19,6 +19,14 @@
   <symbol id="icon-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"></rect><rect x="5" y="3" width="5" height="18" rx="1"></rect></symbol>
   <symbol id="icon-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></symbol>
   <symbol id="icon-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y1="8" y2="12"></line><line x1="12" x2="12.01" y1="16" y2="16"></line></symbol>
+  <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></symbol>
+  <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></symbol>
+  <symbol id="icon-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.8 2.9l-2.3 4.2A2 2 0 0 1 17.7 18H5.1a2 2 0 0 1-2-2.3L4.5 7A2 2 0 0 1 6.5 5H9l2 3h7a2 2 0 0 1 2 2"></path></symbol>
+  <symbol id="icon-volume-2" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></symbol>
+  <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"></path></symbol>
+  <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></symbol>
+  <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"></path></symbol>
+  <symbol id="icon-music-2" viewBox="0 0 24 24"><circle cx="8" cy="18" r="4"></circle><path d="M12 18V2l7 4"></path></symbol>
 </svg>
 <!-- Track rows and category controls are built from the Python payload. The
      fixed markup is the one-screen workstation shell: desktop menus, global
@@ -215,6 +223,43 @@
     <span id="stamp"></span>
   </div>
 
+</div>
+
+<div class="modal-overlay sound-browser-overlay" id="soundBrowserOverlay" hidden>
+  <section class="modal sound-browser-modal" role="dialog" aria-modal="true" aria-labelledby="soundBrowserTitle">
+    <header class="sound-browser-head">
+      <div>
+        <strong id="soundBrowserTitle">Choose channel sound</strong>
+        <div class="muted" id="soundBrowserSubtitle">Browse installed DOOM events</div>
+      </div>
+      <button type="button" class="close-button" id="soundBrowserClose" aria-label="Close sound browser"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
+    </header>
+    <div class="sound-browser-search">
+      <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>
+      <input type="text" id="soundBrowserSearch" autocomplete="off" spellcheck="false" placeholder="Search event names, folders, buses, or Wwise IDs" aria-label="Search sounds">
+      <span class="sound-browser-source mono" id="soundBrowserSource">Loading...</span>
+    </div>
+    <div class="sound-browser-body">
+      <nav class="sound-tree" id="soundTree" aria-label="Sound folders"></nav>
+      <section class="sound-results">
+        <div class="sound-results-head">
+          <span class="sound-breadcrumb" id="soundBreadcrumb">All DOOM sounds</span>
+          <span class="muted" id="soundResultCount">0 sounds</span>
+        </div>
+        <div class="sound-result-list" id="soundResultList" role="listbox" aria-label="Sounds"></div>
+        <div class="sound-pagination">
+          <button type="button" class="btn icon" id="soundPagePrevious" aria-label="Previous sound page"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-left"></use></svg></button>
+          <span class="mono" id="soundPageStatus">Page 1 of 1</span>
+          <button type="button" class="btn icon" id="soundPageNext" aria-label="Next sound page"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg></button>
+        </div>
+      </section>
+    </div>
+    <footer class="sound-browser-foot">
+      <div class="sound-selection" id="soundSelection">Choose an automatic mapping, pitched family, or exact sound.</div>
+      <button type="button" class="btn" id="soundBrowserCancel">Cancel</button>
+      <button type="button" class="btn primary" id="soundBrowserUse" disabled>Use sound</button>
+    </footer>
+  </section>
 </div>
 
 <div class="rz rz-t" hidden></div><div class="rz rz-b" hidden></div><div class="rz rz-l" hidden></div><div class="rz rz-r" hidden></div>

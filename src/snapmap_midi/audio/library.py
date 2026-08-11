@@ -31,6 +31,7 @@ from typing import Optional
 
 from snapmap_midi import paths
 from snapmap_midi.audio import locate, wwise
+from snapmap_midi.music.gm import SUSTAINED
 from snapmap_midi.sound import palette
 
 #: Bumped when the decoder changes what it produces for the same input.
@@ -76,14 +77,90 @@ def cache_dir() -> Path:
 
 
 def expected_names() -> list:
-    """Every sound the cache is meant to hold: the palette, in order.
+    """Every sound the optional offline cache holds: the curated palette.
 
-    The palette rather than the install, because the palette is what a map can
-    actually name. An install holds tens of thousands of media, almost none of
-    which a speaker can be pointed at, and extracting them would turn half a
-    minute into an afternoon and 450 MB into many gigabytes.
+    The installed event browser is intentionally broader. The cache stays at
+    890 conversion-oriented sounds so the compatibility extract command does
+    not duplicate gigabytes of game data.
     """
     return [sound for sounds in palette.load_palette().values() for sound in sounds]
+
+
+def _labels() -> dict:
+    """Curated ear labels flattened to sound name -> short description."""
+    flattened = {}
+    for group in palette.sound_labels().values():
+        for sound, entry in group.items():
+            if isinstance(entry, dict):
+                label = entry.get("heard") or entry.get("role")
+            else:
+                label = entry
+            if label:
+                flattened[sound.lower()] = str(label)
+    return flattened
+
+
+def _event_payload(event, categories, labels, previewable, looping_known=True) -> dict:
+    """One installed catalog record in the browser's serializable shape."""
+    key = event.name.lower()
+    payload = {
+        "id": event.event_id,
+        "name": event.name,
+        "path": event.path,
+        "bus": event.bus,
+        "environment": event.environment,
+        "looping": event.looping,
+        "looping_known": looping_known,
+        "duration_min": event.duration_min,
+        "duration_max": event.duration_max,
+        "previewable": bool(previewable),
+        "palette": key in categories,
+    }
+    category = categories.get(key)
+    if category is not None:
+        payload["category"] = category
+    label = labels.get(key)
+    if label is not None:
+        payload["label"] = label
+    return payload
+
+
+def _palette_catalog(install=None, error=None, previewable=()) -> dict:
+    """The shipped 890-name fallback when no installed catalog is readable."""
+    categories = palette.sound_categories()
+    labels = _labels()
+    previewable = set(previewable)
+    events = []
+    for name in palette.all_sounds():
+        category = categories[name]
+        payload = {
+            "id": wwise.fnv1_32(name),
+            "name": name,
+            "path": "snapmap_palette/%s/" % category,
+            "bus": "SnapMap palette",
+            "environment": "",
+            "looping": category in SUSTAINED or category.startswith("amb_"),
+            "looping_known": True,
+            "duration_min": 0.0,
+            "duration_max": 0.0,
+            "previewable": name in previewable,
+            "palette": True,
+            "category": category,
+        }
+        if name.lower() in labels:
+            payload["label"] = labels[name.lower()]
+        events.append(payload)
+    result = {
+        "source": "palette",
+        "install": str(install) if install is not None else None,
+        "language": None,
+        "count": len(events),
+        "previewable_count": sum(event["previewable"] for event in events),
+        "events": events,
+    }
+    if error is not None:
+        result["error"] = str(error) or error.__class__.__name__
+    return result
 
 
 def _wav_file(name: str) -> Optional[Path]:
@@ -211,7 +288,8 @@ def status(refresh: bool = False) -> dict:
     `ready` remains deliberately strict: every palette sound must be available
     from the installed retail banks, the valid offline cache, or their union.
     A partial source is not "mostly ready" to an editor that promises all 890
-    choices; it is a song whose missing notes become silent without warning.
+    curated choices; it is a song whose missing notes become silent without
+    warning.
 
     Paths come back as strings because this crosses into the window, where a
     `Path` is not a thing that survives the trip.
@@ -242,8 +320,79 @@ def status(refresh: bool = False) -> dict:
     return payload
 
 
+def sound_catalog(refresh: bool = False) -> dict:
+    """Every named Play event from DOOM, or the shipped palette fallback.
+
+    Names and authoring paths come from the installed soundbanksinfo.events
+    file. HIRC/media resolution is reported separately as ``previewable``:
+    interactive music, state transitions and legacy/DLC references remain
+    valid strings for an exported map even when they have no standalone local
+    sample. Nothing is extracted or copied.
+    """
+    install, source, source_error = _source(refresh=refresh)
+    cached_names = _cached_names(expected_names())
+    if source is None:
+        return _palette_catalog(install, source_error, cached_names)
+
+    try:
+        events = source.event_catalog()
+    except _SOUND_ERRORS as exc:
+        available = source.names(expected_names()) | cached_names
+        return _palette_catalog(install, exc, available)
+    if not events:
+        available = source.names(expected_names()) | cached_names
+        return _palette_catalog(install, previewable=available)
+
+    categories = {name.lower(): category for name, category in palette.sound_categories().items()}
+    labels = _labels()
+    payloads = [
+        _event_payload(
+            event,
+            categories,
+            labels,
+            previewable=source.can_preview(event.name),
+            looping_known=source.event_is_looping(event.name) is not None,
+        )
+        for event in events
+    ]
+    return {
+        "source": "game",
+        "install": str(install) if install is not None else None,
+        "language": source.language,
+        "count": len(payloads),
+        "previewable_count": sum(event["previewable"] for event in payloads),
+        "events": payloads,
+    }
+
+
+def event_info(name: str):
+    """Installed named Play-event metadata for a name, or None."""
+    _install, source, _error = _source()
+    if source is None:
+        return None
+    try:
+        return source.event(name)
+    except _SOUND_ERRORS:
+        return None
+
+
+def event_is_looping(name: str) -> Optional[bool]:
+    """Whether an installed exact event needs an explicit stop.
+
+    None means there is no trustworthy installed record. Callers compiling a
+    manually entered event can then choose the conservative behavior.
+    """
+    _install, source, _error = _source()
+    if source is None:
+        return None
+    try:
+        return source.event_is_looping(name)
+    except _SOUND_ERRORS:
+        return None
+
+
 def read_wavs(names) -> dict:
-    """Decode requested palette sounds from the game, then try offline WAVs.
+    """Decode requested sounds from the game, then try offline WAVs.
 
     The caller already limits this list to the current conversion. One bank
     index is reused for the batch, and one decode lane prevents two overlapping

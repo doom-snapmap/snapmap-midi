@@ -17,12 +17,13 @@ Opus and no native library anywhere below -- every embedded medium in these
 banks is IMA ADPCM, and adding a dependency to decode formats that are not
 present would buy nothing and cost the promotion.
 
-Every constant here was measured against a retail install: 890 of 890 palette
-sounds decode, durations agree with the bank metadata, and piano notes land on
-equal temperament. That matters because the plausible mistakes in this format
-do not raise. They produce audio that is a little too long, or clicks once per
-frame, or is a tritone off -- and still plays. The four that bite are called
-out at the code they would break.
+Every constant here was measured against a retail install: 890 of 890 curated
+palette sounds decode, the generated catalog enumerates every named Play event,
+durations agree with the bank metadata, and piano notes land on equal
+temperament. That matters because the plausible mistakes in this format do not
+raise. They produce audio that is a little too long, or clicks once per frame,
+or is a tritone off -- and still plays. The four that bite are called out at
+the code they would break.
 """
 
 from __future__ import annotations
@@ -32,9 +33,25 @@ import io
 import os
 import struct
 import wave
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, replace
 
 #: Where an install keeps its soundbanks, relative to the install root.
 SOUND_SUBDIR = os.path.join("base", "sound", "soundbanks", "pc")
+
+#: The generated event-name catalog beside the retail banks. Unlike HIRC,
+#: this file keeps the authoring names and hierarchy needed by a sound browser.
+EVENT_CATALOG_NAME = "soundbanksinfo.events"
+
+#: The larger generated metadata catalog. It distinguishes Mixed events, whose
+#: finite and infinite branches the compact event catalog cannot tell apart.
+EVENT_XML_NAME = "soundbanksinfo.xml"
+
+#: Bytes after the four strings in each soundbanksinfo.events record.
+EVENT_RECORD_TRAILER_BYTES = 25
+
+#: Localised voice banks loaded alongside the language-neutral retail banks.
+DEFAULT_LANGUAGE = "English(US)"
 
 #: The bank generator version every offset below was measured against. All 22
 #: banks in the retail install carry it.
@@ -71,6 +88,112 @@ class UnsupportedBankVersionError(ValueError):
     it would resolve plausible-looking rubbish and decode it into noise, which
     is far harder to diagnose than a refusal naming the version.
     """
+
+
+@dataclass(frozen=True)
+class SoundEvent:
+    """One named Wwise event from the installed game's generated catalog."""
+
+    event_id: int
+    name: str
+    path: str
+    bus: str
+    environment: str
+    looping: bool
+    duration_min: float
+    duration_max: float
+
+
+def parse_event_catalog(path) -> tuple[SoundEvent, ...]:
+    """Read the generated named-event catalog beside the retail banks.
+
+    HIRC stores only hashed object ids, so it cannot enumerate event names.
+    The soundbanksinfo.events file is the game's own generated bridge between
+    those ids and the Wwise authoring hierarchy. Its record count and ids are
+    big endian, its string lengths are little endian, and its duration floats
+    are big endian. Those mixed byte orders are part of the file format.
+    """
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) < 4:
+        raise ValueError("%s: event catalog is truncated before its record count" % path)
+
+    count = struct.unpack(">I", data[:4])[0]
+    cursor = 4
+    events = []
+    fields = ("name", "path", "bus", "environment")
+    for record in range(count):
+        if cursor + 4 > len(data):
+            raise ValueError("%s: event catalog is truncated at record %d" % (path, record))
+        event_id = struct.unpack(">I", data[cursor : cursor + 4])[0]
+        cursor += 4
+        strings = []
+        for field in fields:
+            if cursor + 4 > len(data):
+                raise ValueError(
+                    "%s: event catalog is truncated before %s in record %d"
+                    % (path, field, record)
+                )
+            size = struct.unpack("<I", data[cursor : cursor + 4])[0]
+            cursor += 4
+            if cursor + size > len(data):
+                raise ValueError(
+                    "%s: event catalog has an invalid %s length in record %d"
+                    % (path, field, record)
+                )
+            try:
+                value = data[cursor : cursor + size].decode("utf-8").rstrip("\x00")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    "%s: event catalog has invalid UTF-8 in %s for record %d"
+                    % (path, field, record)
+                ) from exc
+            strings.append(value)
+            cursor += size
+
+        end = cursor + EVENT_RECORD_TRAILER_BYTES
+        if end > len(data):
+            raise ValueError(
+                "%s: event catalog is truncated in the trailer for record %d" % (path, record)
+            )
+        trailer = data[cursor:end]
+        cursor = end
+        duration_min, duration_max = struct.unpack(">ff", trailer[5:13])
+        events.append(
+            SoundEvent(
+                event_id,
+                strings[0],
+                strings[1],
+                strings[2],
+                strings[3],
+                bool(trailer[0]),
+                duration_min,
+                duration_max,
+            )
+        )
+    # A small generated footer follows the declared records. It contains no
+    # event entries, so parsing ends at the record count instead of guessing at
+    # the footer's undocumented shape.
+    return tuple(events)
+
+
+def parse_looping_event_names(path) -> frozenset[str]:
+    """Names whose generated Wwise duration type is Infinite or Mixed.
+
+    The compact event catalog marks Infinite directly but collapses Mixed to
+    the same bytes as ordinary one-shots. The XML overlay is therefore needed
+    to prevent a mixed event's infinite branch from leaking a speaker emitter.
+    ElementTree is streamed and cleared so the 26 MB retail file is never held
+    as a second in-memory document.
+    """
+    looping = set()
+    for _action, element in ET.iterparse(path, events=("end",)):
+        if element.tag.rsplit("}", 1)[-1] == "Event":
+            name = element.get("Name")
+            if name and element.get("DurationType") in {"Infinite", "Mixed"}:
+                looping.add(name.lower())
+        element.clear()
+    return frozenset(looping)
 
 
 # ---------------------------------------------------------------- name hashing
@@ -194,7 +317,7 @@ def parse_akpk(path) -> dict:
         "<IIIII", buffer[cursor : cursor + 20]
     )
     cursor += 20
-    cursor += language_size  # the language map: nothing here is localised
+    cursor += language_size  # selected package path already scopes the language
     cursor += bank_size  # the soundbank table: banks are read directly instead
     entries = {}
     count = struct.unpack("<I", buffer[cursor : cursor + 4])[0]
@@ -367,86 +490,161 @@ def _clamp_index(value: int) -> int:
 
 
 class DoomSounds:
-    """Every sound in one install, addressable by name.
+    """Named Play events and locally previewable media in one retail install.
 
-    Built once and reused. The constructor walks the retail chunk tables under
-    `base/sound/soundbanks/pc` and seeks straight past their audio. It never
-    recursively discovers mod banks elsewhere in the install: runtime-injected
-    sounds need an explicit catalog and precedence contract before they can
-    safely join the stock SnapMap palette.
+    The language-neutral banks and one localised voice-bank directory are
+    indexed in place. Mod banks outside the retail sound directory remain
+    deliberately excluded until they have an explicit precedence contract.
     """
 
-    def __init__(self, install_dir):
+    def __init__(self, install_dir, language=DEFAULT_LANGUAGE):
         base = os.path.join(os.fspath(install_dir), SOUND_SUBDIR)
         if not os.path.isdir(base):
             raise SoundsUnavailableError(
                 "no soundbanks under %s -- this does not look like a game install" % base
             )
         self.install_dir = install_dir
+        self.sound_dir = base
+
+        locale = None
+        preferred = os.path.join(base, language) if language else None
+        if preferred is not None and os.path.isdir(preferred):
+            locale = preferred
+        else:
+            candidates = []
+            for candidate in sorted(glob.glob(os.path.join(base, "*"))):
+                if os.path.isdir(candidate) and (
+                    glob.glob(os.path.join(candidate, "*.bnk"))
+                    or glob.glob(os.path.join(candidate, "*.pck"))
+                ):
+                    candidates.append(candidate)
+            locale = candidates[0] if candidates else None
+        self.language = os.path.basename(locale) if locale is not None else None
+
         self.objects: dict = {}
         self.media: dict = {}
-        for path in sorted(glob.glob(os.path.join(base, "*.bnk"))):
-            objects, media = parse_bnk(path)
+        banks = sorted(glob.glob(os.path.join(base, "*.bnk")))
+        if locale is not None:
+            banks += sorted(glob.glob(os.path.join(locale, "*.bnk")))
+        for bank_path in banks:
+            objects, media = parse_bnk(bank_path)
             self.objects.update(objects)
             for media_id, (offset, size) in media.items():
-                self.media.setdefault(media_id, (path, offset, size))
+                self.media.setdefault(media_id, (bank_path, offset, size))
+
         self.stream: dict = {}
-        for path in sorted(glob.glob(os.path.join(base, "*.pck"))) + sorted(
-            glob.glob(os.path.join(base, "*", "*.pck"))
-        ):
-            self.stream.update(parse_akpk(path))
+        packages = sorted(glob.glob(os.path.join(base, "*.pck")))
+        if locale is not None:
+            packages += sorted(glob.glob(os.path.join(locale, "*.pck")))
+        for package_path in packages:
+            self.stream.update(parse_akpk(package_path))
+
+        self._events: tuple[SoundEvent, ...] | None = None
+        self._event_by_name: dict[str, SoundEvent] = {}
+        self._previewable_events: set[str] = set()
+        self._loop_metadata_complete = False
 
     def _locate(self, media_id: int):
-        """(path, offset, size) for a media id, or None when it is in neither.
+        """(path, offset, size) for a media id, or None when absent.
 
-        The `.pck` copy wins over the bank copy whenever both exist, and that
-        ordering is load-bearing. A media id present in both is a **prefetch
-        stub** in the bank: the first fraction of a second, kept inline so the
-        engine can start playing while the stream seeks. It is a valid RIFF
-        with a valid header and it decodes cleanly -- into a sound that stops
-        after a few frames. Nothing about it announces that it is a fragment.
+        A package copy wins over an embedded bank copy because the latter can
+        be only the short prefetch stub for a streamed sound.
         """
         return self.stream.get(media_id) or self.media.get(media_id)
 
     def _media_location(self, name: str):
-        """Where a name's audio lives, by the same first-source rule `pcm` uses."""
-        sources = resolve_sources(self.objects, fnv1_32(name))
-        return self._locate(sources[0][0]) if sources else None
+        """The first available medium named by an event.
+
+        Wwise containers can list multiple sources. Some retail events have a
+        missing first source and a valid later source, so availability is
+        decided by the first source present in this install rather than by list
+        position alone.
+        """
+        for media_id, _stream_type in resolve_sources(self.objects, fnv1_32(name)):
+            location = self._locate(media_id)
+            if location is not None:
+                return location
+        return None
 
     def names(self, candidates) -> set:
-        """Which of `candidates` this install can actually produce audio for.
-
-        Takes the candidates rather than enumerating them, because a bank
-        stores hashes and not names. `fnv1_32` is one-way, so there is no set
-        of names in here to hand back -- the only way to learn that a name
-        exists is to hash it and look. A caller that wants "everything" passes
-        the sound palette, which is the list this product cares about anyway.
-
-        Checked by the same first-source rule `pcm` uses, so a name in this set
-        is a name `pcm` will not raise on.
-        """
+        """Which candidate event names this install can decode."""
         return {name for name in candidates if self._media_location(name) is not None}
 
-    def pcm(self, name: str) -> tuple:
-        """A sound name to (channels, sample rate, per-channel samples).
+    def event_catalog(self) -> tuple[SoundEvent, ...]:
+        """Every named Play event declared by this installed game.
 
-        Raises KeyError naming the sound for both ways this can fail -- the
-        name resolves to no event, or the event's media is not in this install
-        (a DLC sound in a base-game install reaches the second). Both are
-        "this install cannot play that", which is a caller's problem to route
-        around rather than an error in the reading.
+        The generated catalog is authoritative for event strings and authoring
+        hierarchy. A Play event can still be an interactive-music graph, state
+        transition, legacy/DLC reference, or another engine-only composite
+        with no single medium to decode. Those remain valid map choices and are
+        retained here; ``can_preview`` records the separate local-audio fact.
+        Stop, Pause, Resume and Set events are controls rather than sounds and
+        are deliberately excluded from the chooser.
         """
+        if self._events is None:
+            catalog_path = os.path.join(self.sound_dir, EVENT_CATALOG_NAME)
+            if not os.path.isfile(catalog_path):
+                self._events = ()
+            else:
+                xml_path = os.path.join(self.sound_dir, EVENT_XML_NAME)
+                looping_names = frozenset()
+                if os.path.isfile(xml_path):
+                    try:
+                        looping_names = parse_looping_event_names(xml_path)
+                    except (OSError, ET.ParseError):
+                        pass
+                    else:
+                        self._loop_metadata_complete = True
+                events = []
+                seen = set()
+                for event in parse_event_catalog(catalog_path):
+                    key = event.name.lower()
+                    if not key.startswith("play_") or key in seen:
+                        continue
+                    seen.add(key)
+                    if key in looping_names and not event.looping:
+                        event = replace(event, looping=True)
+                    if self._media_location(event.name) is not None:
+                        self._previewable_events.add(key)
+                    events.append(event)
+                self._events = tuple(events)
+            self._event_by_name = {event.name.lower(): event for event in self._events}
+        return self._events
+
+    def event(self, name: str) -> SoundEvent | None:
+        """A named Play event, case-insensitively, or None."""
+        self.event_catalog()
+        return self._event_by_name.get(name.lower())
+
+    def can_preview(self, name: str) -> bool:
+        """Whether a named Play event resolves to one local audio medium."""
+        self.event_catalog()
+        return name.lower() in self._previewable_events
+
+    def event_is_looping(self, name: str) -> bool | None:
+        """Known loop behavior, or None without the complete XML overlay."""
+        event = self.event(name)
+        if event is None:
+            return None
+        if event.looping:
+            return True
+        return False if self._loop_metadata_complete else None
+
+    def pcm(self, name: str) -> tuple:
+        """A sound name to (channels, sample rate, per-channel samples)."""
         sources = resolve_sources(self.objects, fnv1_32(name))
         if not sources:
             raise KeyError("%s: no such Wwise event in these soundbanks" % name)
-        location = self._locate(sources[0][0])
+        location = self._media_location(name)
         wem = _read_slice(location) if location else None
         if not wem or wem[:4] != b"RIFF":
             raise KeyError("%s: the media it names is not present in this install" % name)
         fmt, data = _riff_chunks(wem)
         if fmt is None or data is None:
             raise KeyError("%s: its media has no fmt or no data chunk" % name)
-        tag, channels, rate, _bytes_per_second, align, _bits = struct.unpack("<HHIIHH", fmt[:16])
+        tag, channels, rate, _bytes_per_second, align, _bits = struct.unpack(
+            "<HHIIHH", fmt[:16]
+        )
         if tag != WWISE_IMA_FORMAT_TAG:
             raise NotImplementedError(
                 "%s: format tag 0x%04x, and only 0x%04x (Wwise IMA ADPCM) is decoded here"
@@ -455,18 +653,16 @@ class DoomSounds:
         return channels, rate, decode_wwise_ima(data, channels, align)
 
     def wav_bytes(self, name: str) -> bytes:
-        """The sound as a complete little-endian PCM16 `.wav`, in memory.
-
-        Bytes rather than a written file because the two callers want
-        different things -- one writes a cache entry, the other hands the bytes
-        to a page -- and a decoder that insists on a filesystem forces the
-        second one to invent a temporary file it then has to clean up.
-        """
+        """The sound as a complete little-endian PCM16 WAV, in memory."""
         channels, rate, per_channel = self.pcm(name)
         if channels == 1:
             flat = per_channel[0]
         else:
-            flat = [per_channel[c][i] for i in range(len(per_channel[0])) for c in range(channels)]
+            flat = [
+                per_channel[channel][index]
+                for index in range(len(per_channel[0]))
+                for channel in range(channels)
+            ]
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as writer:
             writer.setnchannels(channels)

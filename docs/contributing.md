@@ -75,7 +75,7 @@ including the PowerShell execution-policy fix. Every command in this guide works
 You need none. The sound palette ships with the package and maps are authored from nothing,
 so a fresh clone compiles real songs and runs the whole suite green.
 
-The four `gamedata`-marked audio tests are the exception in the literal sense: they run only
+The five `gamedata`-marked audio tests are the exception in the literal sense: they run only
 when a real install can be found and otherwise skip. Bank parsing, direct providers, decoding,
 offline fallback, mod isolation, and UI behaviour are covered with synthetic data and need no game.
 
@@ -101,7 +101,7 @@ fully configured contributor.
 python -m pytest
 ```
 
-Four `savedmap` tests skip when no saved-map artifacts are configured. Four `gamedata` tests
+Four `savedmap` tests skip when no saved-map artifacts are configured. Five `gamedata` tests
 also skip when no DOOM install is available. Those skips are expected; avoid pinning the
 overall pass count here because every added regression test changes it.
 
@@ -142,9 +142,11 @@ Everything that changes the conversion is decided in Python. The preview manifes
 contains resolved sounds, original MIDI pitches, effective start/end times, sustained versus
 decaying behavior, and speaker-reuse cutoffs. JavaScript may convert those facts to canvas
 coordinates and Web Audio times; it must not resolve a family, reapply an engine limit, or
-invent a second note list. The same rule bans a sound-family or sound name from appearing in
-the markup: every picker option comes from the bridge catalog, which derives all 24
-categories and all 890 names from the palette.
+invent a second note list. The same rule bans hard-coded sound families or game events from the markup. The startup
+catalog derives automatic and pitched-family choices from the shipped 24-category,
+890-identifier palette. The complete installed catalog arrives through a separate lazy bridge
+when the sound-browser modal opens. Preserve its folder indexing, global search, and bounded
+pagination; rendering every installed event as a live select option or DOM row is a regression.
 
 The shared design contract comes from Snapmap Plus: the light and dark tokens, Segoe UI and
 Consolas roles, 30 px menu bar, fields, buttons, status bar, toast, brand asset, window
@@ -159,8 +161,9 @@ assertion when a new icon is actually needed rather than adding an icon runtime 
 fetch. Keep `LUCIDE_LICENSE.txt` in the shipped `web/` assets. Do not reintroduce tabs or
 per-row Play controls.
 
-Audio previews are optional and local. Use the synthetic fixtures for ordinary bank indexing,
-direct decoding, fallback, and mod-isolation work. Running `snapmap-midi extract` against a real
+Audio previews are optional and local. Use the synthetic fixtures for compact event-catalog
+parsing, XML loop overlays, localized bank indexing, direct decoding, fallback, and
+mod-isolation work. Running `snapmap-midi extract` against a real
 install is an explicit offline-cache test that writes roughly 450 MB under the user's
 application-data folder, not the checkout; never turn that cache into a fixture.
 
