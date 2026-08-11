@@ -260,6 +260,8 @@ Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
   relative natural-playback reference.
 - [x] Use one integer pitch/dB expression model for preview and Timeline export.
 - [x] Add sparse per-note pitch/volume overrides and the Note expression inspector.
+- [x] Move channel-wide pitch following and root/reference controls into a dedicated
+  Channel settings inspector opened from the channel row.
 - [x] Isolate decaying notes that need pitch or gain while retaining the neutral shared path.
 - [x] Complete the separate
   [pitch/dynamics architecture plan](2026-08-11-pitch-dynamics-note-inspector-architecture.md).

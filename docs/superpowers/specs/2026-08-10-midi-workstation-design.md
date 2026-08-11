@@ -32,7 +32,7 @@ The application has one persistent workspace:
    time, and a scrubber.
 3. A resizable track column on the left. Every MIDI channel, including
    percussion, is one row with its channel number, source program, sound
-   assignment, M/S controls, and click-to-focus editing state. Its divider trades width with the roll and
+   assignment, inline stateful mute/solo icons, and click-to-focus editing state. Its divider trades width with the roll and
    preserves the chosen size across sessions.
 4. A piano-roll surface on the right. Time runs horizontally, pitch vertically,
    notes are colored by channel, and a high-contrast playhead sweeps across the
@@ -166,7 +166,9 @@ current song position. During playback, the playhead sweeps through the visible
 passage; following returns it near the left third only when the viewport advances.
 At inspection sizes, notes carry pitch names. Source composition remains read-only:
 notes cannot be created, deleted, moved in time, or resized. Clicking a note may edit only its
-playback-only SnapMap pitch/volume expression in the right-side inspector.
+playback-only SnapMap pitch/volume expression in the right-side inspector. Clicking a channel
+opens a separate inspector for settings shared by every note on that channel, beginning with its
+Follow MIDI note mode.
 
 The implementation separates the static roll from the playhead and hover overlays.
 Whole-song overview uses a bounded full-height raster cache for cheap vertical
@@ -210,9 +212,9 @@ triangle and compact count badge communicate state without competing with the
 song surface. The adjacent Volume slider is a persisted -60 through +20 dB global
 offset, defaults to 0 dB, and affects both full-song preview and rawmap export.
 
-Notifications opens a nonblocking right-side inspector in the same position as
-Conversion; opening one closes the other. The inspector shows the complete
-warning array, one message per row, with the channel list's faint separators.
+Notifications opens a nonblocking right-side inspector in the same position as Conversion,
+Channel settings, and Note expression; opening one closes the others. The inspector shows the
+complete warning array, one message per row, with the channel list's faint separators.
 It has an explicit close button, toggles from its control-plane button, closes
 with `Escape`, and shows a quiet empty state when the current conversion has no
 warnings. The audio-source banner remains separate because it reports preview
@@ -241,7 +243,7 @@ The shell continues to use Snapmap Plus's exact light/dark tokens, Segoe UI and
 Consolas typography, status bar, toast treatment, native frame, and window
 controls. The shared workspace uses Snapmap Plus's 8 px panel radius. A curated
 local Lucide sprite supplies only the symbols used by the window, transport,
-notifications, inspectors, and sound browser at one normalized size; it introduces
+channel mixer, notifications, inspectors, and sound browser at one normalized size; it introduces
 no network or runtime dependency. The workstation layout and conventional menu
 behavior are new; the product identity is not.
 

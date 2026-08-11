@@ -308,6 +308,12 @@ playing; the playhead never starts an all-events active-note scan. Indexed hit t
 Note expression inspector for a note, while empty surface input keeps the existing seek path.
 Selection uses an outline and does not become a playback animation.
 
+Channel-row selection opens a separate Channel settings inspector while retaining the existing
+display-only focus filter. That inspector owns exact-sound `pitch_follow`, root, and relative
+reference edits because they affect every event on the channel. Note expression consumes the
+resolved basis as read-only context and writes only sparse per-note pitch/volume overrides. The
+two inspectors are mutually exclusive, so control scope is also visible in the surface hierarchy.
+
 The manifest's `events` list schedules audible converted audio. Its `display_events` list
 retains mapped notes excluded by mute, solo, or polyphony so the roll can remain truthful.
 Display events are normalized once into 128 pitch buckets sorted by start time. Each bucket
@@ -332,7 +338,7 @@ Zoom captures the playhead's viewport coordinate before resizing and restores th
 against the new time scale. The draggable pane separator stores only the preferred channel
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
 high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, hover, channel
-focus, and which note inspector is open are view state. Global volume, per-note pitch/volume
+focus, and which channel/note inspector is open are view state. Global volume, per-note pitch/volume
 offsets, exact-channel root choices, mute, and multi-solo are conversion state and go through the
 validated settings bridge.
 

@@ -247,6 +247,7 @@ def test_the_interface_ships_only_its_curated_lucide_icon_subset():
         "copy",
         "folder",
         "folder-open",
+        "headphones",
         "minus",
         "music-2",
         "pause",
@@ -255,6 +256,7 @@ def test_the_interface_ships_only_its_curated_lucide_icon_subset():
         "square",
         "triangle-alert",
         "volume-2",
+        "volume-x",
         "x",
     }
     assert "lucide.min.js" not in _HTML
@@ -502,6 +504,8 @@ def test_note_glow_is_hover_only_and_the_playhead_stays_independent():
 
 
 def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_seeks():
+    assert 'class="roll-help"' not in _HTML
+    assert ".roll-help" not in _CSS
     for control in (
         "noteInspector",
         "closeNoteInspector",
@@ -511,20 +515,16 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
         "noteRoot",
         "notePitchRange",
         "notePitchBasisLabel",
-        "noteChannelPitchTitle",
-        "noteRootNumberLabel",
         "notePitchNumber",
         "noteVolumeRange",
         "noteVolumeNumber",
-        "notePitchFollow",
-        "noteRootNumber",
         "noteClampNotice",
         "resetNoteExpression",
     ):
         assert 'id="%s"' % control in _HTML
 
     assert 'class="inspector note-inspector"' in _HTML
-    assert ".note-inspector { width: 390px; }" in _CSS
+    assert ".channel-inspector, .note-inspector { width: 390px; }" in _CSS
     assert 'id: String(event.id || "")' in _JS
     assert "openNoteInspector(hit.record.id)" in _JS
     assert "pausePlayback();\n      openNoteInspector(hit.record.id)" in _JS
@@ -536,13 +536,48 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
 
 
 def test_channel_strip_separates_focus_from_multi_solo_and_mute():
-    assert 'actions.appendChild(mixerButton("mute", "M", "muted"))' in _JS
-    assert 'actions.appendChild(mixerButton("solo", "S", "soloed"))' in _JS
-    assert "SELECTED_CHANNEL = SELECTED_CHANNEL === channel.channel ? null : channel.channel" in _JS
+    assert 'actions.appendChild(mixerButton("mute", "muted"))' in _JS
+    assert 'actions.appendChild(mixerButton("solo", "soloed"))' in _JS
+    assert 'setIcon(mute, entry.muted ? "volume-x" : "volume-2")' in _JS
+    assert 'iconElement(kind === "mute" ? "volume-2" : "headphones")' in _JS
+    assert 'id="icon-volume-x"' in _HTML
+    assert 'id="icon-headphones"' in _HTML
+    assert "openChannelInspector(channel.channel)" in _JS
+    assert "SELECTED_CHANNEL = null;\n          closeChannelInspector();" in _JS
     assert "SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== candidate.channel" in _JS
     assert "STATE.preview.display_events" in _JS
     assert "record.muted || record.soloExcluded || !record.audible || !record.converted" in _JS
-    assert ".track-row.muted-track, .track-row.solo-excluded-track" in _CSS
+    assert ".track-row.muted-track .track-channel" in _CSS
+    assert ".track-mute-toggle.active" in _CSS
+
+
+def test_channel_settings_owns_channel_wide_pitch_following():
+    for control in (
+        "channelInspector",
+        "closeChannelInspector",
+        "channelInspectorSubtitle",
+        "channelPitchFollow",
+        "channelPitchModeHelp",
+        "channelPitchReferenceFields",
+        "channelRootNumber",
+        "channelRootName",
+        "channelRootEvidence",
+        "channelSound",
+        "channelMidiRange",
+        "channelNoteCount",
+    ):
+        assert 'id="%s"' % control in _HTML
+
+    assert 'aria-label="Channel settings"' in _HTML
+    assert "function syncChannelInspector()" in _JS
+    assert "function openChannelInspector(channelNumber)" in _JS
+    assert "function updateSelectedChannelPitch(fields)" in _JS
+    assert "updateSelectedChannelPitch({ pitch_follow: this.checked })" in _JS
+    assert "follow.disabled = !exact" in _JS
+    assert "follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums" in _JS
+    assert "Automatic percussion selects a dedicated sound for each MIDI key" in _JS
+    assert 'id="notePitchFollow"' not in _HTML
+    assert 'id="noteRootNumber"' not in _HTML
 
 
 def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_them():
@@ -568,8 +603,11 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
 def test_bottom_control_plane_exposes_the_persisted_master_volume():
     assert 'id="masterVolume" min="-60" max="20"' in _HTML
     assert 'id="masterVolumeValue"' in _HTML
-    assert 'href="#icon-volume-2"' in _HTML
-    assert ".master-volume-control" in _CSS
+    assert 'class="range-control master-volume-control"' in _HTML
+    assert 'class="range-control zoom-control"' in _HTML
+    assert _HTML.index('id="rollZoom"') < _HTML.index('id="rollZoomValue"')
+    assert ".range-control" in _CSS
+    assert ".master-volume-control .ui-icon" not in _CSS
     assert "applyPatch({ tuning: { master_volume_db: value } }, true)" in _JS
     assert "paintMasterVolume(tuning().master_volume_db)" in _JS
     assert "el('masterVolume').disabled = !song" in _JS
@@ -617,7 +655,8 @@ def test_rendering_caps_pixel_cost_and_throttles_nonvisual_transport_updates():
 
 def test_global_preview_uses_direct_song_scoped_audio_without_setup_extraction():
     assert 'id="audioBanner"' in _HTML
-    assert 'id="slotAudio"' in _HTML
+    assert 'id="slotAudio"' not in _HTML
+    assert "el('audioText')" not in _JS
     assert "api().audio_status(" in _JS
     assert "api().extract_audio(" not in _JS
     assert "api().preview_samples(missing)" in _JS

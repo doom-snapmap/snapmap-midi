@@ -140,8 +140,16 @@ instrument choices resolve sample and pitch without more controls. A stable exac
 also follows MIDI automatically.
 
 When exact-sound analysis fails, the UI says that natural playback is preserved. It offers an
-optional Follow MIDI note checkbox and one reference MIDI note. It does not add more tuning
-sliders or imply that an arbitrary SFX has a real C3 root.
+optional Follow MIDI note checkbox and one reference MIDI note in Channel settings. It does not
+add more tuning sliders or imply that an arbitrary SFX has a real C3 root.
+
+### Channel inspector
+
+Clicking a channel row opens one focused side inspector. Its first setting is Follow MIDI note.
+Automatic and curated musical mappings show the setting checked and disabled because following
+is intrinsic to their pitch model. Automatic percussion shows it off and disabled because pitch
+is encoded by per-key sound selection. Exact sounds make it editable and expose their detected
+root or optional relative reference. This keeps a channel-wide choice out of per-note editing.
 
 ### Per-note inspector
 
@@ -153,8 +161,7 @@ Clicking a note pauses playback and opens one focused side inspector containing:
 - one Pitch offset control;
 - one Volume trim control;
 - the final SnapMap pitch and dB calculations;
-- a clamp notice only when an engine boundary is reached;
-- exact-sound Follow MIDI note and root/reference fields only for exact sounds.
+- a clamp notice only when an engine boundary is reached.
 
 The piano-roll block always stays on its imported row.
 
@@ -165,8 +172,8 @@ Each channel row has compact M and S buttons:
 - Mute always excludes that channel from preview and export.
 - Solo is multi-select. When at least one S button is active, only soloed, unmuted channels play
   and export.
-- Clicking the rest of a row focuses that channel for editing. Other notes dim and are not
-  hit-testable; clicking the row again clears focus.
+- Clicking the rest of a row focuses that channel for editing and opens Channel settings. Other
+  notes dim and are not hit-testable; clicking the row again clears focus.
 
 Muted and solo-excluded notes remain visible in neutral gray. This distinguishes composition
 data from the current mix and avoids implying that mute deleted anything.

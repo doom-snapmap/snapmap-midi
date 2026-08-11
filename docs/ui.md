@@ -59,7 +59,7 @@ The menu bar keeps infrequent commands out of the note surface.
 The main shortcuts are `Ctrl+I` to import, `Ctrl+E` to export, `Ctrl+R` to reopen, `Ctrl+,`
 for Conversion settings, `Space` to play or pause, and `Home` to return to zero. Press
 `Escape` to close an open menu, the sound browser, or the active Conversion, Notifications,
-or Note expression inspector.
+Channel settings, or Note expression inspector.
 
 Drag an unused part of the top menu bar to move the window. The menu labels and window
 buttons remain clickable rather than acting as drag handles. The invisible edge grips use
@@ -85,8 +85,10 @@ remain session preferences. A valid sidecar beside the new MIDI is then applied.
 A persistent control plane sits between the workspace and the status bar. It is reserved
 for workstation-level controls, so quality-of-life tools do not shrink the transport or add
 tabs. Its left edge starts with the icon-only **Notifications** button, drawn with the same
-square button treatment as Play/Pause, followed by the **Volume** control. **Grid**, **Time
-signature**, and **Zoom** are grouped on the right as view controls for the piano roll.
+square button treatment as Play/Pause, followed by the unboxed **Volume** label, slider, and
+right-aligned value. **Grid**, **Time signature**, and **Zoom** are grouped on the right as view
+controls for the piano roll. Zoom uses the same label-slider-value order, sizing, and spacing as
+Volume.
 
 Volume is a global integer dB offset from -60 through +20, with 0 dB as the neutral default.
 It is added to every note after MIDI velocity is converted to dB and before the note's own
@@ -99,7 +101,7 @@ warning is shown in full in its own row; faint separators match the channel list
 the button again, its close button, or `Escape` closes the inspector. With no warnings, the
 same inspector reports that the current conversion has none.
 
-Notifications, Conversion, and Note expression share the side-panel position and are
+Notifications, Conversion, Channel settings, and Note expression share the side-panel position and are
 mutually exclusive. Opening the modal sound browser also closes an inspector so the surfaces
 never stack. The audio-source banner remains separate because it reports preview availability
 rather than a conversion warning.
@@ -117,11 +119,13 @@ playback timing.
 ## Channels and the full DOOM sound catalog
 
 Every channel row shows its one-based MIDI channel number, source General MIDI program,
-sound assignment, and compact **M** (mute) and **S** (solo) controls. A percussion channel is
+sound assignment, and compact borderless mute and solo icons beside the channel title. The
+speaker icon changes to a red muted-speaker icon when active; solo uses the application accent
+color. A percussion channel is
 labeled in the same list instead of moved to a Drums tab. The assignment control opens a modal
 sound browser rather than a native dropdown.
 
-Mute silences that channel. Solo is standard multi-solo: when one or more **S** controls are
+Mute silences that channel. Solo is standard multi-solo: when one or more solo controls are
 active, only those channels play and export, and more than one channel may be soloed. Mute wins
 when the same channel is both muted and soloed. These choices are conversion state, not edits to
 the source MIDI.
@@ -169,8 +173,8 @@ SnapMap semitone modifier. If speech, noise, impacts, unstable tones, or variabl
 have no defensible root, the event plays naturally on every note by default. The channel
 midpoint is retained only as an optional relative reference. A user may deliberately enable
 **Follow MIDI note** to preserve MIDI intervals around that reference, but the application never
-pretends that a grunt, impact, or spoken line has an acoustic root. The Note expression
-inspector labels detected roots and optional references separately.
+pretends that a grunt, impact, or spoken line has an acoustic root. Channel settings labels
+detected roots and optional references separately.
 
 Installed Wwise duration metadata independently determines whether the event decays or needs a
 paired stop. Mixed events are treated as looping so an infinite branch cannot leak a speaker
@@ -181,10 +185,20 @@ Muted channels and channels excluded by an active solo remain on the piano roll 
 gray treatment, so the score never appears to lose data. They are omitted from preview and
 export without forgetting their assignments.
 
-Click a channel row to focus its notes for inspection. Other channels dim and stop accepting note
-clicks until focus is cleared, which makes dense arrangements readable without changing what
-plays or exports. Click the focused row again to restore all channels at equal emphasis. Channel
-focus is transient UI state and is not written to the settings sidecar.
+### Channel settings and focus
+
+Click a channel row to focus its notes and open **Channel settings**. The first setting is the
+channel-wide **Follow MIDI note** checkbox. Automatic mappings and pitched instrument sets show
+it checked and disabled because melodic pitch following is intrinsic to those mappings. Automatic
+percussion shows it off and disabled because each MIDI key selects a dedicated drum sound instead.
+An exact event makes it editable and, when available, shows either its detected **Root MIDI note**
+or its explicit **Reference MIDI note**. The reference belongs to the channel because every note
+reuses the same exact event; per-note exceptions stay in Note expression.
+
+Other channels dim and stop accepting note clicks until focus is cleared, which makes dense
+arrangements readable without changing what plays or exports. Click the focused row again to
+restore all channels at equal emphasis. Closing the inspector leaves focus intact. Channel focus
+and the open inspector are transient UI state and are not written to the settings sidecar.
 
 The divider between Channels and the piano roll is draggable in either direction. Moving it
 right gives assignments more room; moving it left expands the song surface. Both panes retain
@@ -262,7 +276,7 @@ overlapping the viewport. Pausing immediately restores the horizontal scrollbar.
 ## Editing note expression
 
 Click a note block to pause playback and open **Note expression** in the same right-side panel
-used by Conversion and Notifications. The selected block receives an outline; hover glow remains
+used by Conversion, Notifications, and Channel settings. The selected block receives an outline; hover glow remains
 pointer-only. Clicking or dragging empty roll space still seeks. The inspectors and modal sound
 browser are mutually exclusive, and `Escape` closes the active one.
 
@@ -282,9 +296,9 @@ The inspector distinguishes source data from conversion data:
 channel, or causes a different curated sample to be selected. With a detected/manual root or an
 enabled relative reference, it is added after the automatic MIDI-following shift. With natural
 playback, it is the complete SnapMap pitch modifier. For an exact channel, the field is labeled
-**Root MIDI note** for acoustic tuning and **Reference MIDI note** for optional relative tuning.
-**Follow MIDI note** enables or disables either mode. **Reset note** removes only the selected
-note's sparse pitch offset and volume trim.
+**Pitch reference** or **Sound root** as a read-only explanation of the channel calculation.
+Changing that channel-wide basis belongs to Channel settings. **Reset note** removes only the
+selected note's sparse pitch offset and volume trim.
 
 Notes are identified as `channel:source-pitch:occurrence` before mute or sound mapping, so an
 edit stays attached while the channel is retimbred. The block remains on its imported MIDI row;
@@ -479,9 +493,10 @@ invalidate a map that was exported successfully.
 ## Theme, status, and failure behavior
 
 Light and dark themes use the exact Snapmap Plus token sets and persist locally. The status
-bar reports bridge readiness, preview-audio source, note count, peak speaker voices,
-long sustains, and song length. Warnings name the conversion setting that can address the
-condition and open the inspector in context.
+bar reports only song-specific diagnostics: note count, peak speaker voices, long sustains, and
+song length. Routine bridge readiness and preview-audio source labels are intentionally omitted;
+audio failure still appears in the actionable preview banner. Warnings name the conversion
+setting that can address the condition and open the inspector in context.
 
 The page is loaded from a local `file:///` URI. Nothing is served, no port is opened, and no
 network client participates. If WebView2 is unavailable, the launcher prints the runtime to

@@ -75,6 +75,7 @@
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
   var NOTIFICATIONS_OPEN = false;
+  var CHANNEL_INSPECTOR_OPEN = false;
   var NOTE_INSPECTOR_OPEN = false;
   var SELECTED_NOTE_ID = null;
   var DRAW_FRAME = null;
@@ -413,7 +414,7 @@
       row.className = "track-row";
       row.dataset.channel = String(channel.channel);
       row.style.setProperty("--track-color", channelColor(channel.channel));
-      row.title = "Click the channel strip to focus its notes; click again to show all channels";
+      row.title = "Click to focus this channel and open its settings; click again to show all channels";
 
       var number = document.createElement("div");
       number.className = "track-channel";
@@ -421,11 +422,37 @@
       number.title = "MIDI channel " + (channel.channel + 1);
       row.appendChild(number);
 
+      var heading = document.createElement("div");
+      heading.className = "track-heading";
+
       var name = document.createElement("div");
       name.className = "track-name";
       name.textContent = channel.program_name + (channel.is_drums ? " \u00b7 Percussion" : "");
       name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest);
-      row.appendChild(name);
+      heading.appendChild(name);
+
+      var actions = document.createElement("div");
+      actions.className = "track-actions";
+
+      function mixerButton(kind, setting) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "track-toggle track-" + kind + "-toggle";
+        button.appendChild(iconElement(kind === "mute" ? "volume-2" : "headphones"));
+        button.addEventListener("click", function () {
+          var patch = { channels: {} };
+          patch.channels[String(channel.channel)] = {};
+          patch.channels[String(channel.channel)][setting] =
+            !channelEntry(channel.channel)[setting];
+          applyPatch(patch, true);
+        });
+        return button;
+      }
+
+      actions.appendChild(mixerButton("mute", "muted"));
+      actions.appendChild(mixerButton("solo", "soloed"));
+      heading.appendChild(actions);
+      row.appendChild(heading);
 
       var picker = document.createElement("button");
       picker.type = "button";
@@ -439,43 +466,15 @@
       picker.addEventListener("click", function () { openSoundBrowser(channel.channel); });
       row.appendChild(picker);
 
-      var actions = document.createElement("div");
-      actions.className = "track-actions";
-
-      function mixerButton(kind, label, setting) {
-        var button = document.createElement("button");
-        button.type = "button";
-        button.className = "track-toggle track-" + kind + "-toggle";
-        button.textContent = label;
-        button.setAttribute("aria-label",
-          (kind === "mute" ? "Mute" : "Solo") +
-          " MIDI channel " + (channel.channel + 1));
-        button.title = kind === "mute"
-          ? "Mute this channel"
-          : "Solo this channel; other soloed channels remain audible";
-        button.addEventListener("click", function () {
-          var patch = { channels: {} };
-          patch.channels[String(channel.channel)] = {};
-          patch.channels[String(channel.channel)][setting] =
-            !channelEntry(channel.channel)[setting];
-          applyPatch(patch, true);
-        });
-        return button;
-      }
-
-      actions.appendChild(mixerButton("mute", "M", "muted"));
-      actions.appendChild(mixerButton("solo", "S", "soloed"));
-      row.appendChild(actions);
-
       row.addEventListener("click", function (event) {
         if (event.target.closest("button, input, label")) { return; }
-        SELECTED_CHANNEL = SELECTED_CHANNEL === channel.channel ? null : channel.channel;
-        patchTracks();
-        var inspected = selectedNoteEvent();
-        if (SELECTED_CHANNEL !== null && inspected &&
-            Number(inspected.channel) !== SELECTED_CHANNEL) {
-          closeNoteInspector();
+        if (SELECTED_CHANNEL === channel.channel && CHANNEL_INSPECTOR_OPEN) {
+          SELECTED_CHANNEL = null;
+          closeChannelInspector();
+        } else {
+          openChannelInspector(channel.channel);
         }
+        patchTracks();
         invalidateRollSurface();
         queueDraw();
       });
@@ -494,6 +493,10 @@
       var selected = SELECTED_CHANNEL === channelNumber;
       row.classList.toggle("selected", selected);
       row.setAttribute("aria-selected", selected ? "true" : "false");
+      row.setAttribute(
+        "aria-expanded",
+        selected && CHANNEL_INSPECTOR_OPEN ? "true" : "false"
+      );
       row.classList.toggle("muted-track", !!entry.muted);
       row.classList.toggle("soloed-track", !!entry.soloed);
       row.classList.toggle("solo-excluded-track", soloActive && !entry.soloed);
@@ -506,8 +509,16 @@
       var solo = row.querySelector(".track-solo-toggle");
       mute.classList.toggle("active", !!entry.muted);
       mute.setAttribute("aria-pressed", entry.muted ? "true" : "false");
+      mute.setAttribute("aria-label",
+        (entry.muted ? "Unmute" : "Mute") +
+        " MIDI channel " + (channelNumber + 1));
+      mute.title = entry.muted ? "Unmute this channel" : "Mute this channel";
+      setIcon(mute, entry.muted ? "volume-x" : "volume-2");
       solo.classList.toggle("active", !!entry.soloed);
       solo.setAttribute("aria-pressed", entry.soloed ? "true" : "false");
+      solo.setAttribute("aria-label", entry.soloed
+        ? "Remove MIDI channel " + (channelNumber + 1) + " from the solo mix"
+        : "Solo MIDI channel " + (channelNumber + 1));
       solo.title = entry.soloed
         ? "Remove this channel from the solo mix"
         : "Solo this channel; other soloed channels remain audible";
@@ -1082,6 +1093,7 @@
     closeInspector();
     closeNotifications();
     closeNoteInspector();
+    closeChannelInspector();
     pausePlayback();
     SOUND_BROWSER.open = true;
     SOUND_BROWSER.channel = channelNumber;
@@ -1125,6 +1137,7 @@
       var patch = { channels: {} };
       patch.channels[String(channel)] = body;
       closeSoundBrowser();
+      openChannelInspector(channel);
       applyPatch(patch, false);
     }
     if (candidate.kind !== "sound") {
@@ -2805,6 +2818,7 @@
   function openInspector() {
     closeNotifications();
     closeNoteInspector();
+    closeChannelInspector();
     INSPECTOR_OPEN = true;
     el('conversionInspector').hidden = false;
     el('conversionBtn').setAttribute('aria-expanded', 'true');
@@ -2820,6 +2834,7 @@
   function openNotifications() {
     closeInspector();
     closeNoteInspector();
+    closeChannelInspector();
     NOTIFICATIONS_OPEN = true;
     el('notificationsInspector').hidden = false;
     el('notificationsBtn').setAttribute('aria-expanded', 'true');
@@ -2835,6 +2850,131 @@
   function toggleNotifications() {
     if (NOTIFICATIONS_OPEN) { closeNotifications(); }
     else { openNotifications(); }
+  }
+
+  function syncChannelInspector() {
+    if (!CHANNEL_INSPECTOR_OPEN) { return; }
+    var channel = channelByNumber(SELECTED_CHANNEL);
+    if (!channel) {
+      closeChannelInspector();
+      return;
+    }
+    var entry = channelEntry(channel.channel);
+    var exact = !!entry.sound;
+    var follow = el("channelPitchFollow");
+    var referenceFields = el("channelPitchReferenceFields");
+    var root = entry.root_midi;
+    var rootSource = String(entry.root_source || "manual");
+    var relativeRoot = rootSource === "relative";
+
+    el("channelInspectorSubtitle").textContent =
+      "MIDI channel " + (channel.channel + 1) + " - " + channel.program_name;
+    el("channelSound").textContent = assignmentLabel(channel);
+    el("channelSound").title = assignmentTitle(channel);
+    el("channelMidiRange").textContent =
+      noteName(channel.lowest) + "-" + noteName(channel.highest);
+    el("channelNoteCount").textContent = String(channel.notes || 0);
+
+    follow.disabled = !exact;
+    follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums;
+    referenceFields.hidden = !exact;
+    if (!exact) {
+      el("channelPitchModeHelp").textContent = channel.is_drums
+        ? "Automatic percussion selects a dedicated sound for each MIDI key; channel-wide pitch following does not apply."
+        : (entry.family
+          ? "This pitched instrument set always follows the imported MIDI notes."
+          : "Automatic musical mapping follows MIDI notes through the curated pitched palette.");
+      return;
+    }
+
+    el("channelRootNumberLabel").textContent =
+      relativeRoot ? "Reference MIDI note" : "Root MIDI note";
+    el("channelRootNumber").value =
+      root === null || root === undefined ? "" : String(root);
+    el("channelRootName").textContent =
+      root === null || root === undefined ? "" : noteName(Math.round(Number(root)));
+    el("channelPitchModeHelp").textContent = entry.pitch_follow
+      ? "Every note reuses this exact event and follows the MIDI melody from the " +
+        (relativeRoot ? "reference" : "sound root") + " below."
+      : "Every note reuses this exact event at natural pitch. Enable this only when melodic retuning is wanted.";
+
+    if (root === null || root === undefined) {
+      el("channelRootEvidence").textContent =
+        "No root or relative reference is assigned. Enter one before enabling pitch following.";
+    } else if (relativeRoot) {
+      el("channelRootEvidence").textContent = entry.pitch_follow
+        ? "Unmodified playback is treated as " + noteName(Math.round(Number(root))) +
+          " only for calculating relative offsets; no acoustic root is claimed."
+        : "No stable musical root was found. Natural playback is preserved; " +
+          noteName(Math.round(Number(root))) + " is available as an optional relative reference.";
+    } else {
+      var confidence = entry.root_confidence;
+      el("channelRootEvidence").textContent =
+        "Source: " + rootSource +
+        (confidence === null || confidence === undefined
+          ? ""
+          : "; confidence " + Math.round(Number(confidence) * 100) + "%.");
+    }
+  }
+
+  function openChannelInspector(channelNumber) {
+    var channel = channelByNumber(channelNumber);
+    if (!channel) { return; }
+    closeInspector();
+    closeNotifications();
+    closeNoteInspector();
+    SELECTED_CHANNEL = Number(channelNumber);
+    CHANNEL_INSPECTOR_OPEN = true;
+    el("channelInspector").hidden = false;
+    syncChannelInspector();
+    patchTracks();
+  }
+
+  function closeChannelInspector() {
+    CHANNEL_INSPECTOR_OPEN = false;
+    el("channelInspector").hidden = true;
+    if (hasSong()) { patchTracks(); }
+  }
+
+  function updateSelectedChannelPitch(fields) {
+    if (SELECTED_CHANNEL === null) { return; }
+    var patch = { channels: {} };
+    patch.channels[String(SELECTED_CHANNEL)] = fields;
+    applyPatch(patch, true);
+  }
+
+  function initChannelInspector() {
+    el("closeChannelInspector").addEventListener("click", closeChannelInspector);
+    el("channelRootNumber").addEventListener("change", function () {
+      var value = Number(this.value);
+      if (!isFinite(value) || value < 0 || value > 127) {
+        toast("Root or reference MIDI note must be between 0 and 127", "warn");
+        syncChannelInspector();
+        return;
+      }
+      var saved = channelEntry(SELECTED_CHANNEL);
+      var relative = saved.root_source === "relative";
+      updateSelectedChannelPitch({
+        root_midi: value,
+        root_confidence: relative ? 0 : 1,
+        root_source: relative ? "relative" : "manual",
+        pitch_follow: el("channelPitchFollow").checked
+      });
+    });
+    el("channelPitchFollow").addEventListener("change", function () {
+      var saved = channelEntry(SELECTED_CHANNEL);
+      if (!saved.sound) {
+        syncChannelInspector();
+        return;
+      }
+      var root = Number(el("channelRootNumber").value);
+      if (this.checked && (!isFinite(root) || el("channelRootNumber").value === "")) {
+        this.checked = false;
+        toast("Enter a root or reference MIDI note before enabling Follow MIDI note", "warn");
+        return;
+      }
+      updateSelectedChannelPitch({ pitch_follow: this.checked });
+    });
   }
 
   function selectedNoteEvent() {
@@ -2929,48 +3069,6 @@
       " dB; trim " + signed(note.volume_trim_db) +
       " dB; final " + signed(note.volume_db) + " dB.";
 
-    var channelSettings = STATE.settings && STATE.settings.channels &&
-      STATE.settings.channels[String(note.channel)];
-    var exact = channelSettings && channelSettings.sound;
-    var rootGroup = el("noteChannelRootGroup");
-    rootGroup.hidden = !exact;
-    if (exact) {
-      var root = channelSettings.root_midi;
-      var rootSource = String(channelSettings.root_source || "manual");
-      var relativeRoot = rootSource === "relative";
-      el("noteChannelPitchTitle").textContent =
-        relativeRoot
-          ? "Optional pitch reference"
-          : (rootSource === "detected" ? "Detected sound root" : "Sound root");
-      el("noteRootNumberLabel").textContent =
-        relativeRoot ? "Reference MIDI note" : "Root MIDI note";
-      el("notePitchFollow").checked = !!channelSettings.pitch_follow;
-      el("noteRootNumber").value =
-        root === null || root === undefined ? "" : String(root);
-      el("noteRootName").textContent =
-        root === null || root === undefined ? "" : noteName(Math.round(Number(root)));
-      if (root === null || root === undefined) {
-        el("noteRootEvidence").textContent =
-          "No root or relative reference is assigned. Enter one to enable pitch following.";
-      } else if (relativeRoot) {
-        el("noteRootEvidence").textContent = channelSettings.pitch_follow
-          ? "Relative MIDI mode: unmodified playback is treated as " +
-            noteName(Math.round(Number(root))) +
-            " only for calculating offsets. No acoustic root is claimed."
-          : "No stable musical root was found. Natural playback is preserved. " +
-            "Enable Follow MIDI note to use " + noteName(Math.round(Number(root))) +
-            " as a relative reference.";
-      } else {
-        var confidence = channelSettings.root_confidence;
-        el("noteRootEvidence").textContent =
-          "Source: " + rootSource +
-          (confidence === null || confidence === undefined
-            ? ""
-            : "; confidence " + Math.round(Number(confidence) * 100) + "%.") +
-          (channelSettings.pitch_follow ? "" : " Natural playback is selected.");
-      }
-
-    }
     var limits = [];
     if (note.pitch_limited) {
       limits.push(
@@ -2991,6 +3089,7 @@
   function openNoteInspector(noteId) {
     closeInspector();
     closeNotifications();
+    closeChannelInspector();
     SELECTED_NOTE_ID = String(noteId || "");
     NOTE_INSPECTOR_OPEN = !!SELECTED_NOTE_ID;
     el("noteInspector").hidden = !NOTE_INSPECTOR_OPEN;
@@ -3016,14 +3115,6 @@
     if (Object.keys(entry).length) { next[noteId] = entry; }
     else { delete next[noteId]; }
     applyPatch({ notes: next }, true);
-  }
-
-  function updateSelectedChannelRoot(fields) {
-    var note = selectedNoteEvent();
-    if (!note) { return; }
-    var patch = { channels: {} };
-    patch.channels[String(note.channel)] = fields;
-    applyPatch(patch, true);
   }
 
   function initNoteInspector() {
@@ -3055,33 +3146,6 @@
       var next = Object.assign({}, STATE.settings.notes || {});
       delete next[SELECTED_NOTE_ID];
       applyPatch({ notes: next }, true);
-    });
-    el("noteRootNumber").addEventListener("change", function () {
-      var value = Number(this.value);
-      if (!isFinite(value) || value < 0 || value > 127) {
-        toast("Root or reference MIDI note must be between 0 and 127", "warn");
-        syncNoteInspector();
-        return;
-      }
-      var note = selectedNoteEvent();
-      var saved = note && STATE.settings && STATE.settings.channels &&
-        STATE.settings.channels[String(note.channel)];
-      var relative = saved && saved.root_source === "relative";
-      updateSelectedChannelRoot({
-        root_midi: value,
-        root_confidence: relative ? 0 : 1,
-        root_source: relative ? "relative" : "manual",
-        pitch_follow: el("notePitchFollow").checked
-      });
-    });
-    el("notePitchFollow").addEventListener("change", function () {
-      var root = Number(el("noteRootNumber").value);
-      if (this.checked && (!isFinite(root) || el("noteRootNumber").value === "")) {
-        this.checked = false;
-        toast("Enter a root or reference MIDI note before enabling Follow MIDI note", "warn");
-        return;
-      }
-      updateSelectedChannelRoot({ pitch_follow: this.checked });
     });
   }
 
@@ -3148,6 +3212,7 @@
     invalidateAudio(true);
     TRACK_KEY = '';
     SELECTED_CHANNEL = null;
+    closeChannelInspector();
     closeNoteInspector();
     adopt(response, sequence);
     render();
@@ -3333,20 +3398,7 @@
   function renderAudio() {
     var state = STATE.audio;
     var song = hasSong();
-    el('slotAudio').hidden = !state;
     el('audioBanner').hidden = !song || !state || !!state.ready;
-    if (!state) { return; }
-    if (AUDIO.preparing) { el('audioText').textContent = 'preparing'; }
-    else if (AUDIO.prepareError) { el('audioText').textContent = 'retry on play'; }
-    else if (audioUnavailableNames().length) {
-      el('audioText').textContent = audioUnavailableNames().length + ' game-only';
-    }
-    else if (state.source === 'game') { el('audioText').textContent = 'game banks'; }
-    else if (state.source === 'game+cache') { el('audioText').textContent = 'game + cache'; }
-    else if (state.source === 'cache') { el('audioText').textContent = 'offline cache'; }
-    else if (state.error || state.bank_error) { el('audioText').textContent = 'unavailable'; }
-    else if (!state.install) { el('audioText').textContent = 'game not found'; }
-    else { el('audioText').textContent = (state.count || 0) + ' / ' + (state.expected || 0); }
     updateMenuState();
   }
 
@@ -3392,8 +3444,6 @@
 
   function renderStatus() {
     var stats = STATE.stats;
-    el('bridgeDot').className = 'dot ' + (api() ? 'ok' : 'no');
-    el('bridgeText').textContent = api() ? 'ready' : 'browser preview';
     [['slotNotes', 'statNotes', 'notes'], ['slotVoices', 'statVoices', 'peak_voices'], ['slotSustain', 'statSustain', 'long_sustains']]
       .forEach(function (row) {
         el(row[0]).hidden = !stats;
@@ -3424,6 +3474,7 @@
     renderStatus();
     renderWindow();
     if (INSPECTOR_OPEN) { syncInspector(); }
+    if (CHANNEL_INSPECTOR_OPEN) { syncChannelInspector(); }
     if (NOTE_INSPECTOR_OPEN) { syncNoteInspector(); }
     requestAnimationFrame(function () {
       constrainPaneSplit();
@@ -3441,6 +3492,7 @@
       else if (OPEN_MENU) { closeMenus(); }
       else if (NOTIFICATIONS_OPEN) { closeNotifications(); }
       else if (NOTE_INSPECTOR_OPEN) { closeNoteInspector(); }
+      else if (CHANNEL_INSPECTOR_OPEN) { closeChannelInspector(); }
       else if (INSPECTOR_OPEN) { closeInspector(); }
       return;
     }
@@ -3514,6 +3566,7 @@
     initTheme();
     initPaneSplitter();
     initInspector();
+    initChannelInspector();
     initNoteInspector();
     initSoundBrowser();
     initMasterVolume();

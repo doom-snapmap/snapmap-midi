@@ -160,8 +160,16 @@ selecting another curated sample.
 
 When no root exists, a newly selected exact sound keeps natural playback. Python may persist an
 optional relative reference, but Follow MIDI note remains off until the user enables it. The
-inspector distinguishes natural playback, a trusted sound root, and an explicit relative
+Channel settings distinguishes natural playback, a trusted sound root, and an explicit relative
 reference.
+
+## Channel inspector
+
+Clicking a channel opens a right-side inspector with Follow MIDI note as its first setting.
+Automatic and curated musical mappings show following as built in; automatic percussion shows
+it as inapplicable because each key has its own event. Exact sounds make the setting editable and
+expose the channel's detected root or optional relative reference. These controls are
+channel-wide and are therefore not rendered in the per-note inspector.
 
 ## Per-note inspector
 
@@ -169,7 +177,7 @@ Clicking a note opens a right-side inspector using the same design tokens,
 dimensions, header, separators, and close behavior as the conversion and
 notification inspectors. Clicking empty roll space continues to seek.
 
-It shows channel, imported note, selected event, MIDI velocity, global volume, root evidence,
+It shows channel, imported note, selected event, MIDI velocity, global volume, resolved pitch basis,
 automatic calculation, final pitch/volume values, and any clamp. It provides:
 
 - Pitch offset: integer -24 through 24 semitones, affecting playback only;

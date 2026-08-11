@@ -112,7 +112,7 @@ accepts these arguments:
 
 The workstation is one persistent surface: a unified channel list, a full-range piano roll,
 one global Play/Pause transport, a draggable sweeping playhead, and mutually exclusive
-Conversion, Notifications, and Note expression inspectors. Source composition stays read-only:
+Conversion, Notifications, Channel settings, and Note expression inspectors. Source composition stays read-only:
 notes cannot be created, deleted, moved, or resized. Clicking a note instead edits playback-only
 Pitch offset and Volume trim for that imported note. Its MIDI row, channel, id, and curated sample
 stay fixed. Clicking empty space seeks.
@@ -129,8 +129,10 @@ channel list and roll while preserving useful minimums for both.
 Percussion stays with the other channels. Every channel can use Automatic mapping, one of the
 12 pitched instrument sets, or an exact event from the installed full-game sound browser. The
 browser falls back to the 890 curated palette names when installed metadata is unavailable.
-Compact M and S controls provide mute and standard multi-solo; mute wins when both are active.
-Clicking the rest of a channel row focuses its notes for editing without changing the mix.
+Compact stateful icons provide mute and standard multi-solo; mute wins when both are active.
+Clicking the rest of a channel row focuses its notes without changing the mix and opens Channel
+settings. Its first control is the channel-wide Follow MIDI note mode; automatic musical
+mappings show it as built in, while exact effects make it editable.
 Muted and solo-excluded notes remain visible in neutral gray but do not preview or export.
 Export writes the map and versioned settings beside the song, so global volume, mixer state,
 channel roots, and sparse per-note expression edits return in the next session.
@@ -158,6 +160,16 @@ path and receive a stop. One-shots with non-zero pitch or gain use duration-rese
 voices; neutral one-shots retain the shared fire-and-forget path. The full catalog remains a
 manual layer and does not widen General MIDI automatic mapping.
 
+### Channel pitch mode
+
+Channel settings owns the pitch basis shared by every note on a channel. Automatic mappings and
+pitched instrument sets always follow MIDI through their curated samples; automatic percussion
+uses dedicated per-key sounds and has no channel-wide pitch mode. Exact events expose
+**Follow MIDI note** plus a detected root or optional relative reference. A rejected exact SFX
+defaults to natural playback with following off. The root/reference accepts MIDI 0 through 127
+and is intentionally channel-wide because changing the basis for one note would detune the
+interval pattern; per-note exceptions use Pitch offset instead.
+
 ### Per-note pitch and dynamics
 
 Clicking a rendered note pauses transport and opens the Note expression inspector. It shows the
@@ -172,11 +184,6 @@ shift, global volume, user offsets, final SnapMap values, and any clamp.
   Its slider sits beside Notifications in the bottom control plane.
 - **Volume trim** is an integer -60 through 20 dB. MIDI velocity first maps through
   `40 * log10(velocity / 127)`; global volume and then the note trim are added afterward.
-- **Exact-channel pitch basis** accepts MIDI 0 through 127 and can enable or disable pitch
-  following. A detected/manual root describes the sound's absolute pitch; a relative reference
-  assigns its natural playback to one channel note without claiming an acoustic root. A rejected
-  exact SFX defaults to natural playback with following off. Both root/reference choices are
-  channel-wide because changing the basis for one note would detune the interval pattern.
 - **Reset note** removes only that note's sparse override.
 
 Final pitch is clamped to SnapMap's -24 through 24 semitone range and final volume to -60

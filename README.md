@@ -164,19 +164,23 @@ immutable MIDI note, velocity, selected event, pitch basis, and final SnapMap pi
 values. Pitch offset changes playback without moving the block, changing its channel, or
 selecting another sample; Volume trim changes only that note's level. The bottom-panel Volume
 control offsets the whole arrangement. Exact sounds with a stable root follow MIDI
-automatically. Rootless effects keep natural playback and expose Follow MIDI note plus an
-optional relative reference for users who deliberately want melodic retuning. Clicking or
-dragging empty roll space continues to seek.
+automatically. Rootless effects keep natural playback. Their channel-level **Follow MIDI note**
+control and optional relative reference live in Channel settings for users who deliberately want
+melodic retuning; the Note expression inspector remains strictly per-note. Clicking or dragging
+empty roll space continues to seek.
 
 The roll covers all 128 MIDI pitches with synchronized piano keys, measure ruler, vertical and
 horizontal scrollbars, and section-based playback following. Its static grid and notes are cached
 separately from the moving playhead, so vertical wheel navigation remains responsive during
 playback, including when the pointer is over the disabled horizontal time scrollbar. Dragging the
-channel/roll divider trades width between the two panes. Every channel row has standard Mute
-and multi-Solo controls. Clicking the rest of a row focuses its notes for editing without
-changing the mix; other channels remain visible but dimmed and cannot be selected until focus is
-cleared. Muted and solo-excluded notes remain visible in neutral gray but do not preview or
-export. Bottom controls set the global volume
+channel/roll divider trades width between the two panes. Every channel row has compact inline
+Mute and multi-Solo icons; active mute is red and active solo uses the accent color. Clicking the
+rest of a row focuses its notes for editing without
+changing the mix and opens its Channel settings inspector. Its first setting is the channel-wide
+Follow MIDI note mode; automatic musical mappings show that behavior as built in, while exact
+effects make it editable. Other channels remain visible but dimmed and cannot be selected until
+focus is cleared. Muted and solo-excluded notes remain visible in neutral gray but do not preview
+or export. Bottom controls set the global volume
 modifier, visual note grid, time signature, and playhead-anchored pitch/time zoom. Only Volume
 changes preview and export; the remaining controls do not change the source notes. Conversion
 limits open in a nonblocking inspector instead of an import wizard or a
@@ -237,7 +241,8 @@ channel. When its media has a stable musical root, snapmap-midi detects and cach
 profile and tunes from it. When no honest root exists, the event plays naturally by default.
 The midpoint of the imported channel's note range is retained only as an optional relative
 reference. Enabling Follow MIDI note preserves intervals from that reference without claiming
-that an effect, voice, or impact has an acoustic note.
+that an effect, voice, or impact has an acoustic note. Because that choice affects every note
+using the channel sound, it is edited in Channel settings rather than Note expression.
 
 MIDI velocity becomes an integral dB modifier. The global volume offset and then the per-note
 volume trim are added before the final clamp; per-note Pitch offset is resolved independently

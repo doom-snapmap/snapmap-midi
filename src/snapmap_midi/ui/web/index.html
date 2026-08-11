@@ -23,6 +23,8 @@
   <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></symbol>
   <symbol id="icon-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.8 2.9l-2.3 4.2A2 2 0 0 1 17.7 18H5.1a2 2 0 0 1-2-2.3L4.5 7A2 2 0 0 1 6.5 5H9l2 3h7a2 2 0 0 1 2 2"></path></symbol>
   <symbol id="icon-volume-2" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></symbol>
+  <symbol id="icon-volume-x" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="m22 9-6 6"></path><path d="m16 9 6 6"></path></symbol>
+  <symbol id="icon-headphones" viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v5H5a2 2 0 0 1-2-2v-9a9 9 0 0 1 18 0v9a2 2 0 0 1-2 2h-3v-5a2 2 0 0 1 2-2h3"></path></symbol>
   <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"></path></symbol>
   <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></symbol>
   <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"></path></symbol>
@@ -123,7 +125,6 @@
       <canvas class="roll-overlay piano-roll-overlay" id="pianoRollOverlay" aria-hidden="true"></canvas>
       <canvas class="roll-overlay time-ruler-overlay" id="timeRulerOverlay" aria-hidden="true"></canvas>
       <div class="horizontal-scroll-lock" id="horizontalScrollLock" aria-hidden="true" hidden></div>
-      <div class="roll-help">Click a note to inspect; drag empty space to seek</div>
     </section>
   </main>
 
@@ -136,12 +137,11 @@
       <svg class="ui-icon warning-icon" aria-hidden="true" focusable="false"><use href="#icon-triangle-alert"></use></svg>
       <span class="notification-badge mono" id="notificationBadge" hidden>0</span>
     </button>
-    <label class="master-volume-control" for="masterVolume" title="Global volume modifier applied to every converted note">
-      <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-volume-2"></use></svg>
+    <label class="range-control master-volume-control" for="masterVolume" title="Global volume modifier applied to every converted note">
       <span>Volume</span>
       <input type="range" id="masterVolume" min="-60" max="20" value="0" step="1"
              aria-label="Global volume modifier" aria-valuetext="0 dB">
-      <output class="mono master-volume-value" id="masterVolumeValue" for="masterVolume">0 dB</output>
+      <output class="mono range-value master-volume-value" id="masterVolumeValue" for="masterVolume">0 dB</output>
     </label>
     <span class="control-spacer"></span>
     <label class="plane-field" for="gridResolution"><span>Grid</span>
@@ -166,9 +166,10 @@
         <option value="12/8">12/8</option>
       </select>
     </label>
-    <label class="zoom-control" for="rollZoom">
-      <span>Zoom</span><span class="mono zoom-value" id="rollZoomValue">100%</span>
+    <label class="range-control zoom-control" for="rollZoom">
+      <span>Zoom</span>
       <input type="range" id="rollZoom" min="0" max="60" value="0" step="1" aria-valuetext="100%" title="Piano roll zoom">
+      <output class="mono range-value zoom-value" id="rollZoomValue" for="rollZoom">100%</output>
     </label>
   </div>
 
@@ -218,6 +219,37 @@
     </div>
   </aside>
 
+  <aside class="inspector channel-inspector" id="channelInspector" aria-label="Channel settings" hidden>
+    <div class="inspector-head">
+      <div>
+        <strong>Channel settings</strong>
+        <div class="muted" id="channelInspectorSubtitle">No channel selected</div>
+      </div>
+      <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close channel settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
+    </div>
+    <div class="inspector-body" id="channelInspectorBody">
+      <div class="control-group channel-pitch-group">
+        <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
+        <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
+        <div class="expression-readout" id="channelPitchModeHelp"></div>
+        <div id="channelPitchReferenceFields" hidden>
+          <div class="threshold-line">
+            <label for="channelRootNumber" id="channelRootNumberLabel">Reference MIDI note</label>
+            <input type="number" id="channelRootNumber" min="0" max="127" step="0.01">
+            <span class="mono" id="channelRootName"></span>
+          </div>
+          <div class="expression-readout" id="channelRootEvidence"></div>
+        </div>
+      </div>
+
+      <dl class="channel-facts">
+        <div><dt>Sound</dt><dd id="channelSound">-</dd></div>
+        <div><dt>MIDI range</dt><dd class="mono" id="channelMidiRange">-</dd></div>
+        <div><dt>Notes</dt><dd class="mono" id="channelNoteCount">-</dd></div>
+      </dl>
+    </div>
+  </aside>
+
   <aside class="inspector note-inspector" id="noteInspector" aria-label="Note expression" hidden>
     <div class="inspector-head">
       <div>
@@ -258,21 +290,12 @@
         <div class="expression-readout" id="noteVolumeReadout"></div>
       </div>
 
-      <div class="control-group channel-root-group" id="noteChannelRootGroup" hidden>
-        <div class="control-title"><span id="noteChannelPitchTitle">Exact-sound root</span><span class="hint">channel</span></div>
-        <label class="check-line"><input type="checkbox" id="notePitchFollow"> Follow MIDI note</label>
-        <div class="threshold-line"><label for="noteRootNumber" id="noteRootNumberLabel">Root MIDI note</label><input type="number" id="noteRootNumber" min="0" max="127" step="0.01"><span class="mono" id="noteRootName"></span></div>
-        <div class="expression-readout" id="noteRootEvidence"></div>
-      </div>
-
       <div class="expression-warning" id="noteClampNotice" hidden></div>
     </div>
     <div class="inspector-foot"><button type="button" class="btn" id="resetNoteExpression">Reset note</button></div>
   </aside>
 
   <div class="statusbar">
-    <span><span class="dot" id="bridgeDot"></span><b id="bridgeName">snapmap-midi</b> <span id="bridgeText">connecting...</span></span>
-    <span id="slotAudio" hidden>Audio <b id="audioText">checking</b></span>
     <span id="slotNotes" hidden>Notes <b id="statNotes">0</b></span>
     <span id="slotVoices" hidden>Peak voices <b id="statVoices">0</b></span>
     <span id="slotSustain" hidden>Long sustains <b id="statSustain">0</b></span>
