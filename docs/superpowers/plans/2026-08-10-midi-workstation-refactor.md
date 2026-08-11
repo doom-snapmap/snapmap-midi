@@ -219,3 +219,6 @@ Release target: `v0.3.3`, created only after the pushed `main` commit passes CI.
   under `mods` cannot override stock palette events or media by hash collision.
 - [x] Add provider, fallback, reuse, mod-isolation, bridge, and asset regression
   coverage; update the repository documentation for the new source model.
+- [x] Bump the package version to 0.3.4 and run complete validation.
+
+Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
