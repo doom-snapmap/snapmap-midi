@@ -557,7 +557,6 @@ def test_names_reports_only_what_it_can_actually_play(tmp_path):
     assert sounds.names(["play_synth", "play_absent"]) == {"play_synth"}
 
 
-
 def test_the_browser_catalog_keeps_all_play_events_and_marks_local_previewability(tmp_path):
     audio = wem(frame(nibbles=[4]))
     records = build_event_catalog(

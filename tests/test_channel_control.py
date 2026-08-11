@@ -158,9 +158,7 @@ def test_an_exact_sound_wins_and_keeps_the_written_midi_pitch(tmp_path):
     ("catalog_looping", "sustained"),
     [(False, False), (True, True), (None, True)],
 )
-def test_a_full_game_exact_event_uses_catalog_loop_metadata(
-    tmp_path, catalog_looping, sustained
-):
+def test_a_full_game_exact_event_uses_catalog_loop_metadata(tmp_path, catalog_looping, sustained):
     mid = _write_midi(tmp_path, [(0, 60)], programs={0: 0})
 
     notes, _stats = parse_notes(

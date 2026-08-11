@@ -131,8 +131,7 @@ def parse_event_catalog(path) -> tuple[SoundEvent, ...]:
         for field in fields:
             if cursor + 4 > len(data):
                 raise ValueError(
-                    "%s: event catalog is truncated before %s in record %d"
-                    % (path, field, record)
+                    "%s: event catalog is truncated before %s in record %d" % (path, field, record)
                 )
             size = struct.unpack("<I", data[cursor : cursor + 4])[0]
             cursor += 4
@@ -642,9 +641,7 @@ class DoomSounds:
         fmt, data = _riff_chunks(wem)
         if fmt is None or data is None:
             raise KeyError("%s: its media has no fmt or no data chunk" % name)
-        tag, channels, rate, _bytes_per_second, align, _bits = struct.unpack(
-            "<HHIIHH", fmt[:16]
-        )
+        tag, channels, rate, _bytes_per_second, align, _bits = struct.unpack("<HHIIHH", fmt[:16])
         if tag != WWISE_IMA_FORMAT_TAG:
             raise NotImplementedError(
                 "%s: format tag 0x%04x, and only 0x%04x (Wwise IMA ADPCM) is decoded here"

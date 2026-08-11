@@ -242,8 +242,7 @@ def _channels(section, families, sounds) -> dict:
             or (sound not in sounds and _PLAY_EVENT.fullmatch(sound) is None)
         ):
             raise SettingsError(
-                "channel %s: %r is not a valid DOOM Play_ event identifier"
-                % (channel, sound)
+                "channel %s: %r is not a valid DOOM Play_ event identifier" % (channel, sound)
             )
         if family is not None and sound is not None:
             raise SettingsError(

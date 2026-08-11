@@ -70,9 +70,7 @@ def _exact_sound_sustained(
     while stopping a one-shot that already ended is harmless.
     """
     if family != "exact":
-        return (
-            family in SUSTAINED or family.startswith("amb_")
-        ) and family not in no_sustain
+        return (family in SUSTAINED or family.startswith("amb_")) and family not in no_sustain
     if shader not in event_looping_cache:
         try:
             event_looping_cache[shader] = (
