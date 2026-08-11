@@ -371,6 +371,7 @@ class Session:
                 event_is_looping=installed_event_is_looping,
                 channel_pitch_profiles=levers["channel_pitch_profiles"],
                 note_overrides=levers["note_overrides"],
+                master_volume_db=levers["master_volume_db"],
             )
             decaying = [note for note in notes if not note.sustained]
             sustained = [note for note in notes if note.sustained]
@@ -438,6 +439,7 @@ class Session:
                     "pitch_limited": note.pitch_limited,
                     "velocity_db": note.velocity_db,
                     "volume_trim_db": note.volume_trim_db,
+                    "master_volume_db": note.master_volume_db,
                     "requested_volume_db": note.requested_volume_db,
                     "volume_db": note.volume_db,
                     "volume_limited": note.volume_limited,
@@ -583,6 +585,7 @@ class Session:
             event_is_looping=installed_event_is_looping,
             channel_pitch_profiles=levers["channel_pitch_profiles"],
             note_overrides=levers["note_overrides"],
+            master_volume_db=levers["master_volume_db"],
         )
         decaying = [note for note in notes if not note.sustained]
         sustained = [note for note in notes if note.sustained]
@@ -687,7 +690,7 @@ class Session:
             )
         if stats.get("volume_limited"):
             warnings.append(
-                "%d notes exceed SnapMap's -60 to +20 dB range after velocity "
+                "%d notes exceed SnapMap's -60 to +20 dB range after velocity, global volume, "
                 "and per-note trim. Their loudness is clamped." % stats["volume_limited"]
             )
 

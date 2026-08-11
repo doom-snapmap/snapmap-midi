@@ -97,20 +97,22 @@ Changing a channel sound, muting and unmuting, or editing the note therefore
 does not change its id.
 
 Runtime note annotations carry source id, source pitch, target pitch, velocity,
-root evidence, automatic shift, user trims, final modifiers, and clamp state.
+root evidence, automatic shift, global volume, user trims, final modifiers, and clamp state.
 They do not alter the existing dataclass field order or rawmap key order.
 
 ### Settings schema
 
-Settings version 2 adds:
+Settings version 2 added:
 
 - exact-channel pitch-follow state and optional root/relative-reference metadata;
 - a top-level notes mapping keyed by source id;
 - per-note transpose and volume_db trims.
 
-Version 1 sidecars migrate in memory. Existing exact-sound selections stay fixed until
-reassigned or given a root/reference, preserving their old exports. New selections receive a
-detected root or relative reference. Only choices persist; derived modifiers are recalculated.
+Settings version 3 adds `tuning.master_volume_db`, an integral global offset from -60 through
++20 dB with a neutral zero default. Version 1 and version 2 sidecars migrate in memory. Existing
+exact-sound selections stay fixed until reassigned or given a root/reference, preserving their
+old exports. New selections receive a detected root or relative reference. Only choices persist;
+derived modifiers are recalculated.
 
 ### Root-pitch analysis
 
@@ -141,8 +143,9 @@ Use a squared amplitude response:
     amplitude = (velocity / 127) ** 2
     velocity_db = 20 * log10(amplitude)
 
-Round to the nearest integer and clamp to -60 through 0. Add per-note volume
-trim, then clamp the final value to -60 through 20. Velocity 127 remains 0 dB.
+Round to the nearest integer and clamp to -60 through 0. Add the global volume offset and then
+the per-note volume trim before clamping the final value to -60 through 20. Velocity 127 remains
+0 dB at neutral global and note settings.
 
 ### Piano-roll truth
 
@@ -161,7 +164,7 @@ Clicking a note opens a right-side inspector using the same design tokens,
 dimensions, header, separators, and close behavior as the conversion and
 notification inspectors. Clicking empty roll space continues to seek.
 
-It shows channel, imported note, selected event, MIDI velocity, root evidence,
+It shows channel, imported note, selected event, MIDI velocity, global volume, root evidence,
 automatic calculation, final pitch/volume values, and any clamp. It provides:
 
 - pitch trim: integer -24 through 24 semitones;
@@ -175,10 +178,11 @@ animation.
 
 ## Preview/export parity
 
-Every preview event carries the compiler's exact expression fields. Web Audio
-sets source detune from pitchModifier, multiplies base note gain by the dB gain,
-and retains the existing master compressor and release/cut rules. JavaScript
-does not reimplement root selection, velocity mapping, or clamping.
+Every preview event carries the compiler's exact expression fields, including the global volume
+used to resolve final dB. Web Audio sets source detune from pitchModifier, multiplies base note
+gain by the final dB gain, and retains the existing master compressor and release/cut rules.
+JavaScript does not reimplement root selection, velocity mapping, global-volume addition, or
+clamping.
 
 ## Implementation sequence
 
@@ -196,10 +200,11 @@ does not reimplement root selection, velocity mapping, or clamping.
 
 ## Acceptance gates
 
-- velocity mapping is monotonic and velocity 127 is 0 dB;
+- velocity mapping is monotonic and velocity 127 is 0 dB at neutral settings;
+- global volume defaults to zero, offsets every note, and is shared by preview and export;
 - pitch math is integral, deterministic, and clamped;
 - ids and velocity survive overlapping or retriggered notes;
-- v1 settings migrate and invalid v2 overrides fail by name;
+- v1/v2 settings migrate and invalid v3 overrides fail by name;
 - tone fixtures resolve and silence/noise/unstable/mixed leaves reject;
 - rejected exact sounds receive a deterministic, persisted relative reference while fixed pitch
   remains an explicit choice;
@@ -216,10 +221,9 @@ does not reimplement root selection, velocity mapping, or clamping.
 
 Implemented on 2026-08-11. The finished architecture includes:
 
-- a single tested expression model for MIDI velocity, note transpose, root-relative
-  pitch, integer rounding, and SnapMap clamps;
-- stable source-note ids plus version 2 settings migration and sparse per-note
-  overrides;
+- a single tested expression model for MIDI velocity, global volume, note transpose,
+  root-relative pitch, integer rounding, and SnapMap clamps;
+- stable source-note ids plus version 3 settings migration and sparse per-note overrides;
 - authoritative curated roots, conservative lazy all-leaf analysis, and deterministic
   channel-centered relative references for arbitrary installed-game events, backed by a
   numeric-only acoustic-profile cache;
@@ -235,7 +239,7 @@ Verification completed against the final implementation:
 
 - `ruff format src tests` and `ruff check src tests` passed;
 - `node --check src/snapmap_midi/ui/web/app.js` passed;
-- `pytest -q` passed with 606 tests and four optional installed-baseline skips;
+- `pytest -q` passed with 616 tests and four optional installed-baseline skips;
 - `python -m build` produced both the source distribution and wheel;
 - `git diff --check` passed.
 

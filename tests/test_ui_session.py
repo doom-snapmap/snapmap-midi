@@ -631,6 +631,19 @@ def test_velocity_and_trim_volume_clamp_is_reported(tmp_path):
     assert any("-60 to +20 dB" in warning for warning in _warnings(session))
 
 
+def test_master_volume_offsets_every_note_in_the_preview_manifest(tmp_path):
+    song = _midi(tmp_path, _hits(0, 60, program=0, velocity=64), name="master-volume.mid")
+    session = Session(midi=song)
+    session.apply({"tuning": {"master_volume_db": 8}})
+
+    event = session.preview_manifest()["events"][0]
+    assert event["velocity_db"] == -12
+    assert event["master_volume_db"] == 8
+    assert event["volume_trim_db"] == 0
+    assert event["requested_volume_db"] == -4
+    assert event["volume_db"] == -4
+
+
 def test_per_note_override_moves_only_the_selected_note(tmp_path):
     song = _midi(
         tmp_path,

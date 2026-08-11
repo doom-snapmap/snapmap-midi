@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snapmap-midi"
-version = "0.3.4"
+version = "0.3.5"
 description = "Compile a standard MIDI file into a playable in-game music map for DOOM (2016)'s SnapMap editor."
 readme = "README.md"
 license = { text = "MIT" }

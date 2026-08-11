@@ -97,6 +97,7 @@ def parse_notes(
     event_is_looping=None,
     channel_pitch_profiles=None,
     note_overrides=None,
+    master_volume_db=0,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -229,6 +230,7 @@ def parse_notes(
                     applied_root,
                     transpose=transpose,
                     volume_trim_db=volume_trim_db,
+                    master_volume_db=master_volume_db,
                 )
                 metadata = {
                     "id": note_id,

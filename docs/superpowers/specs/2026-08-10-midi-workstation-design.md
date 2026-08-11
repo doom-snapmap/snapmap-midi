@@ -34,7 +34,8 @@ The application has one persistent workspace:
    notes are colored by channel, and a high-contrast playhead sweeps across the
    complete surface during playback.
 5. A compact bottom control plane above the status bar. Notifications opens a
-   dedicated inspector; Grid, Time signature, and Zoom control the roll view.
+   dedicated inspector; Volume offsets the complete arrangement; Grid, Time
+   signature, and Zoom control the roll view.
 
 There are no Channels, Drums, Tuning, or Export tabs. Export is a File-menu and
 toolbar action. Percussion is not a separate workspace.
@@ -125,6 +126,9 @@ Playback requirements:
 The browser engine schedules current-song PCM samples with Web Audio. Python
 provides the resolved converted-note manifest and only the samples it uses.
 The page uses a look-ahead scheduler so a long song does not create thousands of
+The manifest carries final dB after MIDI velocity, global volume, per-note trim, and the engine
+clamp. JavaScript applies that resolved value and does not maintain a second loudness model.
+
 live audio nodes at once.
 
 ## Piano roll
@@ -196,10 +200,11 @@ warnings, note visibility where thinning applies, and the next preview. A
 
 The warning sentence is not printed across the bottom of the workspace. That
 space is a persistent control plane for workstation-level quality-of-life
-tools. Its left control is an icon-only Notifications button with the same
+tools. Its left edge starts with an icon-only Notifications button with the same
 31-by-29 pixel bordered treatment as global Play/Pause. A warning-colored
 triangle and compact count badge communicate state without competing with the
-song surface.
+song surface. The adjacent Volume slider is a persisted -60 through +20 dB global
+offset, defaults to 0 dB, and affects both full-song preview and rawmap export.
 
 Notifications opens a nonblocking right-side inspector in the same position as
 Conversion; opening one closes the other. The inspector shows the complete
@@ -212,8 +217,9 @@ availability rather than a conversion condition.
 Grid, Time signature, and Zoom sit at the control plane's right edge. Grid
 offers whole through thirty-second-note visual divisions. Time signature starts
 from the source file and changes numbered bar grouping as a visual override.
-Neither control alters playback or source events. Zoom changes both axes so the
-keys, measure ruler, grid, notes, playhead, and scrollbar travel remain aligned.
+Those view controls do not alter playback or source events. Zoom changes both
+axes so the keys, measure ruler, grid, notes, playhead, and scrollbar travel
+remain aligned.
 
 ## Import and audio discovery
 
@@ -268,7 +274,7 @@ characterful typography is confined to MIDI's own numeric notation.
 | percussion included         | one full-height sweeping playhead          |
 | full-game browser per row   | drag anywhere in time to seek              |
 +-----------------------------+--------------------------------------------+
-| [notifications]        Grid [1/8]  Time signature [4/4]  Zoom [---] 100%   |
+| [notifications] Volume [---] 0 dB   Grid [1/8] Time [4/4] Zoom [---] 100% |
 +--------------------------------------------------------------------------+
 | compact engine status                                                     |
 +--------------------------------------------------------------------------+

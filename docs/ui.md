@@ -29,7 +29,7 @@ The application has no Channels, Drums, Tuning, or Export tabs. The persistent s
 | 10  Percussion  [sound] [M] | | moving and draggable playhead             |
 | ...                         |                                            |
 +-----------------------------+--------------------------------------------+
-| [notifications]        Grid [1/8]  Time signature [4/4]  Zoom [---] 100%   |
+| [notifications] Volume [---] 0 dB   Grid [1/8] Time [4/4] Zoom [---] 100% |
 +--------------------------------------------------------------------------+
 | status: notes, peak voices, long sustains, song length                    |
 +--------------------------------------------------------------------------+
@@ -84,9 +84,14 @@ remain session preferences. A valid sidecar beside the new MIDI is then applied.
 
 A persistent control plane sits between the workspace and the status bar. It is reserved
 for workstation-level controls, so quality-of-life tools do not shrink the transport or add
-tabs. Its left control is the icon-only **Notifications** button, drawn with the same square
-button treatment as Play/Pause. **Grid**, **Time signature**, and **Zoom** are grouped on the
-right as view controls for the piano roll.
+tabs. Its left edge starts with the icon-only **Notifications** button, drawn with the same
+square button treatment as Play/Pause, followed by the **Volume** control. **Grid**, **Time
+signature**, and **Zoom** are grouped on the right as view controls for the piano roll.
+
+Volume is a global integer dB offset from -60 through +20, with 0 dB as the neutral default.
+It is added to every note after MIDI velocity is converted to dB and before the note's own
+volume trim and final SnapMap clamp. The control updates the complete preview and exported
+timeline, persists in the settings sidecar, and is disabled until a song is open.
 
 When warnings exist, the button uses the shared warning color and carries their count.
 Clicking it opens a nonblocking inspector at the right side of the workstation. Every
@@ -259,7 +264,7 @@ The inspector distinguishes source data from conversion data:
 | Velocity | original MIDI velocity, 1 through 127 |
 | Sound / pitch basis | exact Play event plus trusted root or explicit relative reference |
 | Pitch calculation | automatic basis-relative shift + note trim = final SnapMap semitones |
-| Volume calculation | velocity dB + note trim = final SnapMap dB |
+| Volume calculation | velocity dB + global volume + note trim = final SnapMap dB |
 | Clamp notice | requested value and the -24..24 pitch or -60..20 volume limit applied |
 
 **Pitch trim** is an integral -24 through 24 semitones and **Volume trim** is an integral
@@ -280,8 +285,8 @@ arrangement from the current position; pressing it again pauses without returnin
 There are no per-channel song controls. The sound browser's audition button plays one event
 for identification and never starts a channel or arrangement.
 
-Preview uses the same resolved sound/root, target pitch, velocity-derived dB, per-note
-trims, clamps, duration caps, polyphony thinning, speaker allocation, voice stealing, hard
+Preview uses the same resolved sound/root, target pitch, velocity-derived dB, global volume,
+per-note trims, clamps, duration caps, polyphony thinning, speaker allocation, voice stealing, hard
 stops, and releases as export. It is not the computer's General MIDI synthesizer. Web Audio
 receives the final compiler values: pitch modifier times 100 cents and
 `10 ** (volume_db / 20)` gain. When a later note reuses a SnapMap speaker, preview hard-cuts
@@ -372,7 +377,7 @@ versioned with a project or edited by hand. A typical file is:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "midi": "D:/music/song.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
@@ -408,6 +413,7 @@ versioned with a project or edited by hand. A typical file is:
   },
   "tuning": {
     "max_speakers": 32,
+    "master_volume_db": 0,
     "release_s": 0.1,
     "hard_stop": false,
     "max_poly": null,
@@ -435,11 +441,13 @@ are omitted. Opening a different MIDI clears this section together with song-spe
 choices.
 
 Channel, note-id, and drum-key components are strings because JSON object keys are strings;
-validation converts them back to integers for the MIDI parser. Version 1 documents migrate in
-memory; their old exact sounds remain fixed until reassigned or given a root/reference, so an
-upgrade does not silently change an existing export.
+validation converts them back to integers for the MIDI parser. Version 1 and version 2 documents
+migrate in memory with `master_volume_db` set to the neutral 0 dB default. Old exact sounds remain
+fixed until reassigned or given a root/reference, so an upgrade does not silently change an
+existing export.
 
-`null` disables optional duration and polyphony limits. `decaying_families` and
+`master_volume_db` is an integer -60 through 20 dB and defaults to zero. `null` disables
+optional duration and polyphony limits. `decaying_families` and
 `family_caps` accept any real palette category. Unknown keys, malformed Play event
 identifiers, incompatible family-and-sound pairs, impossible root/follow combinations, malformed
 note ids, and out-of-range values are rejected by name rather than silently ignored. A

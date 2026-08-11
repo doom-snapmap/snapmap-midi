@@ -2791,6 +2791,34 @@
     return (value > 0 ? "+" : "") + String(value);
   }
 
+  function normalizedMasterVolume(value) {
+    return clamp(Math.round(Number(value) || 0), -60, 20);
+  }
+
+  function paintMasterVolume(value) {
+    value = normalizedMasterVolume(value);
+    var label = signed(value) + " dB";
+    el("masterVolume").value = String(value);
+    el("masterVolume").setAttribute("aria-valuetext", label);
+    el("masterVolumeValue").textContent = label;
+  }
+
+  function syncMasterVolume() {
+    paintMasterVolume(tuning().master_volume_db);
+  }
+
+  function initMasterVolume() {
+    var slider = el("masterVolume");
+    var send = debounce(function (value) {
+      applyPatch({ tuning: { master_volume_db: value } }, true);
+    }, 180);
+    slider.addEventListener("input", function () {
+      var value = normalizedMasterVolume(this.value);
+      paintMasterVolume(value);
+      send(value);
+    });
+  }
+
   function rootDisplay(root) {
     if (root === null || root === undefined || !isFinite(Number(root))) {
       return "Unresolved - fixed pitch";
@@ -2834,6 +2862,7 @@
     }
     el("noteVolumeReadout").textContent =
       "Velocity " + note.velocity + " maps to " + signed(note.velocity_db) +
+      " dB; global " + signed(note.master_volume_db) +
       " dB; trim " + signed(note.volume_trim_db) +
       " dB; final " + signed(note.volume_db) + " dB.";
 
@@ -3315,6 +3344,8 @@
     el('gridResolution').disabled = !song;
     el('timeSignature').disabled = !song;
     el('rollZoom').disabled = !song;
+    el('masterVolume').disabled = !song;
+    syncMasterVolume();
     if (song) { renderTracks(); }
     renderTransportState();
     renderPosition(currentPosition(), true);
@@ -3415,6 +3446,7 @@
     initInspector();
     initNoteInspector();
     initSoundBrowser();
+    initMasterVolume();
     el('notificationsBtn').addEventListener('click', toggleNotifications);
     el('closeNotifications').addEventListener('click', closeNotifications);
     initTransport();

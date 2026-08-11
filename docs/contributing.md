@@ -140,11 +140,11 @@ opening the file directly is how anybody iterating on the markup will look at it
 
 Everything that changes the conversion is decided in Python. The preview manifest contains
 stable note id, source/target pitch, velocity, sound, root-or-reference evidence and source,
-automatic/manual pitch, velocity/trim/final dB, clamp state, effective start/end, sustain
+automatic/manual pitch, velocity/global/trim/final dB, clamp state, effective start/end, sustain
 behavior, and speaker-reuse cutoffs. Compiler and preview share `prepare_voice_layers`.
 JavaScript may convert those facts to canvas coordinates, Web Audio time, cents, and linear
-gain; it must not calculate a root or relative anchor, resolve a family, repeat velocity math,
-reapply a clamp/engine limit, or invent a second note list.
+gain; it must not calculate a root or relative anchor, resolve a family, repeat velocity/global
+volume math, reapply a clamp/engine limit, or invent a second note list.
 
 The same rule bans hard-coded sound families or game events from markup. The startup catalog
 derives automatic and pitched-family choices from the shipped 24-category, 890-identifier

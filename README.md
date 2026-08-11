@@ -162,7 +162,8 @@ pointer brightens whether playback is running or paused; playback itself does no
 colors. Clicking a note pauses playback and opens the Note expression inspector. It shows the
 imported and target pitch, MIDI velocity, selected event and root evidence, and final SnapMap
 pitch/volume values. Per-note semitone and dB trims change the conversion without rewriting the
-MIDI; exact sounds also expose their detected root or relative reference together with a
+MIDI, while the bottom-panel Volume control offsets every note in the arrangement. Exact sounds
+also expose their detected root or relative reference together with a
 pitch-follow switch. Clicking or dragging empty
 roll space continues to seek.
 
@@ -170,9 +171,10 @@ The roll covers all 128 MIDI pitches with synchronized piano keys, measure ruler
 horizontal scrollbars, and section-based playback following. Its static grid and notes are cached
 separately from the moving playhead, so vertical wheel navigation remains responsive during
 playback, including when the pointer is over the disabled horizontal time scrollbar. Dragging the
-channel/roll divider trades width between the two panes, while bottom controls set the visual
-note grid, time signature, and playhead-anchored pitch/time zoom without changing the source
-notes. Conversion limits open in a nonblocking inspector instead of an import wizard or a
+channel/roll divider trades width between the two panes. Bottom controls set the global volume
+modifier, visual note grid, time signature, and playhead-anchored pitch/time zoom. Only Volume
+changes preview and export; the remaining controls do not change the source notes. Conversion
+limits open in a nonblocking inspector instead of an import wizard or a
 separate tab.
 
 If DOOM is installed, preview indexes its retail soundbanks and generated event hierarchy in
@@ -181,8 +183,9 @@ current song. There is no audio setup step; conversion and export continue to wo
 audio is unavailable.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
-produced it: channel sounds, detected roots or relative references, conversion limits, and
-sparse per-note pitch/volume trims. Open that song again and the choices are already there;
+produced it: channel sounds, detected roots or relative references, conversion limits, global
+volume, and sparse per-note pitch/volume trims. Open that song again and the choices are already
+there;
 `snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays them without the
 window. Full detail is in [`docs/ui.md`](docs/ui.md).
 
@@ -231,7 +234,8 @@ reference. This preserves the MIDI intervals without claiming that an effect, vo
 has an acoustic note. Pitch following can still be disabled explicitly when fixed playback is
 preferred.
 
-MIDI velocity becomes an integral dB modifier, then per-note pitch and volume trims are applied.
+MIDI velocity becomes an integral dB modifier. The global volume offset and then the per-note
+volume trim are added before the final clamp; per-note pitch trim is resolved independently.
 SnapMap receives pitch in semitones (-24 through 24) and volume in dB (-60 through 20). The
 arrangement then uses three scheduling paths:
 

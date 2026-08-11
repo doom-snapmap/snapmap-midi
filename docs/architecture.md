@@ -36,7 +36,7 @@ A compile is a straight line. Each stage owns one module, and each hands the nex
 values rather than a hidden audio or UI context.
 
 ```
-song.mid + settings v2
+song.mid + settings v3
    |
    |  music/midi.py       pair events; preserve stable id, source pitch, velocity
    |  music/gm.py         program -> family; channel 9 -> percussion
@@ -44,7 +44,7 @@ song.mid + settings v2
    v
 annotated notes  (+ sound, + root evidence, + sustained?)
    |
-   |  music/expression.py root-relative semitones + velocity/per-note dB
+   |  music/expression.py root-relative semitones + velocity/global/per-note dB
    v
 expressed notes  (+ target pitch, + final clamped modifiers)
    |
@@ -119,12 +119,13 @@ user can disable pitch following for fixed playback.
 ### `music/expression.py` — one pitch and loudness contract
 
 Every parsed note carries a stable source id and its MIDI velocity. The expression module
-derives target MIDI pitch, automatic root-relative shift, per-note trim, and final SnapMap
-modifiers without changing the `Note` dataclass's serialized field order.
+derives target MIDI pitch, automatic root-relative shift, global volume, per-note trim, and final
+SnapMap modifiers without changing the `Note` dataclass's serialized field order.
 
 SnapMap pitch values are integral semitones clamped to -24 through 24. Velocity uses a squared
-amplitude response, `40 * log10(velocity / 127)`, then the per-note dB trim is added and the
-result is clamped to -60 through 20. The same pure functions feed map export, preview manifests,
+amplitude response, `40 * log10(velocity / 127)`, then the global dB offset and per-note dB trim
+are added and the result is clamped to -60 through 20. The same pure functions feed map export,
+preview manifests,
 warnings, and inspector readouts.
 
 ### The split that defines the design
@@ -201,15 +202,17 @@ measured Play-event alphabet and maximum length, but validation does not require
 game install. That keeps sidecars loadable after DOOM moves and permits an explicit mod event;
 the UI itself offers the Play events declared by the installed retail catalog.
 
-Settings version 2 adds optional `pitch_follow`, `root_midi`, `root_confidence`, and
+Settings version 2 added optional `pitch_follow`, `root_midi`, `root_confidence`, and
 `root_source` fields to exact channel choices, plus a sparse top-level `notes` mapping.
 `root_source: "relative"` means `root_midi` is a natural-playback reference, not a detected
 root; zero confidence is intentional for that mode.
 A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute, and
 root changes. Each entry may hold an integral `transpose` (-24 through 24) and `volume_db`
-trim (-60 through 20). Derived modifiers and decoded audio never enter the sidecar. Version 1
-documents migrate in memory, and their old exact sounds remain fixed until reassigned or given
-a root/reference, preserving existing exports.
+trim (-60 through 20).
+
+Settings version 3 adds integral `tuning.master_volume_db` (-60 through 20), defaulting to zero.
+Derived modifiers and decoded audio never enter the sidecar. Version 1 and 2 documents migrate
+in memory with neutral global volume; legacy exact-sound behavior remains unchanged.
 
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
 every mistake a hand edit makes here is a quiet one. See
@@ -281,10 +284,10 @@ Nothing is served and nothing listens. The markup is loaded from the filesystem 
 `test_product_has_no_network_client` still passes over the whole package.
 
 **The division of labour is the design.** Python decides every conversion fact: sound and
-root, source and target pitch, MIDI-velocity dB, per-note trims, clamp state, sustain behavior,
-duration caps, polyphony, speaker voice, reuse cutoff, and requested audio samples. Compiler and
-preview both call the same voice-layer preparation, and the same versioned settings document
-feeds the preview manifest and `compile_to_rawmap`.
+root, source and target pitch, MIDI-velocity dB, global volume, per-note trims, clamp state,
+sustain behavior, duration caps, polyphony, speaker voice, reuse cutoff, and requested audio
+samples. Compiler and preview both call the same voice-layer preparation, and the same versioned
+settings document feeds the preview manifest and `compile_to_rawmap`.
 
 Javascript owns presentation and transport: it virtualizes the full 0-127 pitch range and song
 duration behind native scrollbars, draws synchronized pitch and measure rulers, converts MIDI
@@ -292,7 +295,8 @@ ticks through the supplied tempo map, moves and auto-follows the single playhead
 Audio's output timestamp rather than its ahead-of-output scheduling clock, and schedules
 decoded buffers with a rolling look-ahead. It applies the manifest's final pitch as
 `detune = pitch_modifier * 100` cents and final loudness as
-`gain = 10 ** (volume_db / 20)`; it does not repeat root, velocity, or clamp logic. Settings
+`gain = 10 ** (volume_db / 20)`; it does not repeat root, velocity, global-volume, or clamp
+logic. Settings
 changes cross the bridge and return a rebuilt manifest.
 
 Rendering is split by update frequency. The base canvas holds pitch rows, timing lines, notes,
@@ -325,8 +329,8 @@ Zoom captures the playhead's viewport coordinate before resizing and restores th
 against the new time scale. The draggable pane separator stores only the preferred channel
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
 high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, hover, and which
-note inspector is open are view state. Per-note transpose/volume values and exact-channel root
-choices are conversion state and go through the validated settings bridge.
+note inspector is open are view state. Global volume, per-note transpose/volume values, and
+exact-channel root choices are conversion state and go through the validated settings bridge.
 
 JavaScript names no palette family or game event in source. The small startup catalog comes
 from the curated palette; the full installed event catalog crosses a separate lazy bridge only

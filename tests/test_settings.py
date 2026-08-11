@@ -79,6 +79,7 @@ def test_the_named_defaults_are_the_ones_the_docs_promise():
     """Spelled out as well as derived, so a signature change that moves both
     at once still trips something."""
     tuning = settings.defaults()["tuning"]
+    assert tuning["master_volume_db"] == 0
     assert tuning["max_speakers"] == 32
     assert tuning["release_s"] == 0.1
     assert tuning["hard_stop"] is False
@@ -203,8 +204,8 @@ def test_an_unknown_tuning_lever_names_itself():
 def test_a_document_from_a_later_build_is_refused_by_number():
     """The version exists so a document this build does not understand is
     refused rather than half-read."""
-    with pytest.raises(settings.SettingsError, match="3"):
-        settings.validate({**settings.defaults(), "version": 3})
+    with pytest.raises(settings.SettingsError, match="4"):
+        settings.validate({**settings.defaults(), "version": 4})
 
 
 def test_a_version_one_document_migrates_without_inventing_expression():
@@ -212,8 +213,20 @@ def test_a_version_one_document_migrates_without_inventing_expression():
     old["version"] = 1
     old.pop("notes")
     migrated = settings.validate(old)
-    assert migrated["version"] == 2
+    assert migrated["version"] == 3
     assert migrated["notes"] == {}
+    assert migrated["tuning"]["master_volume_db"] == 0
+
+
+def test_a_version_two_document_migrates_with_neutral_master_volume():
+    old = settings.defaults()
+    old["version"] = 2
+    old["tuning"].pop("master_volume_db")
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == 3
+    assert migrated["tuning"]["master_volume_db"] == 0
 
 
 def test_a_channel_entry_that_is_not_a_mapping_is_a_clean_error():
@@ -411,6 +424,20 @@ def test_a_drum_key_outside_the_midi_range_is_refused():
 
 
 # ---- bounds on the levers ----
+
+
+@pytest.mark.parametrize("value", [-61, 21, "6", 1.5, True])
+def test_master_volume_outside_the_snapmap_db_range_is_refused(value):
+    with pytest.raises(settings.SettingsError, match="master_volume_db"):
+        _patch({"tuning": {"master_volume_db": value}})
+
+
+def test_master_volume_is_persisted_and_forwarded_to_the_compiler():
+    doc = _patch({"tuning": {"master_volume_db": 12}})
+
+    assert doc["tuning"]["master_volume_db"] == 12
+    assert settings.to_compile_kwargs(doc)["master_volume_db"] == 12
+    assert _patch({"tuning": {"master_volume_db": -60}})["tuning"]["master_volume_db"] == -60
 
 
 @pytest.mark.parametrize("value", [0, -1, 129, "32", 3.5, True])

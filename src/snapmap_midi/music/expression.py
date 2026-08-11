@@ -29,6 +29,7 @@ class NoteExpression:
     transpose: int
     applied_transpose: int
     volume_trim_db: int
+    master_volume_db: int
     automatic_pitch: int | None
     requested_pitch: int
     pitch_modifier: int
@@ -69,6 +70,7 @@ def expression_for(
     root_pitch: float | None,
     transpose: int = 0,
     volume_trim_db: int = 0,
+    master_volume_db: int = 0,
 ) -> NoteExpression:
     """Resolve one note to the exact integral values SnapMap will receive.
 
@@ -81,6 +83,7 @@ def expression_for(
     source_pitch = int(clamp(int(source_pitch), MIDI_MIN, MIDI_MAX))
     transpose = int(clamp(int(transpose), PITCH_MIN, PITCH_MAX))
     volume_trim_db = int(clamp(int(volume_trim_db), VOLUME_MIN, VOLUME_MAX))
+    master_volume_db = int(clamp(int(master_volume_db), VOLUME_MIN, VOLUME_MAX))
     target_pitch = int(clamp(source_pitch + transpose, MIDI_MIN, MIDI_MAX))
     applied_transpose = target_pitch - source_pitch
 
@@ -94,7 +97,7 @@ def expression_for(
 
     velocity = int(clamp(int(velocity), 1, MIDI_MAX))
     velocity_db = midi_velocity_db(velocity)
-    requested_volume = velocity_db + volume_trim_db
+    requested_volume = velocity_db + master_volume_db + volume_trim_db
     volume_db = int(clamp(requested_volume, VOLUME_MIN, VOLUME_MAX))
 
     return NoteExpression(
@@ -105,6 +108,7 @@ def expression_for(
         transpose=transpose,
         applied_transpose=applied_transpose,
         volume_trim_db=volume_trim_db,
+        master_volume_db=master_volume_db,
         automatic_pitch=automatic_pitch,
         requested_pitch=requested_pitch,
         pitch_modifier=pitch_modifier,

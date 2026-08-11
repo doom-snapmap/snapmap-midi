@@ -547,6 +547,17 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
     assert 'relativePitch ? "Pitch anchor" : "Sound root"' in _JS
 
 
+def test_bottom_control_plane_exposes_the_persisted_master_volume():
+    assert 'id="masterVolume" min="-60" max="20"' in _HTML
+    assert 'id="masterVolumeValue"' in _HTML
+    assert 'href="#icon-volume-2"' in _HTML
+    assert ".master-volume-control" in _CSS
+    assert "applyPatch({ tuning: { master_volume_db: value } }, true)" in _JS
+    assert "paintMasterVolume(tuning().master_volume_db)" in _JS
+    assert "el('masterVolume').disabled = !song" in _JS
+    assert '" dB; global " + signed(note.master_volume_db)' in _JS
+
+
 def test_the_playhead_and_hover_use_lightweight_overlay_canvases():
     for control in ("pianoRollOverlay", "timeRulerOverlay"):
         assert 'id="%s"' % control in _HTML

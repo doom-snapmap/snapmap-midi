@@ -152,6 +152,13 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .notification-button.has-notifications:hover { border-color: var(--sqWarn); color: var(--sqWarn); }
 .warning-icon { width: 17px; height: 17px; stroke-width: 1.8; }
 .notification-badge { position: absolute; top: -5px; right: -6px; min-width: 15px; height: 15px; display: grid; place-items: center; padding: 0 3px; border: 1px solid var(--sqWarn); border-radius: 8px; background: var(--panel); color: var(--sqWarn); font-size: 9px; font-weight: 700; line-height: 1; }
+.master-volume-control { height: 29px; display: flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--muted); white-space: nowrap; }
+.master-volume-control:hover, .master-volume-control:focus-within { border-color: var(--accent); }
+.master-volume-control .ui-icon { width: 15px; height: 15px; color: var(--text); }
+.master-volume-control input { width: 96px; margin: 0; accent-color: var(--accent); cursor: ew-resize; }
+.master-volume-control input:disabled { cursor: default; opacity: .45; }
+.master-volume-value { width: 39px; color: var(--text); text-align: right; }
+.master-volume-control output { font-variant-numeric: tabular-nums; }
 .plane-field { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
 .plane-field select { height: 27px; min-width: 58px; padding-top: 2px; padding-bottom: 2px; }
 .zoom-control { display: grid; grid-template-columns: auto 42px 132px; align-items: center; gap: 6px; margin-left: 3px; color: var(--muted); white-space: nowrap; }

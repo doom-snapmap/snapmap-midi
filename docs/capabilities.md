@@ -128,8 +128,8 @@ channel list and roll while preserving useful minimums for both.
 Percussion stays with the other channels. Every channel can use Automatic mapping, one of the
 12 pitched instrument sets, or an exact event from the installed full-game sound browser. The
 browser falls back to the 890 curated palette names when installed metadata is unavailable.
-Export writes the map and versioned settings beside the song, so channel roots and sparse
-per-note expression edits return in the next session.
+Export writes the map and versioned settings beside the song, so global volume, channel roots,
+and sparse per-note expression edits return in the next session.
 
 It needs pywebview, which is an ordinary dependency on Windows and the `[ui]` extra
 everywhere else. [`ui.md`](ui.md) covers the complete workstation and the settings document
@@ -158,13 +158,15 @@ manual layer and does not widen General MIDI automatic mapping.
 
 Clicking a rendered note pauses transport and opens the Note expression inspector. It shows
 source and target note, channel, velocity, exact event, root and confidence, automatic shift,
-user trims, final SnapMap values, and any clamp.
+global volume, user trims, final SnapMap values, and any clamp.
 
 - **Pitch trim** is an integer -24 through 24 semitones. With a trusted root or relative
   reference, the compiler retunes the sound from that basis to the new target note. Without
   either, the same control is an explicit SnapMap pitch modifier and the inspector says so.
+- **Global volume** is an integer -60 through 20 dB, defaults to 0, and offsets every note.
+  Its slider sits beside Notifications in the bottom control plane.
 - **Volume trim** is an integer -60 through 20 dB. MIDI velocity first maps through
-  `40 * log10(velocity / 127)`; the trim is added afterward.
+  `40 * log10(velocity / 127)`; global volume and then the note trim are added afterward.
 - **Exact-channel pitch basis** accepts MIDI 0 through 127 and can enable or disable pitch
   following. A detected/manual root describes the sound's absolute pitch; a relative reference
   assigns its natural playback to one channel note without claiming an acoustic root. Both are
@@ -201,8 +203,9 @@ fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 The workstation can play the entire converted arrangement directly from an installed game's
 retail soundbanks, with a valid 890-sound offline cache as fallback. The same direct source
 auditions full-catalog events in the browser. Preview receives the compiler's resolved root,
-pitch, velocity-derived dB, note trim, duration, and voice-cut facts; Web Audio applies the final
-semitones and dB without recalculating them. It decodes only samples the current song uses. See
+pitch, velocity-derived dB, global volume, note trim, duration, and voice-cut facts; Web Audio
+applies the final semitones and dB without recalculating them. It decodes only samples the
+current song uses. See
 [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
 
 ## Tuning, routing, and expression arguments
@@ -218,6 +221,7 @@ remain library-only arguments to `compile_to_rawmap`.
 | Lever | CLI | Type | Reach for it when |
 |---|---|---|---|
 | `max_speakers` | `--max-speakers` | int | too many sustained or expressive voices in one channel; the cheapest global limit |
+| `master_volume_db` | -- | int | the whole arrangement is too quiet or loud; offsets every note before the final clamp |
 | `release_s` | `--release` | seconds | note-offs sound abrupt, or notes bleed together |
 | `hard_stop` | `--hard-stop` | flag | a fade is still audible under the next phrase; cuts instead |
 | `max_events` | `--max-events` | int | the timeline is too dense overall |
@@ -247,11 +251,12 @@ why the per-key choice is applied first and the shader table only ever post-proc
 table's own answer. Applied the other way round it silently replaced the sound somebody had
 just picked.
 
-The Conversion inspector exposes `max_speakers`, `release_s`, `hard_stop`,
-`max_poly`, `cap_sustain_ms`, `bass_pitch`, `bass_cap_ms`, `decaying_families`, and
-`family_caps`. Channel rows expose family/sound selection and mute. Selecting an exact sound
-records a detected root when trustworthy or a channel-centered relative reference otherwise;
-clicking a note exposes sparse `note_overrides` and the exact channel's pitch-basis controls.
+The bottom control plane exposes `master_volume_db`. The Conversion inspector exposes
+`max_speakers`, `release_s`, `hard_stop`, `max_poly`, `cap_sustain_ms`, `bass_pitch`,
+`bass_cap_ms`, `decaying_families`, and `family_caps`. Channel rows expose family/sound selection
+and mute. Selecting an exact sound records a detected root when trustworthy or a channel-centered
+relative reference otherwise; clicking a note exposes sparse `note_overrides` and the exact
+channel's pitch-basis controls.
 
 Automatic percussion still obeys `drums` and `drum_key_overrides` restored from a sidecar,
 but percussion is not a separate UI mode. The rest stay sidecar or library controls.

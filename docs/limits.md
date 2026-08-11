@@ -21,7 +21,8 @@ compiler bug is a dead end — the map is correct and the events are correct.
 
 **Dense ones need the density levers.** Start with `max_speakers` and `max_poly`,
 which are global and blunt, then reach for duration or per-family caps if one instrument is the
-culprit. Pitch, velocity, and note trims are expression controls; they do not reduce density.
+culprit. Pitch, velocity, global volume, and note trims are expression controls; they do not
+reduce density.
 
 **The practical target: held notes under about a second cut reliably.** If you can get the long
 tail of a sustained arrangement under that, the problem goes away. `cap_sustain_ms` truncates

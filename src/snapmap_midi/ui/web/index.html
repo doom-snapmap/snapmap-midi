@@ -136,6 +136,13 @@
       <svg class="ui-icon warning-icon" aria-hidden="true" focusable="false"><use href="#icon-triangle-alert"></use></svg>
       <span class="notification-badge mono" id="notificationBadge" hidden>0</span>
     </button>
+    <label class="master-volume-control" for="masterVolume" title="Global volume modifier applied to every converted note">
+      <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-volume-2"></use></svg>
+      <span>Volume</span>
+      <input type="range" id="masterVolume" min="-60" max="20" value="0" step="1"
+             aria-label="Global volume modifier" aria-valuetext="0 dB">
+      <output class="mono master-volume-value" id="masterVolumeValue" for="masterVolume">0 dB</output>
+    </label>
     <span class="control-spacer"></span>
     <label class="plane-field" for="gridResolution"><span>Grid</span>
       <select id="gridResolution" title="Visual grid resolution">

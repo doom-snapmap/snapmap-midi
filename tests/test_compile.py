@@ -310,6 +310,7 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
         channel_sounds={0: "play_pianoc4"},
         channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 60}},
         note_overrides={"0:60:1": {"transpose": 1, "volume_db": 3}},
+        master_volume_db=6,
         button_name="expression-test",
     )
     obj = deserialize(raw)
@@ -332,7 +333,7 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
     assert [event["eventTime"] for event in matched] == [0, 0, 0]
     assert matched[0]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
     assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": 1.0}
-    assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": -9.0}
+    assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": -3.0}
     assert stats["expressive_one_shots"] >= 1
     assert stats["pitch_adjusted"] == 1
 

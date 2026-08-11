@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -51,6 +51,8 @@ _DEFAULT_BUTTON = "snapmap-midi-song"
 #: MIDI's own limits: sixteen channels, a note per key from 0 to 127.
 _MAX_CHANNEL = 15
 _MAX_NOTE = 127
+_MIN_VOLUME_DB = -60
+_MAX_VOLUME_DB = 20
 
 #: One voice per MIDI pitch. Past that the lever stops limiting anything on any
 #: arrangement that is not pathological, and a control that goes higher implies
@@ -87,6 +89,7 @@ _PLAY_EVENT = re.compile(r"(?i)^play_[a-z0-9_-]{1,59}$")
 #: containers where the compiler takes None, because JSON needs something to
 #: hold and both are falsy, so the compile path is identical either way.
 _TUNING_DEFAULTS = {
+    "master_volume_db": 0,
     "max_speakers": 32,
     "release_s": 0.1,
     "hard_stop": False,
@@ -349,7 +352,12 @@ def _notes(section) -> dict:
         if unknown:
             raise SettingsError("note %s: unknown setting(s): %s" % (note_id, ", ".join(unknown)))
         transpose = _whole(entry.get("transpose", 0), "note %s: transpose" % note_id, -24, 24)
-        volume_db = _whole(entry.get("volume_db", 0), "note %s: volume_db" % note_id, -60, 20)
+        volume_db = _whole(
+            entry.get("volume_db", 0),
+            "note %s: volume_db" % note_id,
+            _MIN_VOLUME_DB,
+            _MAX_VOLUME_DB,
+        )
         normalized = {}
         if transpose:
             normalized["transpose"] = transpose
@@ -422,6 +430,9 @@ def _tuning(section, families) -> dict:
         )
     out = copy.deepcopy(_TUNING_DEFAULTS)
     out.update(section)
+    out["master_volume_db"] = _whole(
+        out["master_volume_db"], "master_volume_db", _MIN_VOLUME_DB, _MAX_VOLUME_DB
+    )
     out["max_speakers"] = _whole(out["max_speakers"], "max_speakers", 1, _MAX_SPEAKERS)
     out["release_s"] = _release(out["release_s"])
     out["hard_stop"] = _flag(out["hard_stop"], "hard_stop")
@@ -475,9 +486,9 @@ def validate(doc) -> dict:
         raise SettingsError("unknown setting(s): %s" % ", ".join(unknown))
 
     version = doc.get("version", SETTINGS_VERSION)
-    if version == 1:
-        # Version 2 adds sparse note expression and optional exact-sound roots.
-        # No version 1 setting changes meaning, so migration is lossless.
+    if version in (1, 2):
+        # Versions 2 and 3 add note expression and master volume respectively.
+        # No earlier setting changes meaning, so both migrations are lossless.
         doc = dict(doc)
         doc["version"] = SETTINGS_VERSION
         version = SETTINGS_VERSION
@@ -578,6 +589,7 @@ def to_compile_kwargs(doc) -> dict:
     return {
         "button_name": doc["button"],
         "drums": {"auto": "auto", "on": True, "off": False}[doc["drums"]],
+        "master_volume_db": tuning["master_volume_db"],
         "max_speakers": tuning["max_speakers"],
         "release_s": tuning["release_s"],
         "hard_stop": tuning["hard_stop"],

@@ -64,6 +64,16 @@ def test_velocity_and_note_trim_share_the_engine_db_limits():
     assert loud.volume_limited is False
 
 
+def test_master_volume_offsets_every_note_before_the_engine_clamp():
+    expression = expression_for(60, 64, 60, volume_trim_db=3, master_volume_db=8)
+
+    assert expression.velocity_db == -12
+    assert expression.master_volume_db == 8
+    assert expression.volume_trim_db == 3
+    assert expression.requested_volume_db == -1
+    assert expression.volume_db == -1
+
+
 @pytest.mark.parametrize(
     ("db", "gain"),
     [

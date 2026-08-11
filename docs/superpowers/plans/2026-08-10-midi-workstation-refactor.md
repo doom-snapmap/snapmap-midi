@@ -251,4 +251,29 @@ Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
 - [x] Update README, user, capability, game-data, architecture, contributor, design, and
   implementation-plan documentation.
 - [x] Run complete automated validation.
-- [ ] Receive user acceptance before assigning a release target.
+- [x] Receive user acceptance before assigning a release target.
+
+## 19. Add pitch, dynamics, and note expression
+
+- [x] Preserve stable source-note identity and MIDI velocity through parsing.
+- [x] Resolve pitched families and arbitrary exact events from a trusted root or explicit
+  relative natural-playback reference.
+- [x] Use one integer pitch/dB expression model for preview and Timeline export.
+- [x] Add sparse per-note pitch/volume overrides and the Note expression inspector.
+- [x] Isolate decaying notes that need pitch or gain while retaining the neutral shared path.
+- [x] Complete the separate
+  [pitch/dynamics architecture plan](2026-08-11-pitch-dynamics-note-inspector-architecture.md).
+- [x] Commit and push the implementation after the complete CI matrix passes.
+
+## 20. Add a global volume control
+
+- [x] Place a persisted -60 through +20 dB Volume slider beside Notifications in the bottom
+  control plane, with neutral 0 dB as the default.
+- [x] Resolve `velocity dB + global dB + note trim dB` once in Python and send the same clamped
+  value to browser preview and rawmap export.
+- [x] Advance the sidecar to settings version 3 and migrate version 1 and 2 files losslessly.
+- [x] Add expression, settings, compile, preview-manifest, and UI asset-contract coverage.
+- [x] Bump the package version to 0.3.5 and update repository-wide documentation.
+- [x] Run complete lint, JavaScript, test, package-build, and diff validation.
+
+Release target: `v0.3.5`, created only after the pushed `main` commit passes CI.
