@@ -30,9 +30,11 @@ _NAMES = ["play_one", "play_two"]
 
 @pytest.fixture(autouse=True)
 def temporary_cache(tmp_path, monkeypatch):
-    """Point the cache at a temporary folder for the whole module."""
+    """Give every test an empty disk cache and a fresh process-local bank index."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    return library.cache_dir()
+    library.reset_source()
+    yield library.cache_dir()
+    library.reset_source()
 
 
 @pytest.fixture
@@ -109,11 +111,120 @@ def test_an_empty_cache_is_not_ready(no_install):
     assert state["cache_dir"] == str(library.cache_dir())
 
 
+def test_installed_banks_are_ready_without_extracting(fake_install, small_palette, monkeypatch):
+    """The normal path indexes the game and writes nothing under local app data."""
+    monkeypatch.setattr(locate, "doom_install", lambda: fake_install)
+
+    state = library.status()
+
+    assert state["ready"] is True
+    assert state["source"] == "game"
+    assert (state["bank_count"], state["cache_count"]) == (2, 0)
+    assert not library.cache_dir().exists()
+
+
+def test_a_direct_sound_decodes_in_memory_without_creating_a_wav(
+    fake_install, small_palette, monkeypatch
+):
+    monkeypatch.setattr(locate, "doom_install", lambda: fake_install)
+
+    with wave.open(io.BytesIO(library.read_wav("play_one"))) as reader:
+        assert reader.getnframes() == 2 * 64
+
+    assert library.wav_path("play_one") is None
+
+
+def test_the_bank_index_is_reused_across_status_and_sample_reads(
+    fake_install, small_palette, monkeypatch
+):
+    monkeypatch.setattr(locate, "doom_install", lambda: fake_install)
+    real_type = wwise.DoomSounds
+    built = []
+
+    def build(path):
+        built.append(path)
+        return real_type(path)
+
+    monkeypatch.setattr(wwise, "DoomSounds", build)
+
+    assert library.status()["ready"] is True
+    assert library.read_wav("play_one")
+    assert library.read_wav("play_two")
+    assert built == [fake_install]
+
+
 def test_a_full_cache_is_ready(fake_install, small_palette):
     library.extract(install=fake_install)
     state = library.status()
     assert state["ready"] is True
     assert (state["count"], state["expected"]) == (2, 2)
+
+
+def test_a_complete_legacy_cache_works_after_the_game_is_removed(
+    fake_install, small_palette, monkeypatch
+):
+    library.extract(install=fake_install)
+    monkeypatch.setattr(locate, "doom_install", lambda: None)
+    library.reset_source()
+
+    state = library.status()
+
+    assert state["ready"] is True
+    assert state["source"] == "cache"
+    assert (state["bank_count"], state["cache_count"]) == (0, 2)
+    assert library.read_wav("play_one")[:4] == b"RIFF"
+
+
+def test_offline_batch_checks_the_cache_manifest_once(fake_install, small_palette, monkeypatch):
+    library.extract(install=fake_install)
+    monkeypatch.setattr(locate, "doom_install", lambda: None)
+    library.reset_source()
+    real_manifest = library._manifest
+    calls = []
+
+    def manifest():
+        calls.append(True)
+        return real_manifest()
+
+    monkeypatch.setattr(library, "_manifest", manifest)
+    samples = library.read_wavs(_NAMES)
+
+    assert all(data and data[:4] == b"RIFF" for data in samples.values())
+    assert calls == [True]
+
+
+def test_game_and_cache_coverage_can_complete_each_other(tmp_path, small_palette, monkeypatch):
+    cache_install = tmp_path / "cache-game"
+    direct_install = tmp_path / "direct-game"
+    write_install(
+        cache_install,
+        banks=[
+            build_bank(
+                [("play_two", 2)],
+                media={2: wem(frame(predictor=-200, nibbles=[4]) * 2)},
+            )
+        ],
+    )
+    write_install(
+        direct_install,
+        banks=[
+            build_bank(
+                [("play_one", 1)],
+                media={1: wem(frame(predictor=200, nibbles=[4]) * 2)},
+            )
+        ],
+    )
+    library.extract(install=cache_install, names=["play_two"])
+    monkeypatch.setattr(locate, "doom_install", lambda: direct_install)
+    library.reset_source()
+
+    state = library.status()
+    samples = library.read_wavs(_NAMES)
+
+    assert state["ready"] is True
+    assert state["source"] == "game+cache"
+    assert (state["bank_count"], state["cache_count"]) == (1, 1)
+    assert all(data and data[:4] == b"RIFF" for data in samples.values())
 
 
 def test_a_half_extracted_cache_is_not_ready(fake_install, small_palette):
@@ -132,7 +243,9 @@ def test_a_stale_cache_version_is_not_ready(fake_install, small_palette):
     library.extract(install=fake_install)
     manifest = library.cache_dir() / library.MANIFEST_NAME
     manifest.write_text(json.dumps({"version": library.CACHE_VERSION - 1}), encoding="utf-8")
-    assert library.status()["ready"] is False
+    state = library.status()
+    assert state["ready"] is False
+    assert (state["count"], state["cache_count"]) == (0, 0)
 
 
 def test_a_stale_cache_is_redecoded_without_needing_the_force_flag(fake_install, small_palette):

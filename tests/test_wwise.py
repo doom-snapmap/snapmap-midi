@@ -429,6 +429,31 @@ def test_the_pack_copy_wins_over_the_bank_copy(tmp_path):
     assert len(sounds.pcm("play_synth")[2][0]) == 5 * 64
 
 
+def test_mod_banks_outside_the_retail_sound_root_cannot_override_preview(tmp_path):
+    """DoomForge injects these into the live game; the stock preview must not.
+
+    Blindly walking the whole install would let a mod event with the same hash
+    replace a SnapMap palette sound according to filesystem ordering. Mod
+    sounds need an explicit catalog and priority contract before they can join
+    the workstation.
+    """
+    stock = wem(frame(predictor=1200, nibbles=[0]))
+    injected = wem(frame(predictor=-1200, nibbles=[0]))
+    write_install(
+        tmp_path,
+        banks=[build_bank([("play_synth", 1)], media={1: stock})],
+    )
+    mod_folder = tmp_path / "mods" / "doomforge" / "custom-demon" / "sound" / "soundbanks" / "pc"
+    mod_folder.mkdir(parents=True)
+    (mod_folder / "doom_custom_demon.bnk").write_bytes(
+        build_bank([("play_synth", 2)], media={2: injected})
+    )
+
+    sounds = wwise.DoomSounds(tmp_path)
+
+    assert sounds.pcm("play_synth")[2][0][0] == 1200
+
+
 def test_a_name_with_no_event_raises_naming_itself(tmp_path):
     sounds = _install_with(tmp_path)
     with pytest.raises(KeyError) as caught:

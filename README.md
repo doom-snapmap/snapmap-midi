@@ -8,8 +8,9 @@ been verified end to end in game.
 
 **This repo ships NO game data** — no declaration files, no saved maps, no audio. It ships
 the *names* of the sounds the game already has, which is what lets it work out of the box.
-Optional previews are decoded locally from your own DOOM install and stay in a rebuildable
-cache on your machine; they are never part of the package or repository.
+Preview reads your own DOOM install in place and decodes only the sounds the current song uses
+into memory. There is no audio setup or download step; an optional CLI-built offline cache is
+still available, and neither source is ever part of the package or repository.
 Every line here is our own implementation, built from our own reverse-engineering of the map
 format; no decompiled or copied content.
 
@@ -158,8 +159,9 @@ responsive during playback, including when the pointer is over the disabled hori
 scrollbar. Dragging the channel/roll divider trades width between the two panes, while bottom
 controls set the visual note grid, time signature, and playhead-anchored pitch/time zoom without
 changing the source notes. Conversion limits open in a nonblocking inspector instead of an import
-wizard or a separate tab. If DOOM is installed, **Set Up Audio** decodes the local preview cache
-once; conversion and export continue to work without it.
+wizard or a separate tab. If DOOM is installed, preview indexes its retail soundbanks in place
+and prepares only the sounds selected by the current song. There is no audio setup step;
+conversion and export continue to work when preview audio is unavailable.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
 produced it. Open that song again and the choices are already there;
@@ -264,7 +266,7 @@ never the ones above.
 | `src/snapmap_midi/rawmap/` | the map-authoring core — codec, value builders, documents, reference slots, the blank-map template |
 | `src/snapmap_midi/sound/` | the game's sound surface — the palette, event calls, timeline authoring |
 | `src/snapmap_midi/music/` | the MIDI domain — parsing, General MIDI tables, voice allocation |
-| `src/snapmap_midi/audio/` | optional local preview extraction — install discovery, Wwise decoding, cache |
+| `src/snapmap_midi/audio/` | local preview — installed-bank discovery, Wwise decoding, optional offline cache |
 | `src/snapmap_midi/ui/` | the desktop workstation — its session, preview manifest, Javascript bridge, native chrome, and markup |
 | `src/snapmap_midi/data/` | the shipped sound palette, and curated ear-labels for it |
 | `tools/` | maintainer scripts, not part of the installed package |

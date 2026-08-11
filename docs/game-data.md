@@ -35,18 +35,28 @@ The declaration those names were read out of is game content and is not in this 
 CI enforces that: a committed `.decl` fails the build, as does any JSON that looks like a
 map.
 
-### The optional preview cache is not shipped
+### Preview reads the installed game in place
 
-The MIDI workstation can decode song-preview audio from a copy of DOOM the user already owns.
-Those WAV files are created at runtime under `%LOCALAPPDATA%\snapmap-midi\sounds`; they are
-not downloaded, packaged, committed, or copied into an export. The cache is about 450 MB,
-is safe to delete, and survives package upgrades and uninstalls because it is user-derived
-data rather than part of the Python installation.
+The MIDI workstation finds a copy of DOOM the user already owns, indexes the stock retail
+soundbank tables, and decodes only the sounds selected by the current song. The banks remain
+where Steam installed them and decoded samples remain in memory; normal preview creates no
+audio library on disk. Nothing is downloaded, packaged, committed, or copied into an export.
 
-No compile depends on it. With no game installed, the only missing capability is playing the
-complete converted song in the workstation. The sound pickers still expose all 890 names and
-export still writes references to the sounds the arrangement uses. See
-[`ui.md`](ui.md#previewing-the-song) for setup and cache behaviour.
+The optional `snapmap-midi extract` command can still build a resumable offline cache under
+`%LOCALAPPDATA%\snapmap-midi\sounds`. It is roughly 450 MB, safe to delete, and used only as
+a fallback when the installed game is unavailable. The workstation never runs extraction as a
+setup step.
+
+No compile depends on either preview source. With no game and no valid offline cache, the only
+missing capability is playing the complete converted song in the workstation. The sound pickers
+still expose all 890 names and export still writes references to the sounds the arrangement uses.
+
+Normal discovery is deliberately limited to `<DOOM>\base\sound\soundbanks\pc`. It does not
+recursively scan `<DOOM>\mods`, so dynamically injected DoomForge banks cannot shadow a stock
+event or media ID in workstation preview. Supporting custom mod sounds later requires an explicit
+catalog, SnapMap-compatibility rules, and deterministic bank precedence rather than silently
+merging every bank found under the game directory. See
+[`ui.md`](ui.md#previewing-the-song) for source and fallback behaviour.
 
 ### Regenerating the palette
 
@@ -141,8 +151,8 @@ from snapmap_midi import paths
 
 print(paths.rawmap_destination())  # where a compiled map will be written
 print(paths.baseline_map())  # None unless you configured one
-print(paths.doom_install())  # explicit preview override, or None when search should decide
-print(paths.sound_cache())  # where locally decoded previews live
+print(paths.doom_install())  # explicit direct-preview override, or None for Steam discovery
+print(paths.sound_cache())  # optional offline-cache location
 print(paths.baseline_configured())  # what the savedmap-marked tests ask
 ```
 

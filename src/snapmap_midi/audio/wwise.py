@@ -369,11 +369,11 @@ def _clamp_index(value: int) -> int:
 class DoomSounds:
     """Every sound in one install, addressable by name.
 
-    Built once and reused. The constructor walks the chunk table of all 22
-    banks and seeks straight past their audio, which is why indexing 35,000
-    objects and 71,000 media out of four gigabytes of files costs about a
-    twentieth of a second -- and why doing it per sound instead would add
-    three quarters of a minute to a half-minute extraction.
+    Built once and reused. The constructor walks the retail chunk tables under
+    `base/sound/soundbanks/pc` and seeks straight past their audio. It never
+    recursively discovers mod banks elsewhere in the install: runtime-injected
+    sounds need an explicit catalog and precedence contract before they can
+    safely join the stock SnapMap palette.
     """
 
     def __init__(self, install_dir):

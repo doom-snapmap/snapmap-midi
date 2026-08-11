@@ -7,12 +7,13 @@ layer on top rather than a dependency underneath.
 
     wwise       the soundbank format: a sound name to decoded PCM samples
     locate      finding the install, without asking anybody where it is
-    library     the extracted-audio cache, and the one-time extraction
+    library     direct song-scoped decoding, with an offline cache fallback
 
-It sits above `sound`, because it needs the palette to know which sounds are
-worth extracting, and only the product surfaces -- the window and the explicit
-`extract` command -- reach it. `music` neither needs it nor may reach it: a
-compile that quietly depended on a game install would put the tool back where
+It sits above `sound`, because it needs the palette to know which bank events
+are valid SnapMap choices, and only the product surfaces -- the window and the
+optional offline-cache command -- reach it. `music` neither needs it nor may
+reach it: a compile that quietly depended on a game install would put the tool
+back where
 it started, useless until someone went digging.
 
 `wwise` alone imports nothing internal. It is a file-format reader that happens

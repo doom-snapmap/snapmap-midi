@@ -32,9 +32,9 @@ resolution path.
   the preview manifest the same way export does.
 - [x] Expand the catalog payload to all 24 categories and all 890 sound names,
   preserving pitched-family metadata and optional ear labels.
-- [x] Add a bounded bridge call that returns cached WAV data only for sounds
-  used by the current manifest.
-- [x] Test stale/unknown requests, missing cache entries, and manifest/export
+- [x] Add a bounded bridge call that returns WAV data only for sounds used by
+  the current manifest.
+- [x] Test stale/unknown requests, unavailable audio sources, and manifest/export
   agreement.
 
 ## 3. Replace the tabbed shell
@@ -46,8 +46,8 @@ resolution path.
 - [x] Build the one-screen workspace: transport, unified track column, piano
   roll, bottom control plane, status bar, and empty state.
 - [x] Remove every per-channel and per-drum Play button.
-- [x] Put Import, Export, audio setup, and conversion settings in traditional
-  menus and a minimal transport toolbar.
+- [x] Put Import, Export, audio-source refresh, and conversion settings in
+  traditional menus and a minimal transport toolbar.
 
 ## 4. Implement the piano roll and transport
 
@@ -206,3 +206,16 @@ Release target: `v0.3.2`, created only after the pushed `main` commit passes CI.
 - [x] Run focused and complete validation.
 
 Release target: `v0.3.3`, created only after the pushed `main` commit passes CI.
+
+## 17. Read preview audio directly from installed banks
+
+- [x] Reuse one indexed retail-bank source per process and decode only the unique
+  sounds selected by the current conversion.
+- [x] Prepare missing song samples in one background lane and retain overlapping
+  browser buffers when assignments or conversion settings change.
+- [x] Remove the UI extraction/setup workflow and replace it with audio-source
+  refresh; retain the explicit CLI cache as an offline fallback.
+- [x] Keep bank discovery rooted at the retail sound directory so DoomForge banks
+  under `mods` cannot override stock palette events or media by hash collision.
+- [x] Add provider, fallback, reuse, mod-isolation, bridge, and asset regression
+  coverage; update the repository documentation for the new source model.

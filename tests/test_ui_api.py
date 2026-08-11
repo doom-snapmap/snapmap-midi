@@ -209,6 +209,30 @@ def test_audio_status_failure_does_not_take_down_the_editor(monkeypatch):
     assert payload["audio"]["error"] == "cache cannot be read"
 
 
+def test_audio_status_refreshes_install_discovery_without_writing(monkeypatch):
+    from snapmap_midi.audio import library
+
+    calls = []
+    state = {
+        "ready": True,
+        "source": "game",
+        "count": 890,
+        "expected": 890,
+        "bank_count": 890,
+        "cache_count": 0,
+        "install": "D:/DOOM",
+        "cache_dir": "C:/cache",
+    }
+
+    def status(*, refresh=False):
+        calls.append(refresh)
+        return dict(state)
+
+    monkeypatch.setattr(library, "status", status)
+    assert Bridge().audio_status() == {"ok": True, "audio": state}
+    assert calls == [True]
+
+
 def test_opening_on_a_bad_path_still_opens(tmp_path):
     """`snapmap-midi ui missing.mid` must give a usable window that says what
     went wrong. A GUI user has no console to read a traceback in, so the
@@ -387,14 +411,14 @@ def test_a_sound_outside_the_palette_is_refused_before_the_cache_is_read(monkeyp
     assert "shipped palette" in result["error"]
 
 
-def test_an_unextracted_sound_explains_the_one_step_that_is_missing(monkeypatch):
+def test_an_unavailable_sound_names_both_preview_sources(monkeypatch):
     from snapmap_midi.audio import library
 
     monkeypatch.setattr(library, "expected_names", lambda: ["play_one"])
     monkeypatch.setattr(library, "read_wav", lambda name: None)
     result = Bridge().preview_sound("play_one")
     assert result["ok"] is False
-    assert "set up audio preview" in result["error"]
+    assert "installed game and offline cache" in result["error"]
 
 
 def test_a_channel_preview_resolves_the_same_sound_as_the_compiler(monkeypatch):
@@ -478,11 +502,11 @@ def test_global_preview_fetches_only_the_samples_the_current_song_uses(monkeypat
     requested = used[:2]
     reads = []
 
-    def read_wav(name):
-        reads.append(name)
-        return b"RIFF"
+    def read_wavs(names):
+        reads.extend(names)
+        return {name: b"RIFF" for name in names}
 
-    monkeypatch.setattr(library, "read_wav", read_wav)
+    monkeypatch.setattr(library, "read_wavs", read_wavs)
     result = bridge.preview_samples(requested + requested[:1])
     assert result["ok"] is True
     assert list(result["samples"]) == requested
@@ -499,8 +523,8 @@ def test_global_preview_refuses_a_palette_sound_the_current_song_does_not_use(mo
     outside = next(sound for sound in palette.all_sounds() if sound not in used)
     monkeypatch.setattr(
         library,
-        "read_wav",
-        lambda name: pytest.fail("an out-of-song sound reached the audio cache"),
+        "read_wavs",
+        lambda names: pytest.fail("an out-of-song sound reached the audio source"),
     )
     result = bridge.preview_samples([outside])
     assert result["ok"] is False
@@ -512,7 +536,7 @@ def test_global_preview_reports_missing_used_samples_without_failing_the_bridge(
 
     bridge = Bridge(midi=TINY_MIDI)
     used = bridge.preview_manifest()["preview"]["sounds"][:2]
-    monkeypatch.setattr(library, "read_wav", lambda name: None)
+    monkeypatch.setattr(library, "read_wavs", lambda names: {name: None for name in names})
     assert bridge.preview_samples(used) == {"ok": True, "samples": {}, "missing": used}
 
 

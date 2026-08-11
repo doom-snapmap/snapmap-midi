@@ -43,7 +43,7 @@ a rounded web button.
 - **File**: Import MIDI... (`Ctrl+I`), Reopen MIDI, Export SnapMap... (`Ctrl+E`),
   Exit.
 - **Playback**: Play/Pause (`Space`), Return to Start (`Home`).
-- **Options**: Conversion Settings... (`Ctrl+,`), Set Up Audio....
+- **Options**: Conversion Settings... (`Ctrl+,`), Refresh Audio Source.
 - **View**: Light Theme, Dark Theme.
 
 Only one menu may be open. Clicking outside it or pressing Escape closes it.
@@ -69,8 +69,8 @@ Percussion may still use its automatic per-key map; an advanced per-key override
 may remain available through the track inspector, never through a separate tab.
 
 `rawmap.json` contains references only to sounds the arrangement actually uses.
-It never embeds the audio library. The local preview cache may contain all 890
-speaker-palette WAVs extracted from the user's own game install.
+It never embeds the audio library. Preview indexes the user's installed retail
+banks and decodes only the sounds selected by the current arrangement.
 
 ## Full-song preview and transport
 
@@ -92,8 +92,8 @@ Playback requirements:
   next playback uses the new conversion.
 - Playback ends at the song duration and returns to the paused state at zero.
 
-The browser engine schedules cached PCM samples with Web Audio. Python provides
-the resolved converted-note manifest and only the samples used by that manifest.
+The browser engine schedules current-song PCM samples with Web Audio. Python
+provides the resolved converted-note manifest and only the samples it uses.
 The page uses a look-ahead scheduler so a long song does not create thousands of
 live audio nodes at once.
 
@@ -174,8 +174,8 @@ Conversion; opening one closes the other. The inspector shows the complete
 warning array, one message per row, with the channel list's faint separators.
 It has an explicit close button, toggles from its control-plane button, closes
 with `Escape`, and shows a quiet empty state when the current conversion has no
-warnings. The audio-setup banner remains separate because it starts a user
-action rather than reporting a conversion condition.
+warnings. The audio-source banner remains separate because it reports preview
+availability rather than a conversion condition.
 
 Grid, Time signature, and Zoom sit at the control plane's right edge. Grid
 offers whole through thirty-second-note visual divisions. Time signature starts
@@ -183,15 +183,15 @@ from the source file and changes numbered bar grouping as a visual override.
 Neither control alters playback or source events. Zoom changes both axes so the
 keys, measure ruler, grid, notes, playhead, and scrollbar travel remain aligned.
 
-## Import and audio setup
+## Import and audio discovery
 
 Import never presents a tuning wizard. The existing workspace remains visible
 with a progress state while the file is analyzed, then tracks and notes appear.
 
-If the local audio cache is absent, conversion and export still work. Playback
-shows a non-blocking setup banner and **Set Up Audio...** action. Extracting game
-audio may show progress, but it is not a tuning decision and does not prevent
-the song from opening.
+The workstation discovers and indexes an installed game's retail banks without
+a setup step, then prepares only the unique samples used by the imported song.
+A valid offline cache is a fallback. If neither source is available, conversion
+and export still work and a non-blocking banner reports preview as unavailable.
 
 ## Visual language
 

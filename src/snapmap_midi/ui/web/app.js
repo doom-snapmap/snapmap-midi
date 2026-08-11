@@ -97,7 +97,10 @@
     nextIndex: 0,
     timer: null,
     frame: null,
-    sources: []
+    sources: [],
+    generation: 0,
+    preparing: false,
+    prepareError: null
   };
 
   function el(id) { return document.getElementById(id); }
@@ -273,10 +276,17 @@
 
   function updateMenuState() {
     var song = hasSong();
+    var audio = STATE.audio || {};
     ['menuReopen', 'menuExport', 'menuPlay', 'menuStart'].forEach(function (id) { el(id).disabled = !song; });
     el('menuPlay').querySelector('span').textContent = AUDIO.playing ? 'Pause' : 'Play';
-    el('menuAudio').querySelector('span').textContent = STATE.audio && STATE.audio.ready ? 'Audio Ready' : 'Set Up Audio...';
-    el('menuAudio').disabled = !!(STATE.audio && STATE.audio.ready);
+    if (audio.source === 'game' || audio.source === 'game+cache') {
+      el('menuAudio').querySelector('span').textContent = 'DOOM Audio Ready';
+    } else if (audio.source === 'cache') {
+      el('menuAudio').querySelector('span').textContent = 'Offline Audio Ready';
+    } else {
+      el('menuAudio').querySelector('span').textContent = 'Refresh Audio Source';
+    }
+    el('menuAudio').disabled = false;
   }
 
   /* --------------------------------------------------------------- tracks */
@@ -1532,34 +1542,76 @@
       .then(function (buffer) { return context.decodeAudioData(buffer); });
   }
 
-  function audioKey() {
-    return ((STATE.preview && STATE.preview.sounds) || []).join('\n');
+  function requiredAudioNames() {
+    return (STATE.preview && STATE.preview.sounds) || [];
   }
 
-  function invalidateAudio() {
+  function audioKey() {
+    return requiredAudioNames().join('\n');
+  }
+
+  function retainRequiredBuffers() {
+    var keep = {};
+    requiredAudioNames().forEach(function (name) {
+      if (AUDIO.buffers[name]) { keep[name] = AUDIO.buffers[name]; }
+    });
+    AUDIO.buffers = keep;
+  }
+
+  function invalidateAudio(clearBuffers) {
     PLAY_TOKEN += 1;
     stopSources();
     AUDIO.key = '';
-    AUDIO.buffers = {};
-    AUDIO.loading = null;
+    AUDIO.prepareError = null;
+    if (clearBuffers) {
+      AUDIO.generation += 1;
+      AUDIO.buffers = {};
+      AUDIO.loading = null;
+      AUDIO.preparing = false;
+    } else {
+      retainRequiredBuffers();
+    }
   }
 
-  function ensureSongAudio() {
+  function ensureSongAudio(background) {
     if (!STATE.audio || !STATE.audio.ready) {
-      return Promise.reject(new Error('Set up audio preview before playing the converted song'));
+      return Promise.reject(new Error(
+        'DOOM audio is unavailable. Install DOOM or configure its install directory to preview this song.'
+      ));
     }
-    var key = audioKey();
-    if (AUDIO.key === key && !AUDIO.loading) { return Promise.resolve(); }
-    if (AUDIO.loading && AUDIO.loading.key === key) { return AUDIO.loading.promise; }
     if (!api()) { return Promise.reject(new Error('The audio bridge is not available')); }
+
+    var key = audioKey();
+    var missing = requiredAudioNames().filter(function (name) { return !AUDIO.buffers[name]; });
+    if (!missing.length) {
+      AUDIO.key = key;
+      AUDIO.prepareError = null;
+      return Promise.resolve();
+    }
+
+    if (AUDIO.loading) {
+      if (AUDIO.loading.key === key) { return AUDIO.loading.promise; }
+      return AUDIO.loading.promise.catch(function () {}).then(function () {
+        return ensureSongAudio(background);
+      });
+    }
+
     var context;
     try { context = ensureAudioContext(); } catch (error) { return Promise.reject(error); }
-    var sounds = (STATE.preview && STATE.preview.sounds) || [];
-    setBusy(true, 'Loading song audio...');
-    var promise = api().preview_samples(sounds).then(function (response) {
-      if (!response || !response.ok) { throw new Error(response && response.error || 'Song audio could not be loaded'); }
+    var generation = AUDIO.generation;
+    AUDIO.preparing = true;
+    AUDIO.prepareError = null;
+    if (!background) { setBusy(true, 'Preparing song audio...'); }
+    renderAudio();
+
+    var promise = api().preview_samples(missing).then(function (response) {
+      if (!response || !response.ok) {
+        throw new Error(response && response.error || 'Song audio could not be loaded');
+      }
       if (response.missing && response.missing.length) {
-        throw new Error(response.missing.length + ' sounds are missing from the local audio cache');
+        throw new Error(
+          response.missing.length + ' sounds are unavailable from the game banks and offline cache'
+        );
       }
       var names = Object.keys(response.samples || {});
       return Promise.all(names.map(function (name) {
@@ -1568,16 +1620,36 @@
         });
       }));
     }).then(function (pairs) {
-      var buffers = {};
-      pairs.forEach(function (pair) { buffers[pair[0]] = pair[1]; });
-      AUDIO.buffers = buffers;
-      AUDIO.key = key;
+      if (generation !== AUDIO.generation) { return; }
+      var stillRequired = {};
+      requiredAudioNames().forEach(function (name) { stillRequired[name] = true; });
+      pairs.forEach(function (pair) {
+        if (stillRequired[pair[0]]) { AUDIO.buffers[pair[0]] = pair[1]; }
+      });
+      retainRequiredBuffers();
+      var currentMissing = requiredAudioNames().some(function (name) { return !AUDIO.buffers[name]; });
+      AUDIO.key = currentMissing ? '' : audioKey();
+      AUDIO.prepareError = null;
+    }).catch(function (error) {
+      if (generation === AUDIO.generation) {
+        AUDIO.prepareError = error && error.message || String(error);
+      }
+      throw error;
     }).finally(function () {
-      setBusy(false);
-      if (AUDIO.loading && AUDIO.loading.promise === promise) { AUDIO.loading = null; }
+      if (!background) { setBusy(false); }
+      if (AUDIO.loading && AUDIO.loading.promise === promise) {
+        AUDIO.loading = null;
+        AUDIO.preparing = false;
+        renderAudio();
+      }
     });
     AUDIO.loading = { key: key, promise: promise };
     return promise;
+  }
+
+  function prepareSongAudio() {
+    if (!hasSong() || !STATE.audio || !STATE.audio.ready) { return; }
+    ensureSongAudio(true).catch(function () { renderAudio(); });
   }
 
   function stopSources() {
@@ -1966,8 +2038,9 @@
         setBusy(false);
         if (!response || !response.ok) { fail(response); return; }
         adopt(response, sequence);
-        invalidateAudio();
+        invalidateAudio(false);
         render();
+        prepareSongAudio();
         toast('Conversion defaults restored', 'ok');
         if (resume) { startPlayback(); }
       }, function (error) { setBusy(false); fail(error); });
@@ -1981,11 +2054,12 @@
     if (!response || !response.ok) { fail(response); return; }
     pausePlayback();
     AUDIO.position = 0;
-    invalidateAudio();
+    invalidateAudio(true);
     TRACK_KEY = '';
     SELECTED_CHANNEL = null;
     adopt(response, sequence);
     render();
+    prepareSongAudio();
     if (response.sidecar_error) { toast(response.sidecar_error, 'warn'); }
     stamp('Opened ' + baseName(STATE.settings && STATE.settings.midi));
   }
@@ -2026,19 +2100,38 @@
     }, function (error) { setBusy(false); fail(error); });
   }
 
-  function setupAudio() {
+  function refreshAudio() {
     closeMenus();
-    if (!api() || (STATE.audio && STATE.audio.ready)) { return; }
+    if (!api()) { return; }
+    var resume = AUDIO.playing;
+    pausePlayback();
     var sequence = nextRequest();
-    setBusy(true, 'Extracting game audio...');
-    api().extract_audio().then(function (response) {
+    setBusy(true, 'Checking DOOM audio...');
+    api().audio_status().then(function (response) {
       setBusy(false);
-      if (response && response.audio) { adopt({ audio: response.audio }, sequence); }
+      if (!response || !response.ok) {
+        fail(response);
+        if (resume) { startPlayback(); }
+        return;
+      }
+      adopt({ audio: response.audio }, sequence);
+      invalidateAudio(true);
       renderAudio();
-      if (!response || !response.ok) { fail(response); return; }
-      invalidateAudio();
-      toast('Audio preview is ready', 'ok');
-    }, function (error) { setBusy(false); fail(error); });
+      if (STATE.audio && STATE.audio.ready) {
+        prepareSongAudio();
+        toast(
+          STATE.audio.source === 'cache' ? 'Offline preview cache is ready' : 'DOOM soundbanks are ready',
+          'ok'
+        );
+        if (resume) { startPlayback(); }
+      } else {
+        toast('DOOM audio was not found; conversion and export are still available', 'warn');
+      }
+    }, function (error) {
+      setBusy(false);
+      fail(error);
+      if (resume) { startPlayback(); }
+    });
   }
 
   function applyPatch(body, resumePlayback) {
@@ -2051,9 +2144,10 @@
       setBusy(false);
       if (!response || !response.ok) { fail(response); render(); return; }
       adopt(response, sequence);
-      invalidateAudio();
+      invalidateAudio(false);
       AUDIO.position = clamp(AUDIO.position, 0, (STATE.preview && STATE.preview.duration_ms) || 0);
       render();
+      prepareSongAudio();
       if (wasPlaying) { startPlayback(); }
     }, function (error) { setBusy(false); fail(error); render(); });
   }
@@ -2068,6 +2162,7 @@
       if (!response || !response.ok) { fail(response); render(); return; }
       adopt(response, sequence);
       render();
+      prepareSongAudio();
       if (response.error) { toast(response.error, 'warn'); }
       setTimeout(refreshWindowState, 0);
     }, function (error) { setBusy(false); fail(error); render(); });
@@ -2148,8 +2243,12 @@
     el('slotAudio').hidden = !state;
     el('audioBanner').hidden = !song || !state || !!state.ready;
     if (!state) { return; }
-    if (state.ready) { el('audioText').textContent = 'ready'; }
-    else if (state.error) { el('audioText').textContent = 'unavailable'; }
+    if (AUDIO.preparing) { el('audioText').textContent = 'preparing'; }
+    else if (AUDIO.prepareError) { el('audioText').textContent = 'retry on play'; }
+    else if (state.source === 'game') { el('audioText').textContent = 'game banks'; }
+    else if (state.source === 'game+cache') { el('audioText').textContent = 'game + cache'; }
+    else if (state.source === 'cache') { el('audioText').textContent = 'offline cache'; }
+    else if (state.error || state.bank_error) { el('audioText').textContent = 'unavailable'; }
     else if (!state.install) { el('audioText').textContent = 'game not found'; }
     else { el('audioText').textContent = (state.count || 0) + ' / ' + (state.expected || 0); }
     updateMenuState();
@@ -2321,8 +2420,8 @@
     el('menuReopen').addEventListener('click', reopenMidi);
     el('menuExport').addEventListener('click', exportMap);
     el('menuExit').addEventListener('click', function () { closeMenus(); if (api()) { api().win_close(); } });
-    el('menuAudio').addEventListener('click', setupAudio);
-    el('audioBanner').addEventListener('click', setupAudio);
+    el('menuAudio').addEventListener('click', refreshAudio);
+    el('audioBanner').addEventListener('click', refreshAudio);
     el('emptyOpenBtn').addEventListener('click', importMidi);
     el('exportBtn').addEventListener('click', exportMap);
     document.addEventListener('keydown', shortcut);

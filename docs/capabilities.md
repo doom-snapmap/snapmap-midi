@@ -6,9 +6,10 @@ around see [`limits.md`](limits.md).
 
 ## Commands
 
-The bare command is the normal application launcher. Compiling and editing need nothing
-configured; `extract` is the optional path that reads audio from an installed game. The
-`ui` subcommand is only a shortcut for preloading a song or an explicit settings file.
+The bare command is the normal application launcher. Preview reads an installed game's retail
+soundbanks directly when available; `extract` exists only to build an optional offline fallback.
+Compiling and editing need neither source. The `ui` subcommand is only a shortcut for preloading
+a song or an explicit settings file.
 
 ```bash
 snapmap-midi                     # open the MIDI workstation
@@ -83,7 +84,7 @@ offending key and exits `2` — the window writes that file and editing it by ha
 so a bad one is an ordinary event rather than a bug. See
 [`ui.md`](ui.md#the-settings-sidecar) for the schema.
 
-### `extract` — build the local preview cache
+### `extract` — build an optional offline preview cache
 
 | Flag | Type | Default | What it does |
 |---|---|---|---|
@@ -91,10 +92,11 @@ so a bad one is an ordinary event rather than a bug. See
 | `--force` | flag | off | re-decode sounds already present in the current cache |
 
 The command decodes the 890 palette sounds from the user's own game into WAV files under
-`%LOCALAPPDATA%\snapmap-midi\sounds`. It is the command-line form of the window's **Set up
-audio** button. Existing complete files are skipped, so an interrupted run resumes. Exit `0`
-means every palette sound is ready, `1` means one or more sounds could not be decoded, and
-`2` means there was no usable install. No audio is shipped or downloaded.
+`%LOCALAPPDATA%\snapmap-midi\sounds`. Existing complete files are skipped, so an interrupted
+run resumes. This is an explicit offline-cache operation; the workstation does not call it and
+normally reads installed banks in place. Exit `0` means every palette sound was cached, `1`
+means one or more sounds could not be decoded, and `2` means there was no usable install. No
+audio is shipped or downloaded.
 
 ### Bare command — the MIDI workstation
 
@@ -149,10 +151,10 @@ categories actually have a pitch index, which is the only version that cannot be
 The rest of the unpitched half is ambience, gore and interface noise, and a looping ambience
 fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 
-The workstation can play the entire converted arrangement after its optional local cache is
-built. Preview uses the same channel assignments and engine-limit processing as export and
-loads only samples the current song uses. See [`ui.md`](ui.md#previewing-the-song) for setup,
-transport, and cache behavior.
+The workstation can play the entire converted arrangement directly from an installed game's
+retail soundbanks, with a valid offline cache as fallback. Preview uses the same channel
+assignments and engine-limit processing as export and decodes only samples the current song
+uses. See [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
 
 ## Tuning levers
 

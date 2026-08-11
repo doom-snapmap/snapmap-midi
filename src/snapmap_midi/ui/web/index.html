@@ -57,7 +57,7 @@
         <button type="button" class="menu-label" data-menu="options" aria-haspopup="menu" aria-expanded="false">Options</button>
         <div class="menu-popup" id="menu-options" role="menu" hidden>
           <button type="button" id="menuConversion" role="menuitem"><span>Conversion Settings...</span><kbd>Ctrl+,</kbd></button>
-          <button type="button" id="menuAudio" role="menuitem"><span>Set Up Audio...</span></button>
+          <button type="button" id="menuAudio" role="menuitem"><span>Refresh Audio Source</span></button>
         </div>
       </div>
       <div class="menu">
@@ -120,7 +120,7 @@
   </main>
 
   <button type="button" class="audio-banner" id="audioBanner" hidden>
-    Audio preview is not set up. Set up audio to hear the converted song.
+    DOOM audio was not found. Preview is unavailable; conversion and export still work. Click to check again.
   </button>
 
   <div class="control-plane" id="controlPlane" role="toolbar" aria-label="Workstation controls">
@@ -205,7 +205,7 @@
 
   <div class="statusbar">
     <span><span class="dot" id="bridgeDot"></span><b id="bridgeName">snapmap-midi</b> <span id="bridgeText">connecting...</span></span>
-    <span id="slotAudio" hidden>Audio <b id="audioText">not set up</b></span>
+    <span id="slotAudio" hidden>Audio <b id="audioText">checking</b></span>
     <span id="slotNotes" hidden>Notes <b id="statNotes">0</b></span>
     <span id="slotVoices" hidden>Peak voices <b id="statVoices">0</b></span>
     <span id="slotSustain" hidden>Long sustains <b id="statSustain">0</b></span>

@@ -17,9 +17,9 @@ enough -- a leftover empty folder from a moved or uninstalled copy exists
 perfectly well and would send every later read into a directory with nothing
 in it.
 
-`None` is an ordinary answer here, not a failure. It means no audio preview,
-which is a state the window is built to show; the map still compiles and still
-exports, because none of that ever needed the game's samples.
+`None` is an ordinary answer here, not a failure. It means direct bank
+preview is unavailable; a valid legacy offline cache may still work. The map
+still compiles and exports because neither operation needs the game's samples.
 """
 
 from __future__ import annotations

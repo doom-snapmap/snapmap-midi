@@ -1,10 +1,11 @@
-"""Command-line surface: compile, prepare local previews, or open the window.
+"""Command-line surface: compile, optionally cache previews, or open the window.
 
 The ordinary compile surface is one required argument. Everything it used to
 demand -- a sound palette to point at, a saved map to inherit a timeline from,
-an output name -- is either shipped, authored, or fixed by the loader. Audio
-extraction is separate and optional because it needs an installed game while a
-compile never does.
+an output name -- is either shipped, authored, or fixed by the loader. The
+workstation normally reads installed game banks directly. Offline cache
+extraction remains separate and optional because it needs an installed game
+while a compile never does.
 
 Typing the name with nothing after it opens the window, because the window is
 now where an instrument gets chosen and this command line is where a choice
@@ -170,12 +171,11 @@ def _extract_progress(done: int, total: int, name: str) -> None:
 
 
 def _extract(args) -> int:
-    """Decode the game's own audio into the cache the window plays from.
+    """Decode the game's audio into the optional offline preview cache.
 
-    Separate from `compile` because it needs something a compile never does --
-    an installed copy of the game -- and takes about half a minute. Folding it
-    into startup would put that in front of a window that otherwise opens at
-    once, on every machine, including the ones that only ever export.
+    The normal workstation reads banks in place and never calls this. Keeping
+    it separate preserves preview on a machine where DOOM is later moved or
+    uninstalled without making a 450 MB cache part of ordinary setup.
     """
     # Imported here so the compile path does not pay for reading a palette and
     # a registry it has no use for.
@@ -314,7 +314,7 @@ def main(argv=None) -> int:
     # flag is how `--out` kept working after it was removed.
     parser = argparse.ArgumentParser(
         prog="snapmap-midi",
-        description="Compile playable MIDI maps, prepare local previews, or open the window.",
+        description="Compile playable MIDI maps, optionally cache previews, or open the window.",
         allow_abbrev=False,
     )
     # Not required: a bare `snapmap-midi` opens the window, which is what
@@ -327,7 +327,7 @@ def main(argv=None) -> int:
     c.set_defaults(func=_compile)
 
     e = sub.add_parser(
-        "extract", help="decode the game's audio so the window can play it", allow_abbrev=False
+        "extract", help="build an optional offline preview cache", allow_abbrev=False
     )
     e.add_argument("--install", default=None, help="read this game directory instead of searching")
     e.add_argument("--force", action="store_true", help="re-decode sounds that are already cached")

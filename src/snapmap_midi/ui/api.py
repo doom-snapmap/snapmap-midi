@@ -245,8 +245,11 @@ class Bridge:
         except Exception as exc:
             return {
                 "ready": False,
+                "source": None,
                 "count": 0,
                 "expected": 0,
+                "bank_count": 0,
+                "cache_count": 0,
                 "install": None,
                 "cache_dir": "",
                 "error": str(exc) or exc.__class__.__name__,
@@ -355,12 +358,17 @@ class Bridge:
     # ---- local audio preview ----
 
     def audio_status(self) -> dict:
-        """Report the cache without changing it."""
-        return {"ok": True, "audio": self._audio_status()}
+        """Recheck installed banks and the offline cache without writing either."""
+        try:
+            from snapmap_midi.audio import library
+
+            return {"ok": True, "audio": library.status(refresh=True)}
+        except Exception as exc:
+            return _fail(exc)
 
     @staticmethod
     def _audio_payload(sound: str) -> dict:
-        """One cached WAV as a data URI the local page can always play."""
+        """One game-bank or offline-cache WAV as a local-page data URI."""
         from snapmap_midi.audio import library
 
         if sound not in set(library.expected_names()):
@@ -369,7 +377,7 @@ class Bridge:
         if data is None:
             return {
                 "ok": False,
-                "error": "%s has not been extracted; set up audio preview first" % sound,
+                "error": "%s is unavailable from the installed game and offline cache" % sound,
                 "sound": sound,
             }
         encoded = base64.b64encode(data).decode("ascii")
@@ -380,7 +388,7 @@ class Bridge:
         }
 
     def extract_audio(self) -> dict:
-        """Decode the user's game samples after an explicit button press."""
+        """Build the optional offline cache for compatibility callers."""
         try:
             from snapmap_midi.audio import library
 
@@ -431,7 +439,7 @@ class Bridge:
             return _fail(exc)
 
     def preview_samples(self, names) -> dict:
-        """Cached WAV payloads for sounds used by the current conversion only."""
+        """Direct-bank or offline WAVs used by the current conversion only."""
         try:
             if isinstance(names, (str, bytes)) or not isinstance(names, (list, tuple)):
                 raise ValueError("preview sample names must be a list")
@@ -452,8 +460,7 @@ class Bridge:
 
             samples = {}
             missing = []
-            for name in requested:
-                data = library.read_wav(name)
+            for name, data in library.read_wavs(requested).items():
                 if data is None:
                     missing.append(name)
                 else:

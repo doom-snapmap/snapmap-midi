@@ -1,20 +1,22 @@
-"""The decoded-audio cache: extract once, then read files.
+"""Preview audio from the installed game, with the old WAV cache as fallback.
 
-Decoding the whole palette out of the banks takes about 36 seconds. Doing it
-on demand would put that cost on the first press of every note, and doing it
-at startup would put it in front of a window that otherwise opens instantly --
-so it happens once, deliberately, and the result is 890 `.wav` files under the
-user's local application data.
+The ordinary path never extracts the palette. `DoomSounds` indexes the retail
+bank metadata once, then each preview request seeks to and decodes only the
+sounds used by the current converted song. The bytes stay in memory long
+enough to cross the UI bridge; the browser owns the song-sized AudioBuffer
+cache used by playback.
 
-Not inside the package. The cache is derived from the user's own game and is
-theirs, it is rebuildable, and it is about 450 MB: three separate reasons a
-`pip uninstall` should not be the thing that removes it and a wheel should not
-be the thing that carries it.
+Older releases decoded all 890 sounds under the user's local application data.
+Those files remain useful when DOOM has since been moved or uninstalled, so
+they are still read as an offline fallback and the explicit `extract` command
+still builds them. They are never required by the normal workstation path and
+are never deleted automatically.
 
-Extraction is resumable because it is interruptible. Half a minute is long
-enough to close a window in the middle of, and an extraction that could only
-start from nothing would make that cost the whole run again. A name whose file
-is already there is skipped, so a second attempt finishes the first one.
+Bank discovery remains deliberately rooted at DOOM's retail sound directory.
+Mods may ship banks elsewhere under the install and inject them into the live
+game, but blindly merging those banks here would let an event-hash collision
+silently replace a stock SnapMap sound. Custom mod sounds need an explicit
+catalog and bank-priority contract of their own.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import json
 import os
 import re
 import struct
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -55,6 +58,17 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
 #: a reason to abandon the other 889.
 _SOUND_ERRORS = (KeyError, ValueError, NotImplementedError, OSError, struct.error)
 
+#: The installed-bank index is immutable after construction and belongs to the
+#: process, not to one song. Building it per sample would repeatedly walk every
+#: bank header, while keeping it here costs only the object/media lookup tables
+#: and leaves every compressed audio slice in the game files.
+_SOURCE_LOCK = threading.RLock()
+_DECODE_LOCK = threading.Lock()
+_SOURCE_LOADED = False
+_SOURCE_PATH: Optional[Path] = None
+_SOURCE: Optional[wwise.DoomSounds] = None
+_SOURCE_ERROR: Optional[Exception] = None
+
 
 def cache_dir() -> Path:
     """Where the extracted audio lives."""
@@ -85,14 +99,19 @@ def wav_path(name: str) -> Optional[Path]:
     return target if target is not None and target.is_file() else None
 
 
-def read_wav(name: str) -> Optional[bytes]:
-    """The cached audio for a sound, or None when there is none.
+def _read_cached_wav(name: str, cache_valid: Optional[bool] = None) -> Optional[bytes]:
+    """One valid legacy cache entry, or None when it cannot be used.
 
-    None rather than an exception: a caller asking for a batch of sounds to
-    preview is going to meet missing ones routinely -- a partial extraction, a
-    DLC sound in a base-game install -- and every one of those is a note that
-    does not play rather than a run that stops.
+    A stale decoder version is not fallback material. Both the old and new
+    bytes are structurally valid WAVs, so the manifest is the only way to keep
+    a fixed decoder from quietly serving its older, wrong output forever.
+    Batch readers pass the already-checked validity so one song does not parse
+    the same manifest once per missing sample.
     """
+    if cache_valid is None:
+        cache_valid = _manifest().get("version") == CACHE_VERSION
+    if not cache_valid:
+        return None
     target = wav_path(name)
     if target is None:
         return None
@@ -124,29 +143,137 @@ def _cached(names) -> int:
     return sum(1 for name in names if ("%s.wav" % name) in present)
 
 
-def status() -> dict:
-    """What the window needs to decide between the editor and the first-run panel.
+def _cached_names(names) -> set:
+    """Names with files in the current cache version."""
+    if _manifest().get("version") != CACHE_VERSION:
+        return set()
+    try:
+        present = set(os.listdir(cache_dir()))
+    except OSError:
+        return set()
+    return {name for name in names if ("%s.wav" % name) in present}
 
-    `ready` is deliberately strict: a matching cache version AND a file for
-    every expected name. A cache that is 60% extracted is not "mostly ready" to
-    anything that matters -- it is an editor where four notes in ten are
-    silent, with nothing on screen saying why.
+
+def reset_source() -> None:
+    """Forget the process-local bank index so discovery can run again.
+
+    The window uses this after somebody installs or moves DOOM while it is
+    open. It also gives tests a clean boundary without reaching into globals.
+    No files are created, changed, or held open by either reset or indexing.
+    """
+    global _SOURCE_LOADED, _SOURCE_PATH, _SOURCE, _SOURCE_ERROR
+    with _SOURCE_LOCK:
+        _SOURCE_LOADED = False
+        _SOURCE_PATH = None
+        _SOURCE = None
+        _SOURCE_ERROR = None
+
+
+def _source(refresh: bool = False) -> tuple:
+    """(install, indexed banks, error) for the current retail game data."""
+    global _SOURCE_LOADED, _SOURCE_PATH, _SOURCE, _SOURCE_ERROR
+    install = locate.doom_install()
+    path = Path(install) if install is not None else None
+    with _SOURCE_LOCK:
+        if refresh or not _SOURCE_LOADED or path != _SOURCE_PATH:
+            _SOURCE_LOADED = True
+            _SOURCE_PATH = path
+            _SOURCE = None
+            _SOURCE_ERROR = None
+            if path is not None:
+                try:
+                    _SOURCE = wwise.DoomSounds(path)
+                except (OSError, ValueError, struct.error, wwise.SoundsUnavailableError) as exc:
+                    _SOURCE_ERROR = exc
+        return path, _SOURCE, _SOURCE_ERROR
+
+
+def _cache_status(names) -> dict:
+    """The legacy extraction's own completion state."""
+    count = _cached(names)
+    install = locate.doom_install()
+    ready = bool(names) and count == len(names) and _manifest().get("version") == CACHE_VERSION
+    return {
+        "ready": ready,
+        "source": "cache" if ready else None,
+        "count": count,
+        "expected": len(names),
+        "bank_count": 0,
+        "cache_count": count,
+        "install": str(install) if install is not None else None,
+        "cache_dir": str(cache_dir()),
+    }
+
+
+def status(refresh: bool = False) -> dict:
+    """What the window can preview from game banks and legacy cache together.
+
+    `ready` remains deliberately strict: every palette sound must be available
+    from the installed retail banks, the valid offline cache, or their union.
+    A partial source is not "mostly ready" to an editor that promises all 890
+    choices; it is a song whose missing notes become silent without warning.
 
     Paths come back as strings because this crosses into the window, where a
     `Path` is not a thing that survives the trip.
     """
     names = expected_names()
-    count = _cached(names)
-    install = locate.doom_install()
-    return {
-        "ready": bool(names)
-        and count == len(names)
-        and _manifest().get("version") == CACHE_VERSION,
-        "count": count,
+    install, source, source_error = _source(refresh=refresh)
+    bank_names = source.names(names) if source is not None else set()
+    cached_names = _cached_names(names)
+    available = bank_names | cached_names
+    if bank_names:
+        mode = "game+cache" if cached_names - bank_names else "game"
+    elif cached_names:
+        mode = "cache"
+    else:
+        mode = None
+    payload = {
+        "ready": bool(names) and len(available) == len(names),
+        "source": mode,
+        "count": len(available),
         "expected": len(names),
+        "bank_count": len(bank_names),
+        "cache_count": len(cached_names),
         "install": str(install) if install is not None else None,
         "cache_dir": str(cache_dir()),
     }
+    if source_error is not None:
+        payload["bank_error"] = str(source_error) or source_error.__class__.__name__
+    return payload
+
+
+def read_wavs(names) -> dict:
+    """Decode requested palette sounds from the game, then try offline WAVs.
+
+    The caller already limits this list to the current conversion. One bank
+    index is reused for the batch, and one decode lane prevents two overlapping
+    bridge calls from making Python's CPU-bound ADPCM decoder compete with
+    itself. Each bank slice is opened, read, and closed independently; DOOM and
+    Steam are never held behind a long-lived file handle.
+    """
+    requested = list(names)
+    _install, source, _error = _source()
+    result = {}
+    cache_valid = None
+    with _DECODE_LOCK:
+        for name in requested:
+            data = None
+            if source is not None:
+                try:
+                    data = source.wav_bytes(name)
+                except _SOUND_ERRORS:
+                    pass
+            if data is None:
+                if cache_valid is None:
+                    cache_valid = _manifest().get("version") == CACHE_VERSION
+                data = _read_cached_wav(name, cache_valid=cache_valid)
+            result[name] = data
+    return result
+
+
+def read_wav(name: str) -> Optional[bytes]:
+    """One sound from installed banks or the valid legacy cache."""
+    return read_wavs([name])[name]
 
 
 def _write(target: Path, data: bytes) -> None:
@@ -226,6 +353,10 @@ def extract(install=None, names=None, progress=None, force: bool = False) -> dic
         ),
         encoding="utf-8",
     )
-    result = status()
+    # `extract` reports whether the OFFLINE CACHE completed, not whether the
+    # normal direct-bank preview could already play the same sounds. Conflating
+    # those would let a failed cache build exit successfully whenever DOOM was
+    # installed -- exactly when this optional command is being used.
+    result = _cache_status(expected_names())
     result.update({"written": written, "skipped": skipped, "failed": failed})
     return result

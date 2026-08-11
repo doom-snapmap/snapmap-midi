@@ -52,7 +52,7 @@ The menu bar keeps infrequent commands out of the note surface.
 |---|---|
 | **File** | Import MIDI, reopen the current file, export the map, exit |
 | **Playback** | play or pause the complete song, return to the start |
-| **Options** | open Conversion settings, set up local preview audio |
+| **Options** | open Conversion settings, refresh the installed-game audio source |
 | **View** | light theme, dark theme |
 
 The main shortcuts are `Ctrl+I` to import, `Ctrl+E` to export, `Ctrl+R` to reopen, `Ctrl+,`
@@ -93,8 +93,8 @@ the button again, its close button, or `Escape` closes the inspector. With no wa
 same inspector reports that the current conversion has none.
 
 Notifications and Conversion share the side-panel position and are mutually exclusive.
-Opening either one closes the other. The optional audio-setup banner remains separate
-because it is an actionable setup state rather than a conversion warning.
+Opening either one closes the other. The audio-source banner remains separate because it
+reports preview availability rather than a conversion warning.
 
 Grid choices are `1`, `1/2`, `1/4`, `1/8`, `1/16`, and `1/32`. They select the musical note
 value used for faint vertical subdivisions. The marks use the MIDI file's real tempo map, so
@@ -214,21 +214,29 @@ speaker allocation, voice stealing, hard stops, and releases as export. It is no
 computer's General MIDI synthesizer. When a later note reuses a SnapMap speaker, preview
 hard-cuts the earlier note at that same point just as the exported timeline does.
 
-The package contains no audio. If the local cache is missing, the song can still be opened,
-configured, and exported. A nonblocking banner offers **Set up audio**; the same operation is
-available under **Options > Set Up Audio...** or from the command line:
+The package contains no audio. When the workstation starts or imports a song, it finds the
+user's DOOM installation and indexes the stock retail soundbanks in place. Indexing reads bank
+metadata and media offsets; it does not decode or copy the full library. Python then decodes
+only the missing unique sounds used by the current converted arrangement into memory. Web
+Audio reuses those buffers and schedules them with a rolling look-ahead.
+
+**Options > Refresh Audio Source** repeats install discovery and source validation. There is no
+required setup step, background download, or persistent audio copy. The sound pickers always
+show all 890 stock SnapMap identifiers even when preview is unavailable.
+
+If the game is absent or its banks are unsupported, a valid previously built offline cache can
+still provide preview audio. Without either source, the song can still be opened, configured,
+and exported; the nonblocking banner only reports that Play is unavailable. To deliberately
+build the optional offline cache, run:
 
 ```bash
 snapmap-midi extract
 ```
 
-Setup reads the user's own DOOM installation and decodes all 890 palette sounds to
-`%LOCALAPPDATA%\snapmap-midi\sounds`. The cache is about 450 MB, resumable, safe to delete,
-and never shipped, downloaded, embedded in a map, or committed to the repository.
-
-Playback does not send that whole cache to the window. For each conversion, Python returns
-only the WAV data for sounds the current song actually uses; Web Audio decodes those samples
-and schedules them with a rolling look-ahead.
+That command decodes all 890 palette sounds under
+`%LOCALAPPDATA%\snapmap-midi\sounds`. The roughly 450 MB cache is resumable and safe to
+delete. The workstation never invokes the command, and no decoded audio is shipped, downloaded,
+embedded in a map, or committed to the repository.
 
 ## Conversion settings
 
@@ -272,8 +280,8 @@ loader reads. The window reports when an existing map was replaced.
 
 The exported map does **not** contain the 890-sound audio library. It contains timeline
 references only to sounds used by the current converted arrangement. DOOM already owns the
-sound data and resolves those names when the map plays. The optional local audio cache is
-for workstation preview only.
+sound data and resolves those names when the map plays. Installed-bank preview and the optional
+offline cache are workstation-only audio sources.
 
 Export also writes the current settings beside the MIDI. Open the song later and those
 choices return automatically. `snapmap-midi compile song.mid --settings
@@ -331,7 +339,7 @@ invalidate a map that was exported successfully.
 ## Theme, status, and failure behavior
 
 Light and dark themes use the exact Snapmap Plus token sets and persist locally. The status
-bar reports bridge readiness, optional audio readiness, note count, peak speaker voices,
+bar reports bridge readiness, preview-audio source, note count, peak speaker voices,
 long sustains, and song length. Warnings name the conversion setting that can address the
 condition and open the inspector in context.
 

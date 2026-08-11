@@ -23,8 +23,9 @@ fixture. If you learned something by reading the game's data, describe the findi
 your own implementation of it.
 
 **No game data, ever.** No `.decl` files. No saved maps. No committed audio. Sound *names* do
-ship — they are identifiers, not content — and a local preview cache may be generated under
-the user's application-data folder, never inside the checkout. The line is drawn in
+ship — they are identifiers, not content — and normal preview reads the user's installed banks
+without copying them. An explicit offline cache may be generated under the user's application-data
+folder, never inside the checkout. The line is drawn in
 [`game-data.md`](game-data.md). CI enforces it and will fail the pull request.
 
 **One change per pull request.** A rename bundled with a behaviour change makes both harder
@@ -75,8 +76,8 @@ You need none. The sound palette ships with the package and maps are authored fr
 so a fresh clone compiles real songs and runs the whole suite green.
 
 The four `gamedata`-marked audio tests are the exception in the literal sense: they run only
-when a real install can be found and otherwise skip. All bank parsing, decoding, cache and UI
-behaviour is covered with synthetic data and needs no game.
+when a real install can be found and otherwise skip. Bank parsing, direct providers, decoding,
+offline fallback, mod isolation, and UI behaviour are covered with synthetic data and need no game.
 
 Four tests compile *against* a saved map, to prove that path still works for people adding
 music to a level they already have. They carry the `savedmap` marker and skip when none is
@@ -158,9 +159,10 @@ assertion when a new icon is actually needed rather than adding an icon runtime 
 fetch. Keep `LUCIDE_LICENSE.txt` in the shipped `web/` assets. Do not reintroduce tabs or
 per-row Play controls.
 
-Audio previews are optional and local. Use the synthetic fixtures for ordinary decoder and
-cache work. Running `snapmap-midi extract` against a real install writes roughly 450 MB under
-the user's application-data folder, not the checkout; never turn that cache into a fixture.
+Audio previews are optional and local. Use the synthetic fixtures for ordinary bank indexing,
+direct decoding, fallback, and mod-isolation work. Running `snapmap-midi extract` against a real
+install is an explicit offline-cache test that writes roughly 450 MB under the user's
+application-data folder, not the checkout; never turn that cache into a fixture.
 
 To see it running, `.venv/Scripts/python.exe -m snapmap_midi`. [`ui.md`](ui.md) describes
 what should be on screen.

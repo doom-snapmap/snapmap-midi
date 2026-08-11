@@ -497,11 +497,23 @@ def test_rendering_caps_pixel_cost_and_throttles_nonvisual_transport_updates():
     assert "now - RENDER.scrubberPaintAt >= 33" in _JS
 
 
-def test_global_preview_is_wired_to_explicit_local_audio_setup():
+def test_global_preview_uses_direct_song_scoped_audio_without_setup_extraction():
     assert 'id="audioBanner"' in _HTML
     assert 'id="slotAudio"' in _HTML
-    assert "api().extract_audio(" in _JS
-    assert "api().preview_samples(" in _JS
+    assert "api().audio_status(" in _JS
+    assert "api().extract_audio(" not in _JS
+    assert "api().preview_samples(missing)" in _JS
+    assert "requiredAudioNames()" in _JS
+    assert "retainRequiredBuffers()" in _JS
+    assert "invalidateAudio(true)" in _JS, "a different song cannot reuse prior buffers"
+    assert "invalidateAudio(false)" in _JS, "settings changes retain overlapping buffers"
+    assert "prepareSongAudio();" in _JS
+    assert re.search(
+        r"function refreshAudio\(\).*?pausePlayback\(\).*?api\(\)\.audio_status\(\)"
+        r".*?invalidateAudio\(true\)",
+        _JS,
+        re.DOTALL,
+    ), "refresh must stop transport and discard buffers from the previous source"
     assert "api().preview_manifest(" not in _JS, "startup already carries the manifest"
 
 

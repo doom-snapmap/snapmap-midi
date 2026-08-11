@@ -12,7 +12,7 @@ the ones above, and a test asserts exactly that.
 ```
    compile.py / cli.py / settings.py / ui/  the product surface
                   |
-   audio/     locate, wwise, library        optional local preview samples
+   audio/     locate, wwise, library        direct preview, optional offline fallback
                   |
    music/     midi, gm, voices, analysis    notes: pairing, timbre, density
                   |
@@ -207,15 +207,22 @@ every mistake a hand edit makes here is a quiet one. See
 ### `audio/` — optional local previews
 
 This layer never participates in compilation. `locate.py` finds a usable DOOM install from
-the explicit override or Steam's own records. `wwise.py` indexes the game's banks and packs,
-resolves event names to media, and decodes the IMA ADPCM variant into WAV bytes without an
-external codec. `library.py` owns the versioned, resumable cache under the user's local
-application data.
+the explicit override or Steam's own records. `wwise.py` indexes the retail bank and pack
+tables, resolves event names to media, and decodes the IMA ADPCM variant into WAV bytes without
+an external codec. Indexing seeks past media payloads; it does not decode or copy the full
+library. A process-local `DoomSounds` instance keeps that index, and one serialized batch decodes
+only the missing unique sounds requested by the current conversion.
+
+`library.py` chooses direct installed-bank audio first and accepts a complete, versioned cache
+under the user's local application data as a legacy/offline fallback. The explicit `extract`
+command owns cache creation; the UI never invokes it. The decoder stays rooted at
+`base/sound/soundbanks/pc` and does not recursively merge runtime-injected mod banks, preventing
+a colliding mod event or media ID from overriding the stock SnapMap palette.
 
 The package carries only sound names. Every WAV is derived on the user's machine from their
 own install, never committed or distributed, and preview failure cannot stop the editor or
-change a compile. Real-install tests carry the `gamedata` marker; the parsers and cache are
-otherwise exercised against small synthetic banks.
+change a compile. Real-install tests carry the `gamedata` marker; the parser, provider, fallback,
+and mod-isolation behavior are otherwise exercised against small synthetic banks.
 
 ### `ui/` — the MIDI workstation
 
@@ -240,7 +247,7 @@ Nothing is served and nothing listens. The markup is loaded from the filesystem 
 
 **The division of labour is the design.** Python decides every conversion fact: which sound
 each note resolves to, whether it is sustained, which duration caps and polyphony rules keep
-it, which speaker voice it receives, when reuse cuts it off, and which cached samples the
+it, which speaker voice it receives, when reuse cuts it off, and which audio samples the
 current conversion may request. The same settings document feeds both the preview manifest
 and `compile_to_rawmap`.
 
