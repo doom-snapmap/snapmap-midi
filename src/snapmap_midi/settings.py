@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -70,12 +70,13 @@ _CHANNEL_KEYS = frozenset(
         "sound",
         "muted",
         "pitch_follow",
+        "soloed",
         "root_midi",
         "root_confidence",
         "root_source",
     }
 )
-_NOTE_KEYS = frozenset({"transpose", "volume_db"})
+_NOTE_KEYS = frozenset({"pitch_offset", "volume_db"})
 _ROOT_SOURCES = frozenset({"palette_name", "detected", "manual", "relative"})
 
 #: Stock event names measured from soundbanksinfo.events use this complete
@@ -280,10 +281,11 @@ def _channels(section, families, sounds) -> dict:
         normalized = {
             "family": family,
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
+            "soloed": _flag(entry.get("soloed", False), "channel %s: soloed" % channel),
         }
         if sound is not None:
             normalized["sound"] = sound
-            expression_fields = _CHANNEL_KEYS - {"family", "sound", "muted"}
+            expression_fields = _CHANNEL_KEYS - {"family", "sound", "muted", "soloed"}
             if any(key in entry for key in expression_fields):
                 pitch_follow = _flag(
                     entry.get("pitch_follow", False),
@@ -337,7 +339,7 @@ def _note_id(value) -> str:
 
 
 def _notes(section) -> dict:
-    """Validate sparse per-note pitch and volume trims.
+    """Validate sparse per-note playback-pitch and volume offsets.
 
     The key is generated from source MIDI identity, not conversion output, so
     changing an instrument or root profile cannot move an edit to another note.
@@ -351,7 +353,9 @@ def _notes(section) -> dict:
         unknown = sorted(set(entry) - _NOTE_KEYS)
         if unknown:
             raise SettingsError("note %s: unknown setting(s): %s" % (note_id, ", ".join(unknown)))
-        transpose = _whole(entry.get("transpose", 0), "note %s: transpose" % note_id, -24, 24)
+        pitch_offset = _whole(
+            entry.get("pitch_offset", 0), "note %s: pitch_offset" % note_id, -24, 24
+        )
         volume_db = _whole(
             entry.get("volume_db", 0),
             "note %s: volume_db" % note_id,
@@ -359,8 +363,8 @@ def _notes(section) -> dict:
             _MAX_VOLUME_DB,
         )
         normalized = {}
-        if transpose:
-            normalized["transpose"] = transpose
+        if pitch_offset:
+            normalized["pitch_offset"] = pitch_offset
         if volume_db:
             normalized["volume_db"] = volume_db
         if normalized:
@@ -462,6 +466,43 @@ def _release(value) -> float:
     return float(value)
 
 
+def _migrate(doc: dict) -> dict:
+    """Upgrade older sidecars while preserving their stored user choices.
+
+    Version 4 separates the written MIDI note from a playback-only pitch
+    offset. Versions 2 and 3 called the same integer ``transpose``. Renaming
+    that sparse user value preserves its intent while allowing
+    the piano roll and curated sample selection to stay faithful to the MIDI.
+    Version 1 had no note-expression section.
+    """
+
+    version = doc.get("version", SETTINGS_VERSION)
+    if isinstance(version, bool) or version not in (1, 2, 3):
+        return doc
+
+    migrated = copy.deepcopy(doc)
+    notes = migrated.get("notes")
+    if notes is None and version == 1:
+        migrated["notes"] = {}
+    elif isinstance(notes, Mapping):
+        rewritten = {}
+        for note_id, raw_entry in notes.items():
+            if isinstance(raw_entry, Mapping):
+                entry = dict(raw_entry)
+                if "transpose" in entry:
+                    if "pitch_offset" in entry and entry["pitch_offset"] != entry["transpose"]:
+                        raise SettingsError(
+                            "note %s has conflicting transpose and pitch_offset values" % note_id
+                        )
+                    entry["pitch_offset"] = entry.pop("transpose")
+                rewritten[note_id] = entry
+            else:
+                rewritten[note_id] = raw_entry
+        migrated["notes"] = rewritten
+    migrated["version"] = SETTINGS_VERSION
+    return migrated
+
+
 def validate(doc) -> dict:
     """Check a document and return it complete, normalised, and safe to compile.
 
@@ -485,13 +526,8 @@ def validate(doc) -> dict:
     if unknown:
         raise SettingsError("unknown setting(s): %s" % ", ".join(unknown))
 
+    doc = _migrate(doc)
     version = doc.get("version", SETTINGS_VERSION)
-    if version in (1, 2):
-        # Versions 2 and 3 add note expression and master volume respectively.
-        # No earlier setting changes meaning, so both migrations are lossless.
-        doc = dict(doc)
-        doc["version"] = SETTINGS_VERSION
-        version = SETTINGS_VERSION
     if version != SETTINGS_VERSION:
         raise SettingsError(
             "this document says version %r; this build reads and writes version %d only"
@@ -621,6 +657,7 @@ def to_compile_kwargs(doc) -> dict:
         },
         "note_overrides": copy.deepcopy(doc["notes"]),
         "channel_mutes": {int(channel) for channel, entry in channels.items() if entry["muted"]},
+        "channel_solos": {int(channel) for channel, entry in channels.items() if entry["soloed"]},
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},
     }
 

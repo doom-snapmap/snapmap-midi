@@ -367,14 +367,17 @@ class Session:
                 channel_sounds=levers["channel_sounds"],
                 note_index=self._note_index,
                 channel_mutes=levers["channel_mutes"],
+                channel_solos=levers["channel_solos"],
                 drum_key_overrides=levers["drum_key_overrides"],
                 event_is_looping=installed_event_is_looping,
                 channel_pitch_profiles=levers["channel_pitch_profiles"],
                 note_overrides=levers["note_overrides"],
                 master_volume_db=levers["master_volume_db"],
+                include_silent=True,
             )
-            decaying = [note for note in notes if not note.sustained]
-            sustained = [note for note in notes if note.sustained]
+            audible_notes = [note for note in notes if note.audible]
+            decaying = [note for note in audible_notes if not note.sustained]
+            sustained = [note for note in audible_notes if note.sustained]
             shared_decaying, _expressive_decaying, layers = prepare_voice_layers(
                 decaying,
                 sustained,
@@ -410,8 +413,10 @@ class Session:
                             note.preview_end = following.start
                 prepared.extend(layer)
 
-            events = [
-                {
+            prepared_ids = {id(note) for note in prepared}
+
+            def _event_payload(note, *, converted):
+                return {
                     "id": note.id,
                     "start": note.start,
                     "end": max(
@@ -421,18 +426,21 @@ class Session:
                     "sound": note.shader,
                     "channel": note.chan,
                     "source_pitch": note.source_pitch,
-                    "pitch": note.target_pitch,
+                    "pitch": note.source_pitch,
                     "velocity": note.velocity,
                     "family": note.fam,
                     "sustained": note.sustained,
                     "cut": bool(getattr(note, "preview_cut", False)),
+                    "audible": bool(note.audible),
+                    "muted": bool(note.muted),
+                    "solo_excluded": bool(note.solo_excluded),
+                    "converted": bool(converted),
                     "pitch_follow": note.pitch_follow,
                     "root_pitch": note.profile_root_pitch,
                     "applied_root_pitch": note.root_pitch,
                     "root_confidence": note.root_confidence,
                     "root_source": note.root_source,
-                    "transpose": note.transpose,
-                    "applied_transpose": note.applied_transpose,
+                    "pitch_offset": note.pitch_offset,
                     "automatic_pitch": note.automatic_pitch,
                     "requested_pitch": note.requested_pitch,
                     "pitch_modifier": note.pitch_modifier,
@@ -445,15 +453,16 @@ class Session:
                     "volume_limited": note.volume_limited,
                     "voice_end": getattr(note, "voice_end", None),
                 }
-                for note in sorted(
-                    prepared,
-                    key=lambda note: (
-                        note.start,
-                        note.chan,
-                        note.target_pitch,
-                        note.id,
-                    ),
-                )
+
+            def _event_order(note):
+                return (note.start, note.chan, note.source_pitch, note.id)
+
+            events = [
+                _event_payload(note, converted=True) for note in sorted(prepared, key=_event_order)
+            ]
+            display_events = [
+                _event_payload(note, converted=id(note) in prepared_ids)
+                for note in sorted(notes, key=_event_order)
             ]
             duration_ms = int(round((self._analysis.duration_s if self._analysis else 0) * 1000))
             if events:
@@ -462,6 +471,7 @@ class Session:
                 "duration_ms": duration_ms,
                 "events": events,
                 "sounds": sorted({event["sound"] for event in events}),
+                "display_events": display_events,
                 "release_s": levers["release_s"],
                 "hard_stop": levers["hard_stop"],
                 "timing": _timing_manifest(self._doc["midi"]),
@@ -542,6 +552,17 @@ class Session:
     def _muted(self) -> set:
         return {int(c) for c, entry in self._doc["channels"].items() if entry["muted"]}
 
+    def _soloed(self) -> set:
+        return {int(c) for c, entry in self._doc["channels"].items() if entry["soloed"]}
+
+    def _inaudible(self) -> set:
+        muted = self._muted()
+        soloed = self._soloed()
+        if not soloed or self._analysis is None:
+            return muted
+        channels = {channel.channel for channel in self._analysis.channels}
+        return muted | (channels - soloed)
+
     def _who(self, channel: int) -> str:
         """A channel named the way every sentence here names it.
 
@@ -581,6 +602,7 @@ class Session:
             channel_sounds=levers["channel_sounds"],
             note_index=self._note_index,
             channel_mutes=levers["channel_mutes"],
+            channel_solos=levers["channel_solos"],
             drum_key_overrides=levers["drum_key_overrides"],
             event_is_looping=installed_event_is_looping,
             channel_pitch_profiles=levers["channel_pitch_profiles"],
@@ -634,7 +656,10 @@ class Session:
         """
         given = {int(key) for key in self._doc["drum_keys"]}
         keys = set()
+        inaudible = self._inaudible()
         for channel in self._analysis.channels:
+            if channel.channel in inaudible:
+                continue
             keys.update(
                 key
                 for key, shader in channel.drum_keys.items()
@@ -660,13 +685,17 @@ class Session:
         """
         channels = self._analysis.channels if self._analysis is not None else []
         muted = self._muted()
+        inaudible = self._inaudible()
         warnings = []
 
         if channels and all(channel.channel in muted for channel in channels):
             warnings.append("Nothing will play: all %d channels are muted." % len(channels))
+        elif channels and all(channel.channel in inaudible for channel in channels):
+            warnings.append(
+                "Nothing will play: mute and solo settings exclude all %d channels." % len(channels)
+            )
         elif not stats["notes"]:
             warnings.append("Nothing will play: no note in this file has a sound in the palette.")
-
         if stats["dropped"]:
             keys = self._unmapped_drum_keys() if channels else []
             text = "%d notes have no sound and will not play." % stats["dropped"]

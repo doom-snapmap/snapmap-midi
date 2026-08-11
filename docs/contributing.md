@@ -139,19 +139,24 @@ so the window shows its empty state rather than throwing — that is deliberate,
 opening the file directly is how anybody iterating on the markup will look at it.
 
 Everything that changes the conversion is decided in Python. The preview manifest contains
-stable note id, source/target pitch, velocity, sound, root-or-reference evidence and source,
-automatic/manual pitch, velocity/global/trim/final dB, clamp state, effective start/end, sustain
-behavior, and speaker-reuse cutoffs. Compiler and preview share `prepare_voice_layers`.
-JavaScript may convert those facts to canvas coordinates, Web Audio time, cents, and linear
-gain; it must not calculate a root or relative anchor, resolve a family, repeat velocity/global
-volume math, reapply a clamp/engine limit, or invent a second note list.
+stable note id, immutable source pitch, velocity, resolved sound, playback-basis evidence,
+nullable automatic pitch, playback-only pitch offset, velocity/global/trim/final dB, clamp
+state, effective start/end, sustain behavior, speaker-reuse cutoffs, and audible/muted/solo
+flags. `events` is the audible conversion; `display_events` retains inaudible notes for the
+piano roll. Compiler and preview share `prepare_voice_layers`.
+JavaScript may choose the display list and convert Python's facts to canvas coordinates, Web
+Audio time, cents, and linear gain. It must not calculate a root or relative reference, resolve
+a family or curated sample, repeat velocity/global volume math, reapply a clamp/engine limit,
+move a note to another pitch row, or invent conversion events.
 
 The same rule bans hard-coded sound families or game events from markup. The startup catalog
 derives automatic and pitched-family choices from the shipped 24-category, 890-identifier
 palette. The complete installed catalog, lazy numeric root profile, and Python-calculated
-channel reference arrive through bridge calls when a sound is browsed and selected. Preserve
-folder indexing, global search, bounded pagination, and the rule that root analysis never blocks
-export; rendering every installed event as a live select option or DOM row is a regression.
+optional channel reference arrive through bridge calls when a sound is browsed and selected.
+A trustworthy musical root may enable MIDI following automatically; rejected or rootless
+material must retain natural playback until the user explicitly enables its relative reference.
+Preserve folder indexing, global search, bounded pagination, and the rule that root analysis
+never blocks export; rendering every installed event as a live select option or DOM row is a
 
 The shared design contract comes from Snapmap Plus: the light and dark tokens, Segoe UI and
 Consolas roles, 30 px menu bar, fields, buttons, status bar, toast, brand asset, window

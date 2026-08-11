@@ -25,7 +25,7 @@ def test_midi_velocity_is_monotonic_and_full_velocity_is_unity():
     assert midi_velocity_db(64) == -12
 
 
-def test_a_trusted_root_follows_the_target_note():
+def test_a_trusted_root_follows_the_imported_midi_note():
     expression = expression_for(72, 127, 60)
     assert expression.source_pitch == 72
     assert expression.target_pitch == 72
@@ -35,19 +35,22 @@ def test_a_trusted_root_follows_the_target_note():
     assert expression.pitch_limited is False
 
 
-def test_a_fixed_pitch_sound_treats_the_note_trim_as_a_direct_modifier():
-    expression = expression_for(60, 127, None, transpose=-7)
+def test_natural_playback_treats_the_note_offset_as_a_direct_modifier():
+    expression = expression_for(60, 127, None, pitch_offset=-7)
     assert expression.automatic_pitch is None
-    assert expression.target_pitch == 53
+    assert expression.target_pitch == 60
+    assert expression.pitch_offset == -7
+    assert expression.requested_pitch == -7
     assert expression.pitch_modifier == -7
 
 
-def test_target_midi_and_snapmap_pitch_are_clamped_independently():
-    expression = expression_for(126, 127, 60, transpose=24)
-    assert expression.transpose == 24
-    assert expression.applied_transpose == 1
-    assert expression.target_pitch == 127
-    assert expression.requested_pitch == 67
+def test_pitch_offset_never_moves_the_imported_note_and_engine_pitch_clamps():
+    expression = expression_for(126, 127, 60, pitch_offset=24)
+    assert expression.source_pitch == 126
+    assert expression.target_pitch == 126
+    assert expression.pitch_offset == 24
+    assert expression.automatic_pitch == 66
+    assert expression.requested_pitch == 90
     assert expression.pitch_modifier == 24
     assert expression.pitch_limited is True
 

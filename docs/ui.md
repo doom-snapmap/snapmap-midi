@@ -117,9 +117,14 @@ playback timing.
 ## Channels and the full DOOM sound catalog
 
 Every channel row shows its one-based MIDI channel number, source General MIDI program,
-sound assignment, and mute control. A percussion channel is labeled in the same list instead
-of moved to a Drums tab. The assignment control opens a modal sound browser rather than a
-native dropdown.
+sound assignment, and compact **M** (mute) and **S** (solo) controls. A percussion channel is
+labeled in the same list instead of moved to a Drums tab. The assignment control opens a modal
+sound browser rather than a native dropdown.
+
+Mute silences that channel. Solo is standard multi-solo: when one or more **S** controls are
+active, only those channels play and export, and more than one channel may be soloed. Mute wins
+when the same channel is both muted and soloed. These choices are conversion state, not edits to
+the source MIDI.
 
 The browser has three kinds of choice:
 
@@ -161,20 +166,25 @@ palette names use their authoritative nominal pitch. Other direct-media events a
 bounded memory, and every available leaf must agree before the event is marked pitchable. A
 pitchable exact event keeps the same Play string on every note but receives a root-relative
 SnapMap semitone modifier. If speech, noise, impacts, unstable tones, or variable containers
-have no defensible root, natural playback is assigned to the midpoint of the channel's imported
-note range and every note is shifted relative to that reference. This preserves the written
-intervals without pretending the sound has an acoustic note. The Note expression inspector
-labels root and relative modes separately, lets either basis be adjusted, and can disable pitch
-following for fixed playback.
+have no defensible root, the event plays naturally on every note by default. The channel
+midpoint is retained only as an optional relative reference. A user may deliberately enable
+**Follow MIDI note** to preserve MIDI intervals around that reference, but the application never
+pretends that a grunt, impact, or spoken line has an acoustic root. The Note expression
+inspector labels detected roots and optional references separately.
 
 Installed Wwise duration metadata independently determines whether the event decays or needs a
 paired stop. Mixed events are treated as looping so an infinite branch cannot leak a speaker
 emitter. A decaying event that needs pitch or gain still receives an isolated speaker for its
 measured tail.
 
-Mute removes the channel from preview and export without forgetting its assignment. Click a
-channel row to emphasize that channel's notes on the piano roll; click it again to show all
-channels at equal emphasis.
+Muted channels and channels excluded by an active solo remain on the piano roll in a restrained
+gray treatment, so the score never appears to lose data. They are omitted from preview and
+export without forgetting their assignments.
+
+Click a channel row to focus its notes for inspection. Other channels dim and stop accepting note
+clicks until focus is cleared, which makes dense arrangements readable without changing what
+plays or exports. Click the focused row again to restore all channels at equal emphasis. Channel
+focus is transient UI state and is not written to the settings sidecar.
 
 The divider between Channels and the piano roll is draggable in either direction. Moving it
 right gives assignments more room; moving it left expands the song surface. Both panes retain
@@ -260,23 +270,25 @@ The inspector distinguishes source data from conversion data:
 
 | Readout | Meaning |
 |---|---|
-| Imported / target note | MIDI note from the file and the row after manual transpose |
+| MIDI note | immutable note name and number from the imported file |
 | Velocity | original MIDI velocity, 1 through 127 |
-| Sound / pitch basis | exact Play event plus trusted root or explicit relative reference |
-| Pitch calculation | automatic basis-relative shift + note trim = final SnapMap semitones |
+| Sound / playback basis | exact Play event plus trusted root, optional relative reference, or natural playback |
+| Pitch calculation | automatic root-relative shift when enabled + note offset = final SnapMap semitones |
 | Volume calculation | velocity dB + global volume + note trim = final SnapMap dB |
 | Clamp notice | requested value and the -24..24 pitch or -60..20 volume limit applied |
 
-**Pitch trim** is an integral -24 through 24 semitones and **Volume trim** is an integral
--60 through 20 dB. With a detected/manual root or relative reference, pitch is calculated from
-that channel-wide basis. Without either, the trim is sent as a direct SnapMap modifier and the
-inspector labels the sound fixed-pitch. For an exact channel, the field is labeled **Root MIDI
-note** for acoustic tuning and **Reference MIDI note** for relative tuning. **Follow MIDI pitch**
-enables or disables either mode. **Reset note** removes only the selected note's sparse trim.
+**Pitch offset** is an integral -24 through 24 semitones and **Volume trim** is an integral
+-60 through 20 dB. The pitch offset changes playback only: it never moves the note, changes its
+channel, or causes a different curated sample to be selected. With a detected/manual root or an
+enabled relative reference, it is added after the automatic MIDI-following shift. With natural
+playback, it is the complete SnapMap pitch modifier. For an exact channel, the field is labeled
+**Root MIDI note** for acoustic tuning and **Reference MIDI note** for optional relative tuning.
+**Follow MIDI note** enables or disables either mode. **Reset note** removes only the selected
+note's sparse pitch offset and volume trim.
 
 Notes are identified as `channel:source-pitch:occurrence` before mute or sound mapping, so an
-edit stays attached while the channel is retimbred. The target block may move to another row,
-but timing, duration, channel, and the source MIDI file are not changed.
+edit stays attached while the channel is retimbred. The block remains on its imported MIDI row;
+timing, duration, channel, and the source MIDI file are not changed.
 
 ## Previewing the song
 
@@ -285,9 +297,9 @@ arrangement from the current position; pressing it again pauses without returnin
 There are no per-channel song controls. The sound browser's audition button plays one event
 for identification and never starts a channel or arrangement.
 
-Preview uses the same resolved sound/root, target pitch, velocity-derived dB, global volume,
-per-note trims, clamps, duration caps, polyphony thinning, speaker allocation, voice stealing, hard
-stops, and releases as export. It is not the computer's General MIDI synthesizer. Web Audio
+Preview uses the same resolved sound/root, imported MIDI pitch, playback-only offsets,
+velocity-derived dB, global volume, clamps, duration caps, polyphony thinning, channel mix state,
+speaker allocation, voice stealing, hard stops, and releases as export. Web Audio
 receives the final compiler values: pitch modifier times 100 cents and
 `10 ** (volume_db / 20)` gain. When a later note reuses a SnapMap speaker, preview hard-cuts
 the earlier note at that same point just as the exported timeline does.
@@ -377,17 +389,18 @@ versioned with a project or edited by hand. A typical file is:
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "midi": "D:/music/song.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
   "baseline": null,
   "channels": {
-    "0": {"family": "ins_piano", "muted": false},
+    "0": {"family": "ins_piano", "muted": false, "soloed": false},
     "1": {
       "family": null,
       "sound": "play_pianoc4",
       "muted": false,
+      "soloed": true,
       "pitch_follow": true,
       "root_midi": 60,
       "root_confidence": 1.0,
@@ -397,16 +410,17 @@ versioned with a project or edited by hand. A typical file is:
       "family": null,
       "sound": "play_noise_crash",
       "muted": false,
-      "pitch_follow": true,
+      "soloed": true,
+      "pitch_follow": false,
       "root_midi": 66,
       "root_confidence": 0.0,
       "root_source": "relative"
     },
-    "9": {"family": null, "muted": false}
+    "9": {"family": null, "muted": false, "soloed": false}
   },
   "drums": "auto",
   "notes": {
-    "0:60:1": {"transpose": 1, "volume_db": -3}
+    "0:60:1": {"pitch_offset": 1, "volume_db": -3}
   },
   "drum_keys": {
     "38": "play_noise_clap"
@@ -427,24 +441,28 @@ versioned with a project or edited by hand. A typical file is:
 ```
 
 Within a channel, `family` and `sound` are mutually exclusive. `family: null` with no
-`sound` means Automatic. `muted` defaults to false. Exact sounds may also carry
+`sound` means Automatic. `muted` and `soloed` default to false. Exact sounds may also carry
 `pitch_follow`, `root_midi` (0 through 127), `root_confidence` (0 through 1), and
 `root_source` (`palette_name`, `detected`, `manual`, or `relative`). For the first three,
 `root_midi` describes the sound's root. For `relative`, it assigns natural playback to the
 channel-centered reference and `root_confidence` is zero because no acoustic claim is made.
-A root or reference is required before pitch following can be enabled.
+A root or reference is required before pitch following can be enabled. A relative reference
+defaults to `pitch_follow: false`; this preserves natural playback until the user opts into
+melodic retuning.
 
 The `notes` object is sparse. Its key is `channel:source-pitch:occurrence`, assigned from
-the imported MIDI before mute or sound mapping so the edit survives retimbre. `transpose` is
+the imported MIDI before mute or sound mapping so the edit survives retimbre. `pitch_offset` is
 an integer -24 through 24 semitones and `volume_db` an integer -60 through 20 dB. Zero values
-are omitted. Opening a different MIDI clears this section together with song-specific channel
+are omitted. The offset modifies playback but never the note's piano-roll row or curated sample
+selection. Opening a different MIDI clears this section together with song-specific channel
 choices.
 
 Channel, note-id, and drum-key components are strings because JSON object keys are strings;
 validation converts them back to integers for the MIDI parser. Version 1 and version 2 documents
-migrate in memory with `master_volume_db` set to the neutral 0 dB default. Old exact sounds remain
-fixed until reassigned or given a root/reference, so an upgrade does not silently change an
-existing export.
+migrate in memory with `master_volume_db` set to the neutral 0 dB default. Versions 1 through 3
+migrate to version 4; legacy note `transpose` values become playback-only `pitch_offset`
+values, and `soloed` defaults to false. Existing exact-sound roots, references, and stored
+`pitch_follow` choices are preserved so migration does not silently retune a channel.
 
 `master_volume_db` is an integer -60 through 20 dB and defaults to zero. `null` disables
 optional duration and polyphony limits. `decaying_families` and

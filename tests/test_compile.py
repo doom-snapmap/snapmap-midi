@@ -223,14 +223,16 @@ def test_retriggered_notes_keep_stable_source_ids_and_independent_expression(tmp
     notes, _ = parse_notes(
         path,
         note_index=_SYNTHETIC_INDEX,
-        note_overrides={"0:60:2": {"transpose": 1, "volume_db": 4}},
+        note_overrides={"0:60:2": {"pitch_offset": 2, "volume_db": 4}},
     )
 
     assert [note.id for note in notes] == ["0:60:1", "0:60:2"]
     assert [note.velocity for note in notes] == [32, 96]
     assert notes[0].target_pitch == 60
-    assert notes[1].target_pitch == 61
-    assert notes[1].transpose == 1
+    assert notes[1].target_pitch == 60
+    assert notes[0].shader == notes[1].shader
+    assert notes[1].pitch_offset == 2
+    assert notes[1].pitch_modifier == 2
     assert notes[1].volume_trim_db == 4
 
 
@@ -309,7 +311,7 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
         note_index=_SYNTHETIC_INDEX,
         channel_sounds={0: "play_pianoc4"},
         channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 60}},
-        note_overrides={"0:60:1": {"transpose": 1, "volume_db": 3}},
+        note_overrides={"0:60:1": {"pitch_offset": 1, "volume_db": 3}},
         master_volume_db=6,
         button_name="expression-test",
     )

@@ -506,7 +506,6 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
         "noteInspector",
         "closeNoteInspector",
         "noteSourcePitch",
-        "noteTargetPitch",
         "noteVelocity",
         "noteSound",
         "noteRoot",
@@ -536,6 +535,16 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
     assert "context.strokeStyle = palette.accent" in _JS
 
 
+def test_channel_strip_separates_focus_from_multi_solo_and_mute():
+    assert 'actions.appendChild(mixerButton("mute", "M", "muted"))' in _JS
+    assert 'actions.appendChild(mixerButton("solo", "S", "soloed"))' in _JS
+    assert "SELECTED_CHANNEL = SELECTED_CHANNEL === channel.channel ? null : channel.channel" in _JS
+    assert "SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== candidate.channel" in _JS
+    assert "STATE.preview.display_events" in _JS
+    assert "record.muted || record.soloExcluded || !record.audible || !record.converted" in _JS
+    assert ".track-row.muted-track, .track-row.solo-excluded-track" in _CSS
+
+
 def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_them():
     assert "source.detune.value = Number(event.pitch_modifier || 0) * 100" in _JS
     assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
@@ -544,7 +553,16 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
     assert "body.pitch_follow = true" in _JS
     assert "body.root_midi = Number(response.relative_anchor)" in _JS
     assert 'body.root_source = "relative"' in _JS
-    assert 'relativePitch ? "Pitch anchor" : "Sound root"' in _JS
+    relative_branch = _JS.split("} else if (isFinite(Number(response.relative_anchor))) {", 1)[
+        1
+    ].split("} else {", 1)[0]
+    assert "body.pitch_follow = true" not in relative_branch
+    assert "body.pitch_follow = false" in _JS
+    assert "This sound will play at its natural pitch." in _JS
+    assert 'relativePitch ? "Pitch reference" : "Sound root"' in _JS
+    assert "Number(note.pitch_offset || 0)" in _JS
+    assert '"Natural playback; offset " + signed(note.pitch_offset)' in _JS
+    assert 'updateNoteOverride(noteId, "pitch_offset", value)' in _JS
 
 
 def test_bottom_control_plane_exposes_the_persisted_master_volume():

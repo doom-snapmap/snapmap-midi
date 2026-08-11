@@ -36,17 +36,17 @@ A compile is a straight line. Each stage owns one module, and each hands the nex
 values rather than a hidden audio or UI context.
 
 ```
-song.mid + settings v3
+song.mid + settings v4
    |
    |  music/midi.py       pair events; preserve stable id, source pitch, velocity
    |  music/gm.py         program -> family; channel 9 -> percussion
-   |  sound/palette.py    family + target pitch -> nearest rooted sample
+   |  sound/palette.py    family + source pitch -> nearest rooted sample
    v
 annotated notes  (+ sound, + root evidence, + sustained?)
    |
    |  music/expression.py root-relative semitones + velocity/global/per-note dB
    v
-expressed notes  (+ target pitch, + final clamped modifiers)
+expressed notes  (+ immutable source pitch, + final clamped modifiers)
    |
    |  music/voices.py     shared/isolated split, duration policy, thinning, voices
    v
@@ -67,9 +67,9 @@ Reads the file with `mido` and pairs each note-on with its matching note-off, pr
 list of notes with a start and an end. An unmatched note-on is closed at the end of the
 track rather than dropped: a stuck note is audible and diagnosable, a missing one is not.
 Each positive note-on gets `channel:source-pitch:occurrence` identity before mute or sound
-mapping, and retains velocity 1 through 127. Sound choice then annotates the note with source
-and target pitch, root evidence, and the complete expression calculation; the imported MIDI
-file and the dataclass's load-bearing serialized field order remain unchanged.
+mapping, and retains velocity 1 through 127. Sound choice then annotates the note with its
+immutable source pitch, root evidence, mixer state, and complete playback-expression
+calculation; the imported MIDI file and load-bearing serialized field order remain unchanged.
 
 Percussion is detected here too. MIDI reserves channel 9 for drums, where the note number
 selects an instrument rather than a pitch.
@@ -110,16 +110,16 @@ manual choices, but those events generally have no instrument family or chromati
 Automatic mapping therefore remains on the curated index. Selecting an exact event repeats its
 event string for every MIDI note on the channel, then lazily asks `audio/pitch.py` whether its
 decoded media has a trustworthy musical root. Pitchable events follow MIDI from that root.
-Rejected speech, noise, impacts, ambience, and variable containers instead receive a relative
-reference at the midpoint of the imported channel's source-note range. Their natural playback
-is assigned to that reference and the same root-relative expression math preserves every MIDI
-interval. The reference is explicitly labeled relative rather than acoustic evidence, and the
-user can disable pitch following for fixed playback.
+Rejected speech, noise, impacts, ambience, and variable containers keep natural playback.
+Python returns the midpoint of the imported channel's source-note range only as an optional
+relative reference. It is labeled relative rather than acoustic evidence, and MIDI following
+remains off until the user enables it deliberately.
 
 ### `music/expression.py` — one pitch and loudness contract
 
 Every parsed note carries a stable source id and its MIDI velocity. The expression module
-derives target MIDI pitch, automatic root-relative shift, global volume, per-note trim, and final
+keeps source pitch immutable while deriving an optional automatic root-relative shift, a
+playback-only Pitch offset, global volume, per-note volume trim, and final
 SnapMap modifiers without changing the `Note` dataclass's serialized field order.
 
 SnapMap pitch values are integral semitones clamped to -24 through 24. Velocity uses a squared
@@ -206,13 +206,13 @@ Settings version 2 added optional `pitch_follow`, `root_midi`, `root_confidence`
 `root_source` fields to exact channel choices, plus a sparse top-level `notes` mapping.
 `root_source: "relative"` means `root_midi` is a natural-playback reference, not a detected
 root; zero confidence is intentional for that mode.
-A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute, and
-root changes. Each entry may hold an integral `transpose` (-24 through 24) and `volume_db`
-trim (-60 through 20).
+A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute,
+solo, and root changes. Each entry may hold integral `pitch_offset` (-24 through 24) and
+`volume_db` (-60 through 20) playback offsets.
 
-Settings version 3 adds integral `tuning.master_volume_db` (-60 through 20), defaulting to zero.
-Derived modifiers and decoded audio never enter the sidecar. Version 1 and 2 documents migrate
-in memory with neutral global volume; legacy exact-sound behavior remains unchanged.
+Settings version 3 adds integral `tuning.master_volume_db` (-60 through 20). Version 4 adds
+`soloed` and renames legacy note `transpose` to `pitch_offset`. Derived values and decoded
+audio never persist; versions 1 through 3 migrate in memory.
 
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
 every mistake a hand edit makes here is a quiet one. See
@@ -241,12 +241,13 @@ are authoritative. For an arbitrary exact event, `pitch.py` analyzes bounded win
 available leaves with a conservative YIN-style estimator. Silence, weak or unstable periodicity,
 and containers whose leaves disagree are rejected rather than assigned a guessed root.
 
-Rejection only says that the media has no defensible absolute root. It does not prevent playback
-rate transposition. On exact-sound selection, Python chooses the midpoint of the channel's
-lowest and highest imported source notes, rounding a half-step upward, and returns it separately
-from the acoustic profile. The UI persists that integer as a relative reference so note edits
-cannot move the basis for every other note. A span of no more than 48 semitones fits entirely
-inside SnapMap's -24 through 24 range; wider channels expose ordinary clamp diagnostics.
+Rejection says that the media has no defensible absolute root, so the event keeps natural
+playback. Python still computes the midpoint of the channel's lowest and highest imported source
+notes, rounding a half-step upward, and returns it separately from the acoustic profile. The UI
+persists that integer only as an optional relative reference so note edits cannot move the basis
+for every other note. It does not enable pitch following. If the user enables it, a span of no
+more than 48 semitones fits inside SnapMap's -24 through 24 range; wider channels expose ordinary
+clamp diagnostics.
 
 Accepted and rejected profiles are cached as small numeric JSON records keyed by install,
 event, complete media signature, and analysis version. The cache contains root, confidence,
@@ -284,10 +285,10 @@ Nothing is served and nothing listens. The markup is loaded from the filesystem 
 `test_product_has_no_network_client` still passes over the whole package.
 
 **The division of labour is the design.** Python decides every conversion fact: sound and
-root, source and target pitch, MIDI-velocity dB, global volume, per-note trims, clamp state,
-sustain behavior, duration caps, polyphony, speaker voice, reuse cutoff, and requested audio
-samples. Compiler and preview both call the same voice-layer preparation, and the same versioned
-settings document feeds the preview manifest and `compile_to_rawmap`.
+root, immutable source pitch, automatic and offset pitch, MIDI-velocity dB, global and per-note
+volume, mute/solo inclusion, clamp state, sustain behavior, duration caps, polyphony, speaker
+voice, reuse cutoff, and requested audio samples. Compiler and preview call the same preparation,
+and the same versioned settings document feeds the preview manifest and `compile_to_rawmap`.
 
 Javascript owns presentation and transport: it virtualizes the full 0-127 pitch range and song
 duration behind native scrollbars, draws synchronized pitch and measure rulers, converts MIDI
@@ -307,7 +308,9 @@ playing; the playhead never starts an all-events active-note scan. Indexed hit t
 Note expression inspector for a note, while empty surface input keeps the existing seek path.
 Selection uses an outline and does not become a playback animation.
 
-The preview events are normalized once into 128 pitch buckets sorted by start time. Each bucket
+The manifest's `events` list schedules audible converted audio. Its `display_events` list
+retains mapped notes excluded by mute, solo, or polyphony so the roll can remain truthful.
+Display events are normalized once into 128 pitch buckets sorted by start time. Each bucket
 also stores prefix maximum end times, allowing two binary searches to reject events outside the
 visible time range before geometry is built. At 100% whole-song overview, the full static roll is
 rasterized once when its high-DPI allocation fits a fixed 16-million-pixel budget; vertical wheel
@@ -328,9 +331,10 @@ canvas repaint on every audio frame.
 Zoom captures the playhead's viewport coordinate before resizing and restores that coordinate
 against the new time scale. The draggable pane separator stores only the preferred channel
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
-high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, hover, and which
-note inspector is open are view state. Global volume, per-note transpose/volume values, and
-exact-channel root choices are conversion state and go through the validated settings bridge.
+high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, hover, channel
+focus, and which note inspector is open are view state. Global volume, per-note pitch/volume
+offsets, exact-channel root choices, mute, and multi-solo are conversion state and go through the
+validated settings bridge.
 
 JavaScript names no palette family or game event in source. The small startup catalog comes
 from the curated palette; the full installed event catalog crosses a separate lazy bridge only

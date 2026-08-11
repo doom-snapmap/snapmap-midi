@@ -131,7 +131,7 @@ def test_relative_pitch_anchor_centers_the_source_range_and_stays_stable(tmp_pat
     session = Session(midi=midi)
     assert session.relative_pitch_anchor(0) == 61
 
-    session.apply({"notes": {"0:48:1": {"transpose": 12}}})
+    session.apply({"notes": {"0:48:1": {"pitch_offset": 12}}})
     assert session.relative_pitch_anchor(0) == 61
     with pytest.raises(ValueError, match="no notes"):
         session.relative_pitch_anchor(1)
@@ -270,6 +270,31 @@ def test_relative_exact_sound_follows_the_channel_without_claiming_a_root(tmp_pa
     assert all(event["pitch_follow"] for event in events)
 
 
+def test_rootless_exact_sound_preserves_natural_playback_until_follow_is_enabled(tmp_path):
+    midi = _midi(tmp_path, _hits(0, 60, program=0) + _hits(0, 72), name="rootless.mid")
+    session = Session(midi=midi)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": False,
+                    "root_midi": 66,
+                    "root_confidence": 0,
+                    "root_source": "relative",
+                }
+            }
+        }
+    )
+    events = sorted(session.preview_manifest()["events"], key=lambda event: event["source_pitch"])
+
+    assert [event["pitch_modifier"] for event in events] == [0, 0]
+    assert [event["automatic_pitch"] for event in events] == [None, None]
+    assert not any(event["pitch_follow"] for event in events)
+    assert [event["pitch"] for event in events] == [60, 72]
+
+
 def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
     session = Session(midi=_dense(tmp_path))
     session.apply({"tuning": {"max_speakers": 1}})
@@ -339,7 +364,11 @@ def test_apply_is_a_patch_and_not_a_replacement():
     session = Session(midi=TINY_MIDI)
     session.apply({"channels": {"0": {"family": "ins_marimba"}}})
     session.apply({"channels": {"0": {"muted": True}}})
-    assert session.settings()["channels"]["0"] == {"family": "ins_marimba", "muted": True}
+    assert session.settings()["channels"]["0"] == {
+        "family": "ins_marimba",
+        "muted": True,
+        "soloed": False,
+    }
 
 
 def test_a_refused_patch_changes_nothing():
@@ -403,7 +432,8 @@ def test_changes_from_several_threads_all_land():
         thread.join()
 
     assert session.settings()["channels"] == {
-        str(index): {"family": family, "muted": False} for index, family in enumerate(families)
+        str(index): {"family": family, "muted": False, "soloed": False}
+        for index, family in enumerate(families)
     }
 
 
@@ -569,6 +599,26 @@ def test_muting_everything_says_nothing_will_play():
     assert _warnings(session)[0] == "Nothing will play: all 3 channels are muted."
 
 
+def test_muted_notes_stay_in_the_display_manifest_but_leave_playback():
+    session = Session(midi=TINY_MIDI)
+    session.apply({"channels": {"0": {"muted": True}}})
+    manifest = session.preview_manifest()
+    assert all(event["channel"] != 0 for event in manifest["events"])
+    muted = [event for event in manifest["display_events"] if event["channel"] == 0]
+    assert muted
+    assert all(event["muted"] and not event["audible"] for event in muted)
+
+
+def test_solo_keeps_only_soloed_channels_audible_and_displays_the_rest():
+    session = Session(midi=TINY_MIDI)
+    session.apply({"channels": {"0": {"soloed": True}}})
+    manifest = session.preview_manifest()
+    assert {event["channel"] for event in manifest["events"]} == {0}
+    excluded = [event for event in manifest["display_events"] if event["channel"] != 0]
+    assert excluded
+    assert all(event["solo_excluded"] and not event["audible"] for event in excluded)
+
+
 def test_an_unmapped_drum_key_names_the_unified_track_choices_that_fix_it(tmp_path):
     """`DRUM_MAP` drops the exotic keys rather than guessing at them, so this is
     the ordinary way a file loses notes. Percussion has no separate tab now, so
@@ -644,21 +694,23 @@ def test_master_volume_offsets_every_note_in_the_preview_manifest(tmp_path):
     assert event["volume_db"] == -4
 
 
-def test_per_note_override_moves_only_the_selected_note(tmp_path):
+def test_per_note_offset_changes_playback_without_moving_the_midi_note(tmp_path):
     song = _midi(
         tmp_path,
         _hits(0, 60, count=2, program=0),
         name="note-edit.mid",
     )
     session = Session(midi=song)
-    session.apply({"notes": {"0:60:2": {"transpose": 1, "volume_db": 5}}})
+    session.apply({"notes": {"0:60:2": {"pitch_offset": 1, "volume_db": 5}}})
 
     events = session.preview_manifest()["events"]
     assert [event["id"] for event in events] == ["0:60:1", "0:60:2"]
     assert events[0]["pitch"] == 60
-    assert events[0]["transpose"] == 0
-    assert events[1]["pitch"] == 61
-    assert events[1]["transpose"] == 1
+    assert events[0]["pitch_offset"] == 0
+    assert events[0]["pitch_modifier"] == 0
+    assert events[1]["pitch"] == 60
+    assert events[1]["pitch_offset"] == 1
+    assert events[1]["pitch_modifier"] == 1
     assert events[1]["volume_trim_db"] == 5
 
 

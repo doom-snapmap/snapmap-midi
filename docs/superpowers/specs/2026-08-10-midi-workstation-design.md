@@ -1,10 +1,14 @@
 # snapmap-midi workstation redesign
 
-Status: implemented 2026-08-10; pitch/dynamics amendment implemented 2026-08-11.
+Status: implemented 2026-08-10; pitch, dynamics, and channel-mix corrections implemented 2026-08-11.
 
 The expression amendment is specified in
 [`../plans/2026-08-11-pitch-dynamics-note-inspector-architecture.md`](../plans/2026-08-11-pitch-dynamics-note-inspector-architecture.md)
 and supersedes this document's original fixed-pitch exact-event and no-per-note-control rules.
+The current behavior is defined by
+[Pitch Model and Channel Mix Correction](../plans/2026-08-11-pitch-model-and-channel-mix-correction.md).
+It supersedes the amendment's target-note movement and rootless auto-follow rules.
+
 
 ## Product statement
 
@@ -28,7 +32,7 @@ The application has one persistent workspace:
    time, and a scrubber.
 3. A resizable track column on the left. Every MIDI channel, including
    percussion, is one row with its channel number, source program, sound
-   assignment, and mute control. Its divider trades width with the roll and
+   assignment, M/S controls, and click-to-focus editing state. Its divider trades width with the roll and
    preserves the chosen size across sessions.
 4. A piano-roll surface on the right. Time runs horizontally, pitch vertically,
    notes are colored by channel, and a high-contrast playhead sweeps across the
@@ -92,10 +96,10 @@ small while search and the tree filter the in-memory metadata. Escape, the close
 the darkened backdrop cancels the modal.
 
 An exact choice retains one Play event string across the channel. Curated or conservatively
-detected roots enable MIDI-following semitone modifiers. Rejected events receive a persisted
-natural-playback reference at the midpoint of the channel's imported range, preserving relative
-MIDI intervals without claiming an acoustic root; fixed pitch is an explicit opt-out. Infinite
-and Mixed events receive paired stops so an infinite branch cannot leak a speaker emitter.
+detected roots enable MIDI-following semitone modifiers. Rejected events preserve natural
+playback; the channel midpoint is retained only as an optional relative reference, and Follow
+MIDI note is an explicit opt-in. Infinite and Mixed events receive paired stops so an infinite
+branch cannot leak a speaker emitter.
 Expressive one-shots use duration-reserved
 isolated voices while neutral one-shots retain shared layering.
 
@@ -140,14 +144,14 @@ A canvas is preferred over one DOM element per note.
   grid use the source tempo map to place note-value subdivisions and measures.
 - Vertical axis: all 128 MIDI pitches behind a native scrollbar, with a fixed
   piano-key ruler and every note named from C-1 through G9.
-- Notes: target pitch after manual transpose and source duration, colored consistently by
-  MIDI channel, with 4 px rounded corners and high-DPI Segoe UI labels when space permits.
-  The inspector separately names the imported pitch.
+- Notes: imported MIDI pitch and source duration, colored consistently by MIDI channel, with
+  4 px rounded corners and high-DPI Segoe UI labels when space permits. Pitch offset changes
+  playback only and never moves a block.
 - Note hover: only the note rectangle under the pointer receives a restrained
   bright glow. Hover remains available during playback, pause, and seeking;
   the playhead does not change note colors.
-- Muted tracks: hidden or heavily dimmed.
-- Selected track: full opacity; other tracks remain visible at lower opacity.
+- Muted or solo-excluded tracks: visible in neutral gray but absent from preview and export.
+- Focused track: editable at full opacity; other tracks remain visible but are not hit-testable.
 - Playhead: accent-colored vertical stroke, always above notes and grid.
 - Playback scrolling: automatic horizontal following owns time navigation,
   while vertical wheel navigation remains live across the full roll, including
@@ -162,7 +166,7 @@ current song position. During playback, the playhead sweeps through the visible
 passage; following returns it near the left third only when the viewport advances.
 At inspection sizes, notes carry pitch names. Source composition remains read-only:
 notes cannot be created, deleted, moved in time, or resized. Clicking a note may edit only its
-SnapMap pitch/volume expression in the right-side inspector.
+playback-only SnapMap pitch/volume expression in the right-side inspector.
 
 The implementation separates the static roll from the playhead and hover overlays.
 Whole-song overview uses a bounded full-height raster cache for cheap vertical

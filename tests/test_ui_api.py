@@ -617,7 +617,11 @@ def test_settings_apply_as_a_patch_and_answer_with_the_whole_document():
     bridge.apply_settings({"channels": {"0": {"family": "ins_marimba"}}})
     payload = bridge.apply_settings({"channels": {"0": {"muted": True}}})
     assert payload["ok"] is True
-    assert payload["settings"]["channels"]["0"] == {"family": "ins_marimba", "muted": True}
+    assert payload["settings"]["channels"]["0"] == {
+        "family": "ins_marimba",
+        "muted": True,
+        "soloed": False,
+    }
     assert bridge.get_settings()["settings"] == payload["settings"]
 
 
@@ -763,7 +767,9 @@ def test_the_sidecar_is_applied_after_the_load_and_not_before(tmp_path):
     bridge = Bridge(midi=TINY_MIDI)
     bridge.apply_settings({"channels": {"0": {"family": "ins_marimba"}}})
     payload = bridge.load_midi(song)
-    assert payload["settings"]["channels"] == {"1": {"family": "ins_sine", "muted": False}}
+    assert payload["settings"]["channels"] == {
+        "1": {"family": "ins_sine", "muted": False, "soloed": False}
+    }
     assert payload["settings"]["drum_keys"] == {"36": "play_clave1"}
 
 

@@ -81,6 +81,7 @@ def compile_to_rawmap(
     note_index=None,
     channel_mutes: Optional[set] = None,
     drum_key_overrides: Optional[dict] = None,
+    channel_solos: Optional[set] = None,
     channel_sounds: Optional[dict] = None,
     channel_pitch_profiles: Optional[dict] = None,
     note_overrides: Optional[dict] = None,
@@ -92,8 +93,8 @@ def compile_to_rawmap(
     room authored from nothing; pass a saved map and the song is added to it,
     reusing that map's timeline if it has one.
 
-    `channel_mutes` and `drum_key_overrides` are handed straight to
-    `parse_notes`; both are inert when empty, which is what lets a caller pass
+    Channel mute/solo state and drum-key overrides are handed straight to
+    `parse_notes`; all are inert when empty, which lets the workstation pass
     them on every compile without moving a byte.
     """
     data = blank_map() if baseline_bytes is None else json.loads(baseline_bytes)
@@ -114,6 +115,7 @@ def compile_to_rawmap(
         note_index=note_index,
         channel_mutes=channel_mutes,
         drum_key_overrides=drum_key_overrides,
+        channel_solos=channel_solos,
         channel_sounds=channel_sounds,
         event_is_looping=installed_event_is_looping,
         channel_pitch_profiles=channel_pitch_profiles,

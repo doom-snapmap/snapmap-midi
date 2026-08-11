@@ -26,8 +26,7 @@ class NoteExpression:
     target_pitch: int
     velocity: int
     root_pitch: float | None
-    transpose: int
-    applied_transpose: int
+    pitch_offset: int
     volume_trim_db: int
     master_volume_db: int
     automatic_pitch: int | None
@@ -68,31 +67,32 @@ def expression_for(
     source_pitch: int,
     velocity: int,
     root_pitch: float | None,
-    transpose: int = 0,
+    pitch_offset: int = 0,
     volume_trim_db: int = 0,
     master_volume_db: int = 0,
 ) -> NoteExpression:
     """Resolve one note to the exact integral values SnapMap will receive.
 
-    With a trusted root or an explicit relative reference, pitch follows the
-    target note. Without either basis, transpose is a direct modifier: this
-    permits intentional fixed-pitch tuning of noise, speech, and other sounds
-    without pretending they have a detected musical root.
+    The source MIDI pitch never moves. With a trusted root or an explicit
+    relative reference, the automatic modifier makes the sound follow that
+    MIDI note and ``pitch_offset`` is added afterward. Without either basis,
+    the sound keeps its natural playback pitch and ``pitch_offset`` is the only
+    modifier. This keeps composition, sound choice, and playback tuning as
+    separate decisions.
     """
 
     source_pitch = int(clamp(int(source_pitch), MIDI_MIN, MIDI_MAX))
-    transpose = int(clamp(int(transpose), PITCH_MIN, PITCH_MAX))
+    pitch_offset = int(clamp(int(pitch_offset), PITCH_MIN, PITCH_MAX))
     volume_trim_db = int(clamp(int(volume_trim_db), VOLUME_MIN, VOLUME_MAX))
     master_volume_db = int(clamp(int(master_volume_db), VOLUME_MIN, VOLUME_MAX))
-    target_pitch = int(clamp(source_pitch + transpose, MIDI_MIN, MIDI_MAX))
-    applied_transpose = target_pitch - source_pitch
+    target_pitch = source_pitch
 
     if root_pitch is None:
         automatic_pitch = None
-        requested_pitch = applied_transpose
+        requested_pitch = pitch_offset
     else:
         automatic_pitch = nearest_int(source_pitch - float(root_pitch))
-        requested_pitch = nearest_int(target_pitch - float(root_pitch))
+        requested_pitch = automatic_pitch + pitch_offset
     pitch_modifier = int(clamp(requested_pitch, PITCH_MIN, PITCH_MAX))
 
     velocity = int(clamp(int(velocity), 1, MIDI_MAX))
@@ -105,8 +105,7 @@ def expression_for(
         target_pitch=target_pitch,
         velocity=velocity,
         root_pitch=None if root_pitch is None else float(root_pitch),
-        transpose=transpose,
-        applied_transpose=applied_transpose,
+        pitch_offset=pitch_offset,
         volume_trim_db=volume_trim_db,
         master_volume_db=master_volume_db,
         automatic_pitch=automatic_pitch,

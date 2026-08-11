@@ -228,8 +228,7 @@
     </div>
     <div class="inspector-body">
       <dl class="note-facts">
-        <div><dt>Imported note</dt><dd class="mono" id="noteSourcePitch">-</dd></div>
-        <div><dt>Target note</dt><dd class="mono" id="noteTargetPitch">-</dd></div>
+        <div><dt>MIDI note</dt><dd class="mono" id="noteSourcePitch">-</dd></div>
         <div><dt>Velocity</dt><dd class="mono" id="noteVelocity">-</dd></div>
         <div><dt>Sound</dt><dd class="mono note-sound" id="noteSound">-</dd></div>
         <div><dt id="notePitchBasisLabel">Sound root</dt><dd class="mono" id="noteRoot">-</dd></div>
@@ -237,7 +236,7 @@
 
       <div class="control-group">
         <div class="control-title">
-          <label for="notePitchRange">Pitch trim</label>
+          <label for="notePitchRange">Pitch offset</label>
           <span class="hint">semitones</span>
         </div>
         <div class="range-number">
@@ -261,7 +260,7 @@
 
       <div class="control-group channel-root-group" id="noteChannelRootGroup" hidden>
         <div class="control-title"><span id="noteChannelPitchTitle">Exact-sound root</span><span class="hint">channel</span></div>
-        <label class="check-line"><input type="checkbox" id="notePitchFollow"> Follow MIDI pitch</label>
+        <label class="check-line"><input type="checkbox" id="notePitchFollow"> Follow MIDI note</label>
         <div class="threshold-line"><label for="noteRootNumber" id="noteRootNumberLabel">Root MIDI note</label><input type="number" id="noteRootNumber" min="0" max="127" step="0.01"><span class="mono" id="noteRootName"></span></div>
         <div class="expression-readout" id="noteRootEvidence"></div>
       </div>

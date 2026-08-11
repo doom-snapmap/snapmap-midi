@@ -15,7 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
-from snapmap_midi.music.expression import MIDI_MAX, MIDI_MIN, annotate, expression_for
+from snapmap_midi.music.expression import annotate, expression_for
 from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, SUSTAINED, gm_to_family
 from snapmap_midi.sound import palette
 
@@ -93,11 +93,13 @@ def parse_notes(
     note_index=None,
     channel_mutes=None,
     drum_key_overrides=None,
+    channel_solos=None,
     channel_sounds=None,
     event_is_looping=None,
     channel_pitch_profiles=None,
     note_overrides=None,
     master_volume_db=0,
+    include_silent=False,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -106,12 +108,13 @@ def parse_notes(
     then a pitch split that sends the low register somewhere else. The last
     one to apply wins.
 
-    `channel_mutes` silences whole channels. A muted note is skipped before
-    anything else is decided about it and is NOT counted in `dropped`:
-    `dropped` means the palette had no sound for a note, which is a problem
-    worth reporting, and a muted note was asked for. Folding the two together
-    would make the one number that says something is wrong fire every time
-    somebody used a mute.
+    `channel_mutes` silences whole channels. When any channel is in
+    `channel_solos`, only soloed, unmuted channels are audible; mute wins when
+    both switches are set. Silent notes are not counted in `dropped` because
+    they were excluded deliberately rather than lost by the palette. The UI
+    may set `include_silent` to retain those notes for a dimmed piano-roll
+    display, while preview audio and map export use only notes whose `audible`
+    metadata is true.
 
     `drum_key_overrides` gives a percussion key its sound by MIDI key number,
     which is the only lever that reaches the exotic keys `DRUM_MAP` drops on
@@ -129,6 +132,7 @@ def parse_notes(
     channel_pitch_profiles = channel_pitch_profiles or {}
     note_overrides = note_overrides or {}
     no_sustain = set(decaying_families or ())
+    channel_solos = channel_solos or frozenset()
     event_looping_cache = {}
     low_cut, low_family = low_split or (0, None)
     sound_categories = palette.sound_categories()
@@ -158,12 +162,14 @@ def parse_notes(
                 msg.note,
                 occurrences[occurrence_key],
             )
-            if msg.channel in channel_mutes:
+            muted = msg.channel in channel_mutes
+            solo_excluded = bool(channel_solos and msg.channel not in channel_solos)
+            audible = not muted and not solo_excluded
+            if not audible and not include_silent:
                 continue
             override = note_overrides.get(note_id, {})
-            transpose = int(override.get("transpose", 0))
+            pitch_offset = int(override.get("pitch_offset", 0))
             volume_trim_db = int(override.get("volume_db", 0))
-            target_pitch = max(MIDI_MIN, min(MIDI_MAX, msg.note + transpose))
             exact_sound = channel_sounds.get(msg.channel)
             chosen_family = channel_families.get(msg.channel)
             applied_root = None
@@ -196,7 +202,7 @@ def parse_notes(
                 # instrument. The explicit track choice wins over automatic
                 # percussion detection, so drums need no separate workspace.
                 family = chosen_family
-                shader = palette.decl_for(family, target_pitch, index)
+                shader = palette.decl_for(family, msg.note, index)
                 sustained = family in SUSTAINED and family not in no_sustain
             elif msg.channel == DRUM_CHANNEL and drums_on:
                 # The per-key choice is the user's and is final. `drum_overrides`
@@ -214,7 +220,7 @@ def parse_notes(
                 family = family_overrides.get(family, family)
                 if low_family and msg.note < low_cut:
                     family = low_family
-                shader = palette.decl_for(family, target_pitch, index)
+                shader = palette.decl_for(family, msg.note, index)
                 sustained = family in SUSTAINED and family not in no_sustain
             if shader:
                 if exact_sound is None and family != "drums":
@@ -228,7 +234,7 @@ def parse_notes(
                     msg.note,
                     msg.velocity,
                     applied_root,
-                    transpose=transpose,
+                    pitch_offset=pitch_offset,
                     volume_trim_db=volume_trim_db,
                     master_volume_db=master_volume_db,
                 )
@@ -238,12 +244,16 @@ def parse_notes(
                     "root_confidence": root_confidence,
                     "root_source": root_source,
                     "pitch_follow": pitch_follow,
+                    "audible": audible,
+                    "muted": muted,
+                    "solo_excluded": solo_excluded,
                 }
                 active[(msg.channel, msg.note)].append(
                     (now, shader, sustained, family, expression, metadata)
                 )
             else:
-                dropped += 1
+                if audible:
+                    dropped += 1
         elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
             pending = active.get((msg.channel, msg.note))
             if pending:
@@ -258,13 +268,14 @@ def parse_notes(
             note = Note(started, end, shader, sustained, channel, family)
             notes.append(annotate(note, expression, **metadata))
 
+    audible_notes = [note for note in notes if getattr(note, "audible", True)]
     stats = {
         "drums_on": drums_on,
         "dropped": dropped,
         "duration_s": round(elapsed, 2),
-        "pitch_adjusted": sum(note.pitch_modifier != 0 for note in notes),
-        "volume_adjusted": sum(note.volume_db != 0 for note in notes),
-        "pitch_limited": sum(note.pitch_limited for note in notes),
-        "volume_limited": sum(note.volume_limited for note in notes),
+        "pitch_adjusted": sum(note.pitch_modifier != 0 for note in audible_notes),
+        "volume_adjusted": sum(note.volume_db != 0 for note in audible_notes),
+        "pitch_limited": sum(note.pitch_limited for note in audible_notes),
+        "volume_limited": sum(note.volume_limited for note in audible_notes),
     }
     return notes, stats

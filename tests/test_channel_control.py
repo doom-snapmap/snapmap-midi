@@ -136,6 +136,48 @@ def test_an_empty_mute_set_parses_exactly_what_no_mute_set_parses():
     assert parse_notes(TINY_MIDI, channel_mutes=set())[0] == parse_notes(TINY_MIDI)[0]
 
 
+def test_multi_solo_keeps_every_soloed_channel_and_mute_wins(tmp_path):
+    mid = _write_midi(tmp_path, [(0, 60), (1, 62), (2, 64)], programs={0: 0, 1: 0, 2: 0})
+
+    soloed, _ = parse_notes(mid, drums=False, channel_solos={0, 2})
+    assert {note.chan for note in soloed} == {0, 2}
+
+    remaining, _ = parse_notes(mid, drums=False, channel_solos={0, 2}, channel_mutes={2})
+    assert {note.chan for note in remaining} == {0}
+
+
+def test_include_silent_keeps_mixer_excluded_notes_with_explicit_state(tmp_path):
+    mid = _write_midi(tmp_path, [(0, 60), (1, 62), (2, 64)], programs={0: 0, 1: 0, 2: 0})
+
+    notes, _ = parse_notes(
+        mid,
+        drums=False,
+        channel_mutes={2},
+        channel_solos={0, 2},
+        include_silent=True,
+    )
+    by_channel = {note.chan: note for note in notes}
+    assert (by_channel[0].audible, by_channel[0].muted, by_channel[0].solo_excluded) == (
+        True,
+        False,
+        False,
+    )
+    assert (by_channel[1].audible, by_channel[1].muted, by_channel[1].solo_excluded) == (
+        False,
+        False,
+        True,
+    )
+    assert (by_channel[2].audible, by_channel[2].muted, by_channel[2].solo_excluded) == (
+        False,
+        True,
+        False,
+    )
+
+
+def test_an_empty_solo_set_parses_exactly_what_no_solo_set_parses():
+    assert parse_notes(TINY_MIDI, channel_solos=set())[0] == parse_notes(TINY_MIDI)[0]
+
+
 # ---- unified track sound assignment ----
 
 
@@ -324,15 +366,21 @@ def test_peak_voices_reaching_max_speakers_is_what_says_a_layer_was_thinned(tmp_
 # ---- the byte gate ----
 
 
-def test_compile_accepts_both_levers_without_moving_a_byte():
+def test_compile_accepts_empty_mixer_and_drum_controls_without_moving_a_byte():
     """Adding parameters must not move output. The statistics dict is not
     serialized, so new keys there are safe; note ordering, field order and
     event construction are not, and all three are downstream of this call."""
-    raw, _ = compile_to_rawmap(TINY_MIDI, channel_mutes=set(), drum_key_overrides={})
+    raw, _ = compile_to_rawmap(
+        TINY_MIDI, channel_mutes=set(), channel_solos=set(), drum_key_overrides={}
+    )
     assert raw == compile_to_rawmap(TINY_MIDI)[0]
 
     gated, _ = compile_to_rawmap(
-        TINY_MIDI, channel_mutes=set(), drum_key_overrides={}, **_SCRATCH_PARAMS
+        TINY_MIDI,
+        channel_mutes=set(),
+        channel_solos=set(),
+        drum_key_overrides={},
+        **_SCRATCH_PARAMS,
     )
     assert gated == SCRATCH_GOLDEN.read_bytes()
 

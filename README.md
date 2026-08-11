@@ -160,18 +160,23 @@ There is one Play/Pause control for the whole converted song. Its playhead sweep
 entire note surface and can be dragged to seek, as can the transport scrubber. The note under the
 pointer brightens whether playback is running or paused; playback itself does not change note
 colors. Clicking a note pauses playback and opens the Note expression inspector. It shows the
-imported and target pitch, MIDI velocity, selected event and root evidence, and final SnapMap
-pitch/volume values. Per-note semitone and dB trims change the conversion without rewriting the
-MIDI, while the bottom-panel Volume control offsets every note in the arrangement. Exact sounds
-also expose their detected root or relative reference together with a
-pitch-follow switch. Clicking or dragging empty
-roll space continues to seek.
+immutable MIDI note, velocity, selected event, pitch basis, and final SnapMap pitch/volume
+values. Pitch offset changes playback without moving the block, changing its channel, or
+selecting another sample; Volume trim changes only that note's level. The bottom-panel Volume
+control offsets the whole arrangement. Exact sounds with a stable root follow MIDI
+automatically. Rootless effects keep natural playback and expose Follow MIDI note plus an
+optional relative reference for users who deliberately want melodic retuning. Clicking or
+dragging empty roll space continues to seek.
 
 The roll covers all 128 MIDI pitches with synchronized piano keys, measure ruler, vertical and
 horizontal scrollbars, and section-based playback following. Its static grid and notes are cached
 separately from the moving playhead, so vertical wheel navigation remains responsive during
 playback, including when the pointer is over the disabled horizontal time scrollbar. Dragging the
-channel/roll divider trades width between the two panes. Bottom controls set the global volume
+channel/roll divider trades width between the two panes. Every channel row has standard Mute
+and multi-Solo controls. Clicking the rest of a row focuses its notes for editing without
+changing the mix; other channels remain visible but dimmed and cannot be selected until focus is
+cleared. Muted and solo-excluded notes remain visible in neutral gray but do not preview or
+export. Bottom controls set the global volume
 modifier, visual note grid, time signature, and playhead-anchored pitch/time zoom. Only Volume
 changes preview and export; the remaining controls do not change the source notes. Conversion
 limits open in a nonblocking inspector instead of an import wizard or a
@@ -183,7 +188,8 @@ current song. There is no audio setup step; conversion and export continue to wo
 audio is unavailable.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
-produced it: channel sounds, detected roots or relative references, conversion limits, global
+produced it: channel sounds, mute/solo state, detected roots or optional relative references,
+conversion limits, global
 volume, and sparse per-note pitch/volume trims. Open that song again and the choices are already
 there;
 `snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays them without the
@@ -223,19 +229,19 @@ snapmap-midi compile song.mid --out-dir D:/songs/bach
 A MIDI file streams note-on and note-off events. snapmap-midi pairs them into stable,
 velocity-bearing notes, maps each General MIDI program to a curated pitched family, and chooses
 the nearest sample in that family. It then applies the residual semitone shift needed to make
-that sample sound at the target MIDI pitch. Automatic mapping remains constrained to the
+that sample sound at the imported MIDI pitch. Automatic mapping remains constrained to the
 curated sounds with known pitch coverage.
 
 A manually chosen full-game event still triggers that exact event string for every note on its
 channel. When its media has a stable musical root, snapmap-midi detects and caches that numeric
-profile and tunes from it. When no honest root exists, snapmap-midi assigns natural playback to
-the midpoint of the imported channel's note range and pitches every note relative to that
-reference. This preserves the MIDI intervals without claiming that an effect, voice, or impact
-has an acoustic note. Pitch following can still be disabled explicitly when fixed playback is
-preferred.
+profile and tunes from it. When no honest root exists, the event plays naturally by default.
+The midpoint of the imported channel's note range is retained only as an optional relative
+reference. Enabling Follow MIDI note preserves intervals from that reference without claiming
+that an effect, voice, or impact has an acoustic note.
 
 MIDI velocity becomes an integral dB modifier. The global volume offset and then the per-note
-volume trim are added before the final clamp; per-note pitch trim is resolved independently.
+volume trim are added before the final clamp; per-note Pitch offset is resolved independently
+and never changes the MIDI row or curated sample choice.
 SnapMap receives pitch in semitones (-24 through 24) and volume in dB (-60 through 20). The
 arrangement then uses three scheduling paths:
 

@@ -132,6 +132,10 @@
   function hasSong() { return !!(STATE.analysis && STATE.settings && STATE.settings.midi); }
   function channels() { return (STATE.analysis && STATE.analysis.channels) || []; }
   function previewEvents() { return (STATE.preview && STATE.preview.events) || []; }
+  function previewDisplayEvents() {
+    return (STATE.preview && STATE.preview.display_events) || previewEvents();
+  }
+
   function tuning() { return (STATE.settings && STATE.settings.tuning) || {}; }
   function audioUnavailableNames() { return Object.keys(AUDIO.unavailable || {}).sort(); }
   function warningMessages() {
@@ -332,6 +336,15 @@
     return (STATE.settings && STATE.settings.channels && STATE.settings.channels[String(channel)]) || {};
   }
 
+
+  function anySoloedChannel() {
+    var list = channels();
+    for (var index = 0; index < list.length; index += 1) {
+      if (channelEntry(list[index].channel).soloed) { return true; }
+    }
+    return false;
+  }
+
   function channelByNumber(channel) {
     var list = channels();
     for (var index = 0; index < list.length; index += 1) {
@@ -400,6 +413,7 @@
       row.className = "track-row";
       row.dataset.channel = String(channel.channel);
       row.style.setProperty("--track-color", channelColor(channel.channel));
+      row.title = "Click the channel strip to focus its notes; click again to show all channels";
 
       var number = document.createElement("div");
       number.className = "track-channel";
@@ -425,24 +439,43 @@
       picker.addEventListener("click", function () { openSoundBrowser(channel.channel); });
       row.appendChild(picker);
 
-      var mute = document.createElement("label");
-      mute.className = "track-mute";
-      var check = document.createElement("input");
-      check.type = "checkbox";
-      check.setAttribute("aria-label", "Mute MIDI channel " + (channel.channel + 1));
-      check.addEventListener("change", function () {
-        var patch = { channels: {} };
-        patch.channels[String(channel.channel)] = { muted: this.checked };
-        applyPatch(patch, true);
-      });
-      mute.appendChild(check);
-      mute.appendChild(document.createTextNode("Mute"));
-      row.appendChild(mute);
+      var actions = document.createElement("div");
+      actions.className = "track-actions";
+
+      function mixerButton(kind, label, setting) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "track-toggle track-" + kind + "-toggle";
+        button.textContent = label;
+        button.setAttribute("aria-label",
+          (kind === "mute" ? "Mute" : "Solo") +
+          " MIDI channel " + (channel.channel + 1));
+        button.title = kind === "mute"
+          ? "Mute this channel"
+          : "Solo this channel; other soloed channels remain audible";
+        button.addEventListener("click", function () {
+          var patch = { channels: {} };
+          patch.channels[String(channel.channel)] = {};
+          patch.channels[String(channel.channel)][setting] =
+            !channelEntry(channel.channel)[setting];
+          applyPatch(patch, true);
+        });
+        return button;
+      }
+
+      actions.appendChild(mixerButton("mute", "M", "muted"));
+      actions.appendChild(mixerButton("solo", "S", "soloed"));
+      row.appendChild(actions);
 
       row.addEventListener("click", function (event) {
         if (event.target.closest("button, input, label")) { return; }
         SELECTED_CHANNEL = SELECTED_CHANNEL === channel.channel ? null : channel.channel;
         patchTracks();
+        var inspected = selectedNoteEvent();
+        if (SELECTED_CHANNEL !== null && inspected &&
+            Number(inspected.channel) !== SELECTED_CHANNEL) {
+          closeNoteInspector();
+        }
         invalidateRollSurface();
         queueDraw();
       });
@@ -452,19 +485,32 @@
 
   function patchTracks() {
     var rows = el("trackList").querySelectorAll(".track-row");
+    var soloActive = anySoloedChannel();
     for (var index = 0; index < rows.length; index += 1) {
       var row = rows[index];
       var channelNumber = Number(row.dataset.channel);
       var channel = channelByNumber(channelNumber);
       var entry = channelEntry(channelNumber);
-      row.classList.toggle("selected", SELECTED_CHANNEL === channelNumber);
+      var selected = SELECTED_CHANNEL === channelNumber;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-selected", selected ? "true" : "false");
       row.classList.toggle("muted-track", !!entry.muted);
+      row.classList.toggle("soloed-track", !!entry.soloed);
+      row.classList.toggle("solo-excluded-track", soloActive && !entry.soloed);
       var picker = row.querySelector(".track-sound-picker");
       if (channel && picker) {
         picker.querySelector(".track-sound-copy").textContent = assignmentLabel(channel);
         picker.title = assignmentTitle(channel);
       }
-      row.querySelector(".track-mute input").checked = !!entry.muted;
+      var mute = row.querySelector(".track-mute-toggle");
+      var solo = row.querySelector(".track-solo-toggle");
+      mute.classList.toggle("active", !!entry.muted);
+      mute.setAttribute("aria-pressed", entry.muted ? "true" : "false");
+      solo.classList.toggle("active", !!entry.soloed);
+      solo.setAttribute("aria-pressed", entry.soloed ? "true" : "false");
+      solo.title = entry.soloed
+        ? "Remove this channel from the solo mix"
+        : "Solo this channel; other soloed channels remain audible";
     }
   }
 
@@ -1091,7 +1137,7 @@
     body.root_midi = null;
     var useButton = el("soundBrowserUse");
     useButton.disabled = true;
-    el("soundSelection").textContent = "Finding a root or relative pitch anchor...";
+    el("soundSelection").textContent = "Analyzing musical pitch...";
     setBusy(true, "Resolving sound pitch...");
     api().sound_profile(candidate.value, channel).then(function (response) {
       setBusy(false);
@@ -1103,27 +1149,27 @@
           body.root_confidence = Number(profile.confidence || 0);
           body.root_source = profile.source || "detected";
         } else if (isFinite(Number(response.relative_anchor))) {
-          body.pitch_follow = true;
           body.root_midi = Number(response.relative_anchor);
           body.root_confidence = 0;
           body.root_source = "relative";
           toast(
-            "No stable musical root was found. Natural playback is anchored to " +
-            noteName(body.root_midi) + " so this channel still follows MIDI."
+            "No stable musical root was found. This sound will play at its natural pitch. " +
+            "You can enable Follow MIDI note later and use " +
+            noteName(body.root_midi) + " as a relative reference."
           );
         } else {
           toast(
-            "No stable root or channel reference was available; this sound is fixed-pitch",
+            "No stable root or channel reference was available; this sound will play at natural pitch",
             "warn"
           );
         }
       } else {
-        toast("Pitch analysis was unavailable; this sound will remain fixed-pitch", "warn");
+        toast("Pitch analysis was unavailable; this sound will play at natural pitch", "warn");
       }
       commit();
     }, function () {
       setBusy(false);
-      toast("Pitch analysis was unavailable; this sound will remain fixed-pitch", "warn");
+      toast("Pitch analysis was unavailable; this sound will play at natural pitch", "warn");
       commit();
     }).finally(function () {
       if (useButton && useButton.isConnected) { useButton.disabled = false; }
@@ -1264,7 +1310,7 @@
   }
 
   function eventRenderIndex() {
-    var source = previewEvents();
+    var source = previewDisplayEvents();
     if (RENDER.eventSource === source && RENDER.eventIndex) { return RENDER.eventIndex; }
     var buckets = [];
     for (var pitch = 0; pitch <= 127; pitch += 1) {
@@ -1286,6 +1332,10 @@
         end: Math.max(eventStart, Number(event.end) || eventStart),
         channel: Number(event.channel) || 0,
         color: channelColor(Number(event.channel) || 0),
+        audible: event.audible !== false,
+        muted: !!event.muted,
+        soloExcluded: !!event.solo_excluded,
+        converted: event.converted !== false,
         label: noteName(eventPitch)
       };
       records.push(record);
@@ -1881,10 +1931,10 @@
     context.stroke();
   }
 
-  function drawNoteLabel(context, record, geometry, alpha) {
+  function drawNoteLabel(context, record, geometry, alpha, color) {
     if (ROLL.rowHeight < 14 || geometry.width < 25 || geometry.x < 0) { return; }
     var labelSize = clamp(Math.floor(geometry.height * 0.58), 9, 12);
-    context.fillStyle = noteTextColor(record.color);
+    context.fillStyle = noteTextColor(color || record.color);
     context.font = '600 ' + labelSize + 'px "Segoe UI", Tahoma, Arial, sans-serif';
     context.textAlign = 'left';
     context.textBaseline = 'middle';
@@ -1898,6 +1948,22 @@
     }
   }
 
+
+  function noteVisual(record, palette) {
+    var focusedOut = SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== record.channel;
+    var inactive = record.muted || record.soloExcluded || !record.audible || !record.converted;
+    var alpha = inactive ? 0.38 : 0.88;
+    var labelAlpha = inactive ? 0.72 : 1;
+    if (focusedOut) {
+      alpha = Math.min(alpha, 0.2);
+      labelAlpha = Math.min(labelAlpha, 0.42);
+    }
+    return {
+      color: inactive ? palette.muted : record.color,
+      alpha: alpha,
+      labelAlpha: labelAlpha
+    };
+  }
   function drawStaticNotes(context, records, scrollLeft, scrollTop, width, height, duration, palette) {
     var detailed = ROLL.rowHeight >= 12 && ROLL.zoom > 140;
     if (!detailed) {
@@ -1906,9 +1972,11 @@
         var geometry = eventGeometry(record, scrollLeft, scrollTop, duration);
         if (geometry.x + geometry.width < 0 || geometry.x > width ||
             geometry.y + geometry.height < 0 || geometry.y > height) { return; }
-        var alpha = SELECTED_CHANNEL === null || SELECTED_CHANNEL === record.channel ? 0.88 : 0.25;
-        var key = record.color + '|' + alpha;
-        if (!batches[key]) { batches[key] = { color: record.color, alpha: alpha, blocks: [] }; }
+        var visual = noteVisual(record, palette);
+        var key = visual.color + '|' + visual.alpha;
+        if (!batches[key]) {
+          batches[key] = { color: visual.color, alpha: visual.alpha, blocks: [] };
+        }
         batches[key].blocks.push(geometry);
       });
       Object.keys(batches).forEach(function (key) {
@@ -1929,7 +1997,7 @@
       var geometry = eventGeometry(record, scrollLeft, scrollTop, duration);
       if (geometry.x + geometry.width < 0 || geometry.x > width ||
           geometry.y + geometry.height < 0 || geometry.y > height) { return; }
-      var noteAlpha = SELECTED_CHANNEL === null || SELECTED_CHANNEL === record.channel ? 0.88 : 0.25;
+      var visual = noteVisual(record, palette);
       fillNoteBlock(
         context,
         geometry.x,
@@ -1937,29 +2005,16 @@
         geometry.width,
         geometry.height,
         geometry.radius,
-        record.color,
-        noteAlpha,
+        visual.color,
+        visual.alpha,
         false
       );
-      if (SELECTED_CHANNEL === record.channel) {
-        context.globalAlpha = 1;
-        context.strokeStyle = palette.text;
-        context.lineWidth = 0.7;
-        roundedRectPath(
-          context,
-          geometry.x + 0.5,
-          geometry.y + 0.5,
-          Math.max(1, geometry.width - 1),
-          Math.max(1, geometry.height - 1),
-          Math.max(0, geometry.radius - 0.5)
-        );
-        context.stroke();
-      }
       drawNoteLabel(
         context,
         record,
         geometry,
-        SELECTED_CHANNEL === null || SELECTED_CHANNEL === record.channel ? 1 : 0.55
+        visual.labelAlpha,
+        visual.color
       );
     });
     context.globalAlpha = 1;
@@ -2050,10 +2105,13 @@
     var candidates = [];
     recordsOverlapping(eventRenderIndex().buckets[127 - row], time - tolerance, time + tolerance, candidates);
     for (var index = candidates.length - 1; index >= 0; index -= 1) {
-      var geometry = eventGeometry(candidates[index], viewport.scrollLeft, viewport.scrollTop, duration);
+      var candidate = candidates[index];
+      if (SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== candidate.channel) { continue; }
+      var geometry = eventGeometry(
+        candidate, viewport.scrollLeft, viewport.scrollTop, duration);
       if (point.x >= geometry.x && point.x <= geometry.x + geometry.width &&
           point.y >= geometry.y && point.y <= geometry.y + geometry.height) {
-        return { record: candidates[index], geometry: geometry };
+        return { record: candidate, geometry: geometry };
       }
     }
     return null;
@@ -2097,6 +2155,7 @@
     var hovered = hoveredRenderEvent(el('pianoRoll'));
     if (hovered) {
       var geometry = hovered.geometry;
+      var visual = noteVisual(hovered.record, palette);
       fillNoteBlock(
         context,
         geometry.x,
@@ -2104,11 +2163,11 @@
         geometry.width,
         geometry.height,
         geometry.radius,
-        hovered.record.color,
+        visual.color,
         1,
         true
       );
-      drawNoteLabel(context, hovered.record, geometry, 1);
+      drawNoteLabel(context, hovered.record, geometry, 1, visual.color);
       context.globalAlpha = 1;
     }
 
@@ -2779,7 +2838,7 @@
   }
 
   function selectedNoteEvent() {
-    var events = previewEvents();
+    var events = previewDisplayEvents();
     for (var index = 0; index < events.length; index += 1) {
       if (String(events[index].id || "") === SELECTED_NOTE_ID) { return events[index]; }
     }
@@ -2821,7 +2880,7 @@
 
   function rootDisplay(root) {
     if (root === null || root === undefined || !isFinite(Number(root))) {
-      return "Unresolved - fixed pitch";
+      return "Natural playback";
     }
     root = Number(root);
     return noteName(Math.round(root)) + " (" + root.toFixed(2) + ")";
@@ -2840,25 +2899,29 @@
       (channel ? " - " + channel.program_name : "");
     el("noteSourcePitch").textContent =
       noteName(note.source_pitch) + " (" + note.source_pitch + ")";
-    el("noteTargetPitch").textContent =
-      noteName(note.pitch) + " (" + note.pitch + ")";
     el("noteVelocity").textContent = String(note.velocity);
     el("noteSound").textContent = String(note.sound || "");
     var relativePitch = String(note.root_source || "") === "relative";
-    el("notePitchBasisLabel").textContent = relativePitch ? "Pitch anchor" : "Sound root";
-    el("noteRoot").textContent = rootDisplay(note.root_pitch);
-    syncPair("notePitchRange", "notePitchNumber", Number(note.transpose || 0));
+    var followsPitch = note.automatic_pitch !== null && note.automatic_pitch !== undefined;
+    el("notePitchBasisLabel").textContent = followsPitch
+      ? (relativePitch ? "Pitch reference" : "Sound root") : "Playback";
+    el("noteRoot").textContent = followsPitch
+      ? rootDisplay(note.applied_root_pitch)
+      : "Natural pitch";
+    syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_offset || 0));
     syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.volume_trim_db || 0));
 
     if (note.automatic_pitch === null || note.automatic_pitch === undefined) {
       el("notePitchReadout").textContent =
-        "No trusted root. The trim is a direct SnapMap modifier; final " +
-        signed(note.pitch_modifier) + " semitones.";
+        "Natural playback; offset " + signed(note.pitch_offset) +
+        "; SnapMap " + signed(note.pitch_modifier) + " semitones.";
     } else {
       el("notePitchReadout").textContent =
-        (relativePitch ? "Relative " : "Automatic ") + signed(note.automatic_pitch) +
-        " + trim " + signed(note.transpose) +
-        " = " + signed(note.pitch_modifier) + " semitones in SnapMap.";
+        "MIDI " + noteName(note.source_pitch) + " - " +
+        (relativePitch ? "reference " : "root ") +
+        noteName(Math.round(Number(note.applied_root_pitch))) + " = " +
+        signed(note.automatic_pitch) + "; offset " + signed(note.pitch_offset) +
+        "; SnapMap " + signed(note.pitch_modifier) + " semitones.";
     }
     el("noteVolumeReadout").textContent =
       "Velocity " + note.velocity + " maps to " + signed(note.velocity_db) +
@@ -2876,7 +2939,9 @@
       var rootSource = String(channelSettings.root_source || "manual");
       var relativeRoot = rootSource === "relative";
       el("noteChannelPitchTitle").textContent =
-        relativeRoot ? "Exact-sound reference" : "Exact-sound root";
+        relativeRoot
+          ? "Optional pitch reference"
+          : (rootSource === "detected" ? "Detected sound root" : "Sound root");
       el("noteRootNumberLabel").textContent =
         relativeRoot ? "Reference MIDI note" : "Root MIDI note";
       el("notePitchFollow").checked = !!channelSettings.pitch_follow;
@@ -2888,16 +2953,21 @@
         el("noteRootEvidence").textContent =
           "No root or relative reference is assigned. Enter one to enable pitch following.";
       } else if (relativeRoot) {
-        el("noteRootEvidence").textContent =
-          "Relative reference: natural playback is assigned to " +
-          noteName(Math.round(Number(root))) + ". No acoustic root is claimed.";
+        el("noteRootEvidence").textContent = channelSettings.pitch_follow
+          ? "Relative MIDI mode: unmodified playback is treated as " +
+            noteName(Math.round(Number(root))) +
+            " only for calculating offsets. No acoustic root is claimed."
+          : "No stable musical root was found. Natural playback is preserved. " +
+            "Enable Follow MIDI note to use " + noteName(Math.round(Number(root))) +
+            " as a relative reference.";
       } else {
         var confidence = channelSettings.root_confidence;
         el("noteRootEvidence").textContent =
           "Source: " + rootSource +
           (confidence === null || confidence === undefined
             ? ""
-            : "; confidence " + Math.round(Number(confidence) * 100) + "%.");
+            : "; confidence " + Math.round(Number(confidence) * 100) + "%.") +
+          (channelSettings.pitch_follow ? "" : " Natural playback is selected.");
       }
 
     }
@@ -2937,7 +3007,7 @@
 
   function updateNoteOverride(noteId, key, rawValue) {
     if (!STATE.settings || !noteId) { return; }
-    var limits = key === "transpose" ? [-24, 24] : [-60, 20];
+    var limits = key === "pitch_offset" ? [-24, 24] : [-60, 20];
     var value = clamp(Math.round(Number(rawValue) || 0), limits[0], limits[1]);
     var next = Object.assign({}, STATE.settings.notes || {});
     var entry = Object.assign({}, next[noteId] || {});
@@ -2959,7 +3029,7 @@
   function initNoteInspector() {
     el("closeNoteInspector").addEventListener("click", closeNoteInspector);
     var sendPitch = debounce(function (value, noteId) {
-      updateNoteOverride(noteId, "transpose", value);
+      updateNoteOverride(noteId, "pitch_offset", value);
     }, 180);
     var sendVolume = debounce(function (value, noteId) {
       updateNoteOverride(noteId, "volume_db", value);
@@ -2970,7 +3040,7 @@
     });
     el("notePitchNumber").addEventListener("change", function () {
       el("notePitchRange").value = this.value;
-      updateNoteOverride(SELECTED_NOTE_ID, "transpose", this.value);
+      updateNoteOverride(SELECTED_NOTE_ID, "pitch_offset", this.value);
     });
     el("noteVolumeRange").addEventListener("input", function () {
       el("noteVolumeNumber").value = this.value;
@@ -3008,7 +3078,7 @@
       var root = Number(el("noteRootNumber").value);
       if (this.checked && (!isFinite(root) || el("noteRootNumber").value === "")) {
         this.checked = false;
-        toast("Enter a root or reference MIDI note before enabling pitch follow", "warn");
+        toast("Enter a root or reference MIDI note before enabling Follow MIDI note", "warn");
         return;
       }
       updateSelectedChannelRoot({ pitch_follow: this.checked });

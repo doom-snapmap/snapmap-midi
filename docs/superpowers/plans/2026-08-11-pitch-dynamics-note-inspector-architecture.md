@@ -1,8 +1,13 @@
 # Pitch, Dynamics, and Per-Note Editing Architecture
 
-Status: implemented and verified
+Status: implemented, then corrected by the pitch-model and channel-mix plan
 Date: 2026-08-11
 Scope: snapmap-midi
+
+Current behavior is defined by
+[Pitch Model and Channel Mix Correction](2026-08-11-pitch-model-and-channel-mix-correction.md).
+That correction keeps the verified engine contract below but replaces target-note movement and
+automatic pitch following for rootless exact SFX.
 
 ## Goal
 
@@ -13,8 +18,8 @@ Make the converted arrangement describe what the listener will actually hear:
 - expose the exact pitch and volume values used by SnapMap;
 - keep browser preview and exported Timeline output on one expression model;
 - let a user click any rendered note and adjust its pitch and volume;
-- preserve MIDI intervals through an explicit relative reference when a sound has no root,
-  while retaining fixed pitch as an opt-out.
+- preserve natural playback when an exact sound has no root, with relative MIDI following as
+  an explicit opt-in.
 
 This is an expression-layer refactor, not a source-MIDI editor. The imported
 MIDI file is never rewritten.
@@ -96,8 +101,9 @@ Every positive MIDI note-on receives an id before mute or mapping decisions:
 Changing a channel sound, muting and unmuting, or editing the note therefore
 does not change its id.
 
-Runtime note annotations carry source id, source pitch, target pitch, velocity,
-root evidence, automatic shift, global volume, user trims, final modifiers, and clamp state.
+Runtime note annotations carry source id and pitch, velocity, sound-root evidence, automatic
+shift, playback-only pitch offset, global volume, volume trim, final modifiers, and clamp
+state.
 They do not alter the existing dataclass field order or rawmap key order.
 
 ### Settings schema
@@ -106,13 +112,12 @@ Settings version 2 added:
 
 - exact-channel pitch-follow state and optional root/relative-reference metadata;
 - a top-level notes mapping keyed by source id;
-- per-note transpose and volume_db trims.
+- per-note pitch and volume adjustments, with pitch originally stored as transpose.
 
 Settings version 3 adds `tuning.master_volume_db`, an integral global offset from -60 through
-+20 dB with a neutral zero default. Version 1 and version 2 sidecars migrate in memory. Existing
-exact-sound selections stay fixed until reassigned or given a root/reference, preserving their
-old exports. New selections receive a detected root or relative reference. Only choices persist;
-derived modifiers are recalculated.
++20 dB with a neutral zero default. Settings version 4 adds channel soloed state and renames the
+sparse note pitch field to pitch_offset, making its playback-only meaning explicit. Versions 1
+through 3 migrate in memory. Only choices persist; derived modifiers are recalculated.
 
 ### Root-pitch analysis
 
@@ -128,10 +133,10 @@ Random containers whose leaves disagree are variable, not pitched. Noise, impact
 ambience, and unsupported media are rejected as roots. A failed classifier must never invent
 acoustic evidence.
 
-For a rejected selection, Python chooses the midpoint of the imported channel's lowest and
-highest source notes and persists it as a relative natural-playback reference. Notes follow
-their MIDI intervals from that basis; the UI never calls it a root. Fixed pitch remains an
-explicit pitch-follow opt-out.
+For a rejected selection, Python offers the midpoint of the imported channel's lowest and
+highest source notes as an optional relative natural-playback reference. The UI never calls it
+a root. Natural playback is the default; MIDI intervals follow that reference only after the
+user explicitly enables Follow MIDI note.
 
 Small numeric profiles are cached by install, event, leaf media ids, and analysis version. No
 game audio is copied; relative references come from MIDI and do not enter the analysis cache.
@@ -149,14 +154,14 @@ the per-note volume trim before clamping the final value to -60 through 20. Velo
 
 ### Piano-roll truth
 
-The roll displays target pitch after manual transpose; the inspector separately
-shows imported pitch. Automatic root-relative tuning changes the sound to
-match the target without moving the block. Manual transpose changes both.
+The roll always displays the imported MIDI pitch. Automatic root-relative tuning and the
+per-note Pitch offset change playback without moving the block, changing its channel, or
+selecting another curated sample.
 
-When no root exists, a newly selected exact sound normally has a persisted relative reference
-and still follows the target row. A deliberately fixed or legacy unprofiled sound has neither;
-only then is the per-note pitch control a direct SnapMap modifier. The inspector labels all
-three states explicitly.
+When no root exists, a newly selected exact sound keeps natural playback. Python may persist an
+optional relative reference, but Follow MIDI note remains off until the user enables it. The
+inspector distinguishes natural playback, a trusted sound root, and an explicit relative
+reference.
 
 ## Per-note inspector
 
@@ -167,12 +172,12 @@ notification inspectors. Clicking empty roll space continues to seek.
 It shows channel, imported note, selected event, MIDI velocity, global volume, root evidence,
 automatic calculation, final pitch/volume values, and any clamp. It provides:
 
-- pitch trim: integer -24 through 24 semitones;
+- Pitch offset: integer -24 through 24 semitones, affecting playback only;
 - volume trim: integer -60 through 20 dB;
 - reset note.
 
 Edits go through the normal settings bridge and resume playback if necessary.
-The selected id survives redraws; a transposed block moves to its new row.
+The selected id survives redraws and its block stays on the imported MIDI row.
 Hover glow remains pointer-only. Selection receives an outline, not a playback
 animation.
 
@@ -204,10 +209,10 @@ clamping.
 - global volume defaults to zero, offsets every note, and is shared by preview and export;
 - pitch math is integral, deterministic, and clamped;
 - ids and velocity survive overlapping or retriggered notes;
-- v1/v2 settings migrate and invalid v3 overrides fail by name;
+- versions 1 through 3 migrate and invalid version 4 overrides fail by name;
 - tone fixtures resolve and silence/noise/unstable/mixed leaves reject;
-- rejected exact sounds receive a deterministic, persisted relative reference while fixed pitch
-  remains an explicit choice;
+- rejected exact sounds preserve natural playback while relative MIDI following remains an
+  explicit choice;
 - fadePitch raw event shape and equal-time event order are pinned;
 - expressive decaying notes use isolated voices and preserve tails;
 - neutral decaying notes keep shared layering;
@@ -221,26 +226,27 @@ clamping.
 
 Implemented on 2026-08-11. The finished architecture includes:
 
-- a single tested expression model for MIDI velocity, global volume, note transpose,
+- a single tested expression model for MIDI velocity, global volume, playback-only Pitch offset,
   root-relative pitch, integer rounding, and SnapMap clamps;
-- stable source-note ids plus version 3 settings migration and sparse per-note overrides;
-- authoritative curated roots, conservative lazy all-leaf analysis, and deterministic
-  channel-centered relative references for arbitrary installed-game events, backed by a
+- stable source-note ids plus version 4 settings migration and sparse per-note overrides;
+- authoritative curated roots, conservative lazy all-leaf analysis, natural playback for
+  rootless installed-game events, and optional channel-centered relative references backed by a
   numeric-only acoustic-profile cache;
 - the three scheduling paths described above, with common voice preparation shared
   by map export and browser preview;
 - Web Audio detune and gain driven by the compiler's resolved values;
-- exact-sound root/reference controls, fixed-pitch opt-out, clamp diagnostics, and the per-note
-  expression inspector in the workstation UI;
+- exact-sound root/reference controls, natural-playback opt-out, clamp diagnostics, and the
+  per-note expression inspector in the workstation UI;
 - repository-wide documentation of the runtime model, settings schema, limits,
   soundbank behavior, contributor contracts, and UI behavior.
 
 Verification completed against the final implementation:
 
-- `ruff format src tests` and `ruff check src tests` passed;
+- `ruff check .` and `ruff format --check .` passed;
 - `node --check src/snapmap_midi/ui/web/app.js` passed;
-- `pytest -q` passed with 616 tests and four optional installed-baseline skips;
-- `python -m build` produced both the source distribution and wheel;
+- `pytest -q` passed with 627 tests and four optional installed-baseline skips;
+- the saved-map marker gate reported exactly four skips;
+- an isolated `pip wheel` build produced the distributable wheel;
 - `git diff --check` passed.
 
 ## Non-goals

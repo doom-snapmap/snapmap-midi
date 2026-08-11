@@ -204,8 +204,8 @@ def test_an_unknown_tuning_lever_names_itself():
 def test_a_document_from_a_later_build_is_refused_by_number():
     """The version exists so a document this build does not understand is
     refused rather than half-read."""
-    with pytest.raises(settings.SettingsError, match="4"):
-        settings.validate({**settings.defaults(), "version": 4})
+    with pytest.raises(settings.SettingsError, match=str(settings.SETTINGS_VERSION + 1)):
+        settings.validate({**settings.defaults(), "version": settings.SETTINGS_VERSION + 1})
 
 
 def test_a_version_one_document_migrates_without_inventing_expression():
@@ -213,7 +213,7 @@ def test_a_version_one_document_migrates_without_inventing_expression():
     old["version"] = 1
     old.pop("notes")
     migrated = settings.validate(old)
-    assert migrated["version"] == 3
+    assert migrated["version"] == settings.SETTINGS_VERSION
     assert migrated["notes"] == {}
     assert migrated["tuning"]["master_volume_db"] == 0
 
@@ -225,8 +225,39 @@ def test_a_version_two_document_migrates_with_neutral_master_volume():
 
     migrated = settings.validate(old)
 
-    assert migrated["version"] == 3
+    assert migrated["version"] == settings.SETTINGS_VERSION
     assert migrated["tuning"]["master_volume_db"] == 0
+
+
+def test_a_version_three_document_renames_note_transpose_without_changing_value():
+    old = settings.defaults()
+    old["version"] = 3
+    old["notes"] = {"0:60:1": {"transpose": -12, "volume_db": 3}}
+
+    migrated = settings.validate(old)
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["notes"] == {"0:60:1": {"pitch_offset": -12, "volume_db": 3}}
+
+
+def test_version_three_preserves_an_existing_relative_follow_choice():
+    old = settings.defaults()
+    old["version"] = 3
+    sound = palette.sounds_in_category("amb_air")[0]
+    old["channels"] = {
+        "0": {
+            "sound": sound,
+            "pitch_follow": True,
+            "root_midi": 60,
+            "root_confidence": 0,
+            "root_source": "relative",
+        }
+    }
+
+    migrated = settings.validate(old)
+    channel = migrated["channels"]["0"]
+    assert channel["pitch_follow"] is True
+    assert channel["root_source"] == "relative"
+    assert channel["soloed"] is False
 
 
 def test_a_channel_entry_that_is_not_a_mapping_is_a_clean_error():
@@ -265,7 +296,12 @@ def test_ins_string_is_refused_like_any_other_silent_family():
 def test_a_channel_may_choose_any_exact_sound_in_the_shipped_palette():
     sound = palette.sounds_in_category("amb_air")[0]
     doc = _patch({"channels": {"0": {"sound": sound}}})
-    assert doc["channels"]["0"] == {"family": None, "sound": sound, "muted": False}
+    assert doc["channels"]["0"] == {
+        "family": None,
+        "sound": sound,
+        "muted": False,
+        "soloed": False,
+    }
 
 
 def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
@@ -287,6 +323,7 @@ def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
         "family": None,
         "sound": sound,
         "muted": False,
+        "soloed": False,
         "pitch_follow": True,
         "root_midi": 60.25,
         "root_confidence": 0.88,
@@ -329,12 +366,12 @@ def test_per_note_expression_is_sparse_and_forwarded():
     doc = _patch(
         {
             "notes": {
-                "0:60:1": {"transpose": -12, "volume_db": 3},
-                "0:60:2": {"transpose": 0, "volume_db": 0},
+                "0:60:1": {"pitch_offset": -12, "volume_db": 3},
+                "0:60:2": {"pitch_offset": 0, "volume_db": 0},
             }
         }
     )
-    assert doc["notes"] == {"0:60:1": {"transpose": -12, "volume_db": 3}}
+    assert doc["notes"] == {"0:60:1": {"pitch_offset": -12, "volume_db": 3}}
     kwargs = settings.to_compile_kwargs(doc)
     assert kwargs["note_overrides"] == doc["notes"]
     assert kwargs["note_overrides"] is not doc["notes"]
@@ -346,12 +383,12 @@ def test_per_note_expression_is_sparse_and_forwarded():
 )
 def test_invalid_note_ids_are_refused_by_name(note_id):
     with pytest.raises(settings.SettingsError, match="note"):
-        _patch({"notes": {note_id: {"transpose": 1}}})
+        _patch({"notes": {note_id: {"pitch_offset": 1}}})
 
 
 def test_note_expression_stays_inside_snapmap_limits():
-    with pytest.raises(settings.SettingsError, match="transpose"):
-        _patch({"notes": {"0:60:1": {"transpose": 25}}})
+    with pytest.raises(settings.SettingsError, match="pitch_offset"):
+        _patch({"notes": {"0:60:1": {"pitch_offset": 25}}})
     with pytest.raises(settings.SettingsError, match="volume_db"):
         _patch({"notes": {"0:60:1": {"volume_db": -61}}})
 
@@ -385,6 +422,11 @@ def test_a_channel_outside_the_sixteen_is_refused():
 def test_muted_has_to_be_true_or_false():
     with pytest.raises(settings.SettingsError, match="muted"):
         _patch({"channels": {"0": {"muted": "yes"}}})
+
+
+def test_soloed_has_to_be_true_or_false():
+    with pytest.raises(settings.SettingsError, match="soloed"):
+        _patch({"channels": {"0": {"soloed": "yes"}}})
 
 
 def test_an_unknown_channel_setting_names_itself():
@@ -535,7 +577,7 @@ def test_muting_a_channel_does_not_clear_its_instrument():
     moment earlier, and the ruler would jump back to the automatic choice."""
     base = _patch({"channels": {"1": {"family": "ins_marimba"}}})
     doc = _patch({"channels": {"1": {"muted": True}}}, base)
-    assert doc["channels"]["1"] == {"family": "ins_marimba", "muted": True}
+    assert doc["channels"]["1"] == {"family": "ins_marimba", "muted": True, "soloed": False}
 
 
 def test_changing_one_channel_leaves_the_others_alone():
@@ -580,7 +622,7 @@ def test_a_patch_that_spells_a_channel_as_a_number_still_finds_it():
     add a second entry for the same channel and skip the merge entirely."""
     base = _patch({"channels": {"0": {"family": "ins_marimba"}}})
     doc = settings.merge(base, {"channels": {0: {"muted": True}}})
-    assert doc["channels"] == {"0": {"family": "ins_marimba", "muted": True}}
+    assert doc["channels"] == {"0": {"family": "ins_marimba", "muted": True, "soloed": False}}
 
 
 def test_merge_leaves_the_document_it_was_given_alone():
@@ -615,7 +657,7 @@ def test_an_integer_channel_key_becomes_the_string_json_will_write():
     file have to be equal, or the session compares them and sees a change
     nobody made."""
     doc = settings.validate({**settings.defaults(), "channels": {0: {"family": "ins_tri"}}})
-    assert doc["channels"] == {"0": {"family": "ins_tri", "muted": False}}
+    assert doc["channels"] == {"0": {"family": "ins_tri", "muted": False, "soloed": False}}
 
 
 # ---- what the compiler is handed ----
@@ -629,6 +671,13 @@ def test_channel_keys_become_integers_because_that_is_what_the_parser_compares()
     assert kwargs["channel_families"] == {0: "ins_tri"}
     assert kwargs["channel_mutes"] == {9}
     assert isinstance(kwargs["channel_mutes"], set)
+
+
+def test_multiple_soloed_channels_are_forwarded_as_integer_keys():
+    doc = _patch({"channels": {"0": {"soloed": True}, "2": {"soloed": True}}})
+    solos = settings.to_compile_kwargs(doc)["channel_solos"]
+    assert solos == {0, 2}
+    assert isinstance(solos, set)
 
 
 def test_a_muted_channel_with_an_instrument_appears_in_both():
