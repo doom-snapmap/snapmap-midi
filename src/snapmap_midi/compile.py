@@ -1,19 +1,16 @@
 """Orchestration: a MIDI file becomes a playable map.
 
-The arrangement splits in two, because the two halves have to be scheduled
-differently:
+Scheduling follows expression and decay independently:
 
-  - Decaying sounds and drums are one-shots. They layer polyphonically on the
-    timeline entity itself and are never stopped, because they fade on their
-    own and could not be stopped reliably anyway.
-  - Sustained notes hold at full volume, so each gets a speaker voice it can
-    be stopped on. Voices are allocated PER LAYER, so one instrument can never
-    steal another's voice or cut it off mid-phrase.
+  - Neutral decaying notes layer polyphonically on the shared Timeline entity.
+  - Decaying notes with pitch or gain use isolated, duration-reserved speakers
+    and are left to fade on their own.
+  - Sustained notes use isolated speakers plus explicit stops or releases.
 
-The tuning levers all exist for one reason: the engine recycles sound emitter
-slots under load, and a note whose slot is recycled can no longer be stopped,
-so it rings its entire sample and smears into the next phrase. Every lever is
-a different way to reduce how many sounds are live at once.
+Voice preparation is shared with browser preview and allocation stays per MIDI
+channel, so one instrument cannot steal another channel's voice. Density
+controls reduce exposure to the engine's emitter-recycling limit; per-note
+pitch and volume controls describe expression and do not change that limit.
 """
 
 from __future__ import annotations
@@ -22,13 +19,16 @@ import json
 from typing import Optional
 
 from snapmap_midi.music.midi import parse_notes
-from snapmap_midi.music.voices import allocate_voices, thin_polyphony
+from snapmap_midi.music.voices import (
+    allocate_voices,
+    prepare_voice_layers,
+    thin_polyphony,
+)
 from snapmap_midi.rawmap.codec import serialize
 from snapmap_midi.rawmap.document import SPEAKER_INHERIT, SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import PRODUCT_PALETTE_REFS
 from snapmap_midi.rawmap.template import blank_map
 from snapmap_midi.sound import events as _events
-from snapmap_midi.sound.palette import shader_pitch
 from snapmap_midi.sound.timeline import add_button, ensure_timeline
 
 
@@ -42,6 +42,16 @@ def installed_event_is_looping(name: str):
         from snapmap_midi.audio import library
 
         return library.event_is_looping(name)
+    except Exception:
+        return None
+
+
+def installed_event_duration_ms(name: str):
+    """Installed non-looping event duration, when soundbank metadata has one."""
+    try:
+        from snapmap_midi.audio import library
+
+        return library.event_duration_ms(name)
     except Exception:
         return None
 
@@ -72,6 +82,8 @@ def compile_to_rawmap(
     channel_mutes: Optional[set] = None,
     drum_key_overrides: Optional[dict] = None,
     channel_sounds: Optional[dict] = None,
+    channel_pitch_profiles: Optional[dict] = None,
+    note_overrides: Optional[dict] = None,
 ):
     """Compile a MIDI file into finished map bytes plus a statistics summary.
 
@@ -103,6 +115,8 @@ def compile_to_rawmap(
         drum_key_overrides=drum_key_overrides,
         channel_sounds=channel_sounds,
         event_is_looping=installed_event_is_looping,
+        channel_pitch_profiles=channel_pitch_profiles,
+        note_overrides=note_overrides,
     )
     decaying = [n for n in notes if not n.sustained]
     sustained = [n for n in notes if n.sustained]
@@ -114,40 +128,29 @@ def compile_to_rawmap(
         sustained = [n for n in sustained if n.duration >= min_sustain_ms]
     if drop_shaders:
         decaying = [n for n in decaying if n.shader not in drop_shaders]
+    decaying.sort(key=lambda n: (n.start, n.chan, n.source_pitch, n.id))
+    if max_events:
+        decaying = decaying[:max_events]
 
-    # Keep every note, but bound how long each holds a voice. Low notes stack
-    # many deep and drive concurrency, so they are capped hardest; high
-    # melodic notes barely stack and are left alone.
-    if cap_sustain_ms or bass_cap_ms or family_caps:
-        family_caps = family_caps or {}
-        for n in sustained:
-            cap = family_caps.get(n.fam, cap_sustain_ms or 10**9)
-            pitch = shader_pitch(n.shader)
-            if bass_cap_ms and pitch is not None and pitch < bass_pitch:
-                cap = min(cap, bass_cap_ms)
-            if n.duration > cap:
-                n.end = n.start + cap
-
-    # Group 0: one-shots on the timeline entity itself. These layer on ONE
-    # entity, so they must start unbound -- a concrete channel would make the
-    # entity monophonic per channel and the layers would cut each other off.
-    decaying_events = sorted(
-        (_events.start(n.shader, n.start, channel=_events.LAYERED_CHANNEL) for n in decaying),
+    shared_decaying, expressive_decaying, layers = prepare_voice_layers(
+        decaying,
+        sustained,
+        cap_sustain_ms=cap_sustain_ms,
+        bass_pitch=bass_pitch,
+        bass_cap_ms=bass_cap_ms,
+        family_caps=family_caps,
+        duration_lookup=installed_event_duration_ms,
+    )
+    shared_events = sorted(
+        (
+            _events.start(n.shader, n.start, channel=_events.LAYERED_CHANNEL)
+            for n in shared_decaying
+        ),
         key=lambda e: e["eventTime"],
     )
-    if max_events:
-        decaying_events = decaying_events[:max_events]
-    groups = [(timeline_id, decaying_events)]
+    groups = [(timeline_id, shared_events)]
 
     module = doc.module_stem()
-
-    # Per-layer voice allocation: each MIDI channel gets its own speakers,
-    # sized to that layer's own polyphony. Layers never steal from each other
-    # and can be tuned independently. A single global pool mixed every
-    # instrument onto shared speakers and cut phrases off across layers.
-    layers = {}
-    for n in sustained:
-        layers.setdefault(n.chan, []).append(n)
 
     voices_used = 0
     peak_voices = 0
@@ -158,7 +161,7 @@ def compile_to_rawmap(
             layer = thin_polyphony(layer, max_poly)
         count = allocate_voices(layer, max_speakers)
         voices_used += count
-        # Voices are allocated PER LAYER against `max_speakers`, so the running
+        # Voices are allocated per layer against max_speakers, so the running
         # total can pass it while no single layer is anywhere near it. The
         # worst layer is the one that says whether anything was thinned.
         peak_voices = max(peak_voices, count)
@@ -172,7 +175,7 @@ def compile_to_rawmap(
             uid = doc.add_speaker(
                 sound=(voice_notes[0].shader if voice_notes else ""),
                 position=(float(120 + 24 * speaker_index), 0.0, 64.0),
-                display_name="claude-ch%d-v%d" % (channel, voice),
+                display_name="snapmap-midi-ch%d-v%d" % (channel, voice),
             )
             speaker_id = "0_{}/{}_{}".format(module, SPEAKER_INHERIT, uid)
             speaker_index += 1
@@ -180,11 +183,15 @@ def compile_to_rawmap(
             scheduled = []
             for i, n in enumerate(voice_notes):
                 scheduled.append(_events.start(n.shader, n.start))
+                if n.pitch_modifier:
+                    scheduled.append(_events.fade_pitch(n.start, n.pitch_modifier))
+                if n.volume_db:
+                    scheduled.append(_events.fade(n.start, n.volume_db, 0.0))
                 following = voice_notes[i + 1] if i + 1 < len(voice_notes) else None
-                # Stop only before a GAP. For legato notes the next start
-                # already stops this one, and emitting a stop there would
-                # instead kill the note that just began on the same speaker.
-                if following is None or following.start > n.end:
+                # Decaying sounds end on their own. Sustains stop only before a
+                # gap; a following start on the same speaker is already the
+                # correct cutoff for legato or a stolen voice.
+                if n.sustained and (following is None or following.start > n.end):
                     scheduled.append(
                         _events.stop(n.end) if hard_stop else _events.fade(n.end, -60.0, release_s)
                     )
@@ -206,10 +213,10 @@ def compile_to_rawmap(
             "sustained": len(sustained),
             "voices": voices_used,
             "events": sum(len(e) for _, e in groups),
-            # The engine recycles emitter slots under load and only the
-            # sustained path holds one. `events` is dominated by immune
-            # one-shots, so it is the wrong number to judge a map by; these two
-            # are what `docs/limits.md` actually names.
+            "shared_one_shots": len(shared_decaying),
+            "expressive_notes": len(sustained) + len(expressive_decaying),
+            "expressive_one_shots": len(expressive_decaying),
+            "expressive_voices": voices_used,
             "long_sustains": sum(1 for n in sustained if n.duration > 1000),
             "peak_voices": peak_voices,
             "max_speakers": max_speakers,

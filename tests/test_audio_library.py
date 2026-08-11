@@ -188,6 +188,8 @@ def test_the_installed_browser_catalog_exposes_all_named_events_and_previewabili
     ]
     assert [event["previewable"] for event in catalog["events"]] == [True, True, False]
     assert catalog["events"][0]["path"] == "doom_test/one/"
+    assert library.event_duration_ms("play_one") is None
+    assert library.event_duration_ms("play_two") == 500
     assert catalog["events"][0]["bus"] == "SFX_Test"
     assert catalog["events"][0]["palette"] is True
     assert catalog["events"][0]["category"] == "ins_piano"
@@ -215,6 +217,63 @@ def test_a_direct_sound_decodes_in_memory_without_creating_a_wav(
         assert reader.getnframes() == 2 * 64
 
     assert library.wav_path("play_one") is None
+
+
+def test_curated_note_name_is_authoritative_without_reading_the_install(no_install):
+    profile = library.pitch_profile("play_pianoc4")
+    assert profile == {
+        "classification": "pitched",
+        "pitchable": True,
+        "root_midi": 60.0,
+        "confidence": 1.0,
+        "cents_spread": 0.0,
+        "sources": 1,
+        "source": "palette_name",
+        "reason": "curated sound name identifies its note",
+    }
+    assert not paths.pitch_profile_cache().exists()
+
+
+def test_detected_profile_cache_stores_numbers_and_never_audio(fake_install, monkeypatch):
+    from snapmap_midi.audio import pitch
+    from snapmap_midi.sound import palette
+
+    monkeypatch.setattr(locate, "doom_install", lambda: fake_install)
+    monkeypatch.setattr(palette, "sound_categories", lambda: {})
+    calls = []
+
+    def analyze(sources):
+        calls.append(list(sources))
+        return {
+            "classification": "pitched",
+            "pitchable": True,
+            "root_midi": 57.25,
+            "confidence": 0.9,
+            "cents_spread": 8.0,
+            "sources": len(sources),
+            "reason": "stable periodic root",
+        }
+
+    monkeypatch.setattr(pitch, "analyze_sources", analyze)
+    first = library.pitch_profile("play_one")
+    assert first["root_midi"] == 57.25
+    assert first["source"] == "detected"
+    assert len(calls) == 1 and len(calls[0]) == 1
+    assert paths.pitch_profile_cache().is_file()
+    assert not library.cache_dir().exists()
+
+    stored = json.loads(paths.pitch_profile_cache().read_text(encoding="utf-8"))
+    assert stored["version"] == 1
+    assert stored["profiles"]["play_one"]["profile"]["root_midi"] == 57.25
+    assert "per_channel" not in paths.pitch_profile_cache().read_text(encoding="utf-8")
+
+    library.reset_source()
+    monkeypatch.setattr(
+        pitch,
+        "analyze_sources",
+        lambda sources: pytest.fail("a valid numeric profile was decoded again"),
+    )
+    assert library.pitch_profile("play_one") == first
 
 
 def test_the_bank_index_is_reused_across_status_and_sample_reads(

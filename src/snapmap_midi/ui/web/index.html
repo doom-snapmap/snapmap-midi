@@ -117,13 +117,13 @@
       <canvas class="pitch-ruler" id="pitchRuler" aria-hidden="true"></canvas>
       <div class="roll-viewport" id="pianoRollViewport">
         <div class="roll-extent" id="pianoRollExtent">
-          <canvas id="pianoRoll" tabindex="0" aria-label="Full MIDI piano roll. Scroll to navigate and click or drag to seek."></canvas>
+          <canvas id="pianoRoll" tabindex="0" aria-label="Full MIDI piano roll. Click a note to inspect it; click or drag empty space to seek."></canvas>
         </div>
       </div>
       <canvas class="roll-overlay piano-roll-overlay" id="pianoRollOverlay" aria-hidden="true"></canvas>
       <canvas class="roll-overlay time-ruler-overlay" id="timeRulerOverlay" aria-hidden="true"></canvas>
       <div class="horizontal-scroll-lock" id="horizontalScrollLock" aria-hidden="true" hidden></div>
-      <div class="roll-help">Click or drag to seek</div>
+      <div class="roll-help">Click a note to inspect; drag empty space to seek</div>
     </section>
   </main>
 
@@ -209,6 +209,59 @@
     <div class="inspector-body notifications-body">
       <div class="notification-list" id="notificationList" role="list"></div>
     </div>
+  </aside>
+
+  <aside class="inspector note-inspector" id="noteInspector" aria-label="Note expression" hidden>
+    <div class="inspector-head">
+      <div>
+        <strong>Note expression</strong>
+        <div class="muted" id="noteInspectorSubtitle">No note selected</div>
+      </div>
+      <button type="button" class="close-button" id="closeNoteInspector" aria-label="Close note expression"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
+    </div>
+    <div class="inspector-body">
+      <dl class="note-facts">
+        <div><dt>Imported note</dt><dd class="mono" id="noteSourcePitch">-</dd></div>
+        <div><dt>Target note</dt><dd class="mono" id="noteTargetPitch">-</dd></div>
+        <div><dt>Velocity</dt><dd class="mono" id="noteVelocity">-</dd></div>
+        <div><dt>Sound</dt><dd class="mono note-sound" id="noteSound">-</dd></div>
+        <div><dt id="notePitchBasisLabel">Sound root</dt><dd class="mono" id="noteRoot">-</dd></div>
+      </dl>
+
+      <div class="control-group">
+        <div class="control-title">
+          <label for="notePitchRange">Pitch trim</label>
+          <span class="hint">semitones</span>
+        </div>
+        <div class="range-number">
+          <input type="range" id="notePitchRange" min="-24" max="24" step="1">
+          <input type="number" id="notePitchNumber" min="-24" max="24" step="1">
+        </div>
+        <div class="expression-readout" id="notePitchReadout"></div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-title">
+          <label for="noteVolumeRange">Volume trim</label>
+          <span class="hint">dB</span>
+        </div>
+        <div class="range-number">
+          <input type="range" id="noteVolumeRange" min="-60" max="20" step="1">
+          <input type="number" id="noteVolumeNumber" min="-60" max="20" step="1">
+        </div>
+        <div class="expression-readout" id="noteVolumeReadout"></div>
+      </div>
+
+      <div class="control-group channel-root-group" id="noteChannelRootGroup" hidden>
+        <div class="control-title"><span id="noteChannelPitchTitle">Exact-sound root</span><span class="hint">channel</span></div>
+        <label class="check-line"><input type="checkbox" id="notePitchFollow"> Follow MIDI pitch</label>
+        <div class="threshold-line"><label for="noteRootNumber" id="noteRootNumberLabel">Root MIDI note</label><input type="number" id="noteRootNumber" min="0" max="127" step="0.01"><span class="mono" id="noteRootName"></span></div>
+        <div class="expression-readout" id="noteRootEvidence"></div>
+      </div>
+
+      <div class="expression-warning" id="noteClampNotice" hidden></div>
+    </div>
+    <div class="inspector-foot"><button type="button" class="btn" id="resetNoteExpression">Reset note</button></div>
   </aside>
 
   <div class="statusbar">

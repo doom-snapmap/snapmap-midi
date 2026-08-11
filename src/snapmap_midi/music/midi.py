@@ -15,6 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
+from snapmap_midi.music.expression import MIDI_MAX, MIDI_MIN, annotate, expression_for
 from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, SUSTAINED, gm_to_family
 from snapmap_midi.sound import palette
 
@@ -94,6 +95,8 @@ def parse_notes(
     drum_key_overrides=None,
     channel_sounds=None,
     event_is_looping=None,
+    channel_pitch_profiles=None,
+    note_overrides=None,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -122,6 +125,8 @@ def parse_notes(
     channel_families = channel_families or {}
     channel_sounds = channel_sounds or {}
     channel_mutes = channel_mutes or frozenset()
+    channel_pitch_profiles = channel_pitch_profiles or {}
+    note_overrides = note_overrides or {}
     no_sustain = set(decaying_families or ())
     event_looping_cache = {}
     low_cut, low_family = low_split or (0, None)
@@ -136,6 +141,7 @@ def parse_notes(
     active = defaultdict(list)  # (channel, pitch) -> [pending starts]
     notes: list[Note] = []
     dropped = 0
+    occurrences = defaultdict(int)
     elapsed = 0.0
 
     for msg in mid:
@@ -144,13 +150,36 @@ def parse_notes(
         if msg.type == "program_change":
             program[msg.channel] = msg.program
         elif msg.type == "note_on" and msg.velocity > 0:
+            occurrence_key = (msg.channel, msg.note)
+            occurrences[occurrence_key] += 1
+            note_id = "%d:%d:%d" % (
+                msg.channel,
+                msg.note,
+                occurrences[occurrence_key],
+            )
             if msg.channel in channel_mutes:
                 continue
+            override = note_overrides.get(note_id, {})
+            transpose = int(override.get("transpose", 0))
+            volume_trim_db = int(override.get("volume_db", 0))
+            target_pitch = max(MIDI_MIN, min(MIDI_MAX, msg.note + transpose))
             exact_sound = channel_sounds.get(msg.channel)
             chosen_family = channel_families.get(msg.channel)
+            applied_root = None
+            profile_root = None
+            root_confidence = None
+            root_source = None
+            pitch_follow = False
             if exact_sound is not None:
                 shader = exact_sound
                 family = sound_categories.get(shader, "exact")
+                profile = channel_pitch_profiles.get(msg.channel, {})
+                profile_root = profile.get("root_midi")
+                root_confidence = profile.get("root_confidence")
+                root_source = profile.get("root_source")
+                pitch_follow = bool(profile.get("pitch_follow", False) and profile_root is not None)
+                if pitch_follow:
+                    applied_root = float(profile_root)
                 # Full-game exact events take their loop behavior from the
                 # installed event catalog. Curated palette assignments preserve
                 # the established family scheduling rules.
@@ -166,7 +195,7 @@ def parse_notes(
                 # instrument. The explicit track choice wins over automatic
                 # percussion detection, so drums need no separate workspace.
                 family = chosen_family
-                shader = palette.decl_for(family, msg.note, index)
+                shader = palette.decl_for(family, target_pitch, index)
                 sustained = family in SUSTAINED and family not in no_sustain
             elif msg.channel == DRUM_CHANNEL and drums_on:
                 # The per-key choice is the user's and is final. `drum_overrides`
@@ -184,30 +213,56 @@ def parse_notes(
                 family = family_overrides.get(family, family)
                 if low_family and msg.note < low_cut:
                     family = low_family
-                shader = palette.decl_for(family, msg.note, index)
+                shader = palette.decl_for(family, target_pitch, index)
                 sustained = family in SUSTAINED and family not in no_sustain
             if shader:
-                active[(msg.channel, msg.note)].append((now, shader, sustained, family))
+                if exact_sound is None and family != "drums":
+                    profile_root = palette.shader_pitch(shader)
+                    if profile_root is not None:
+                        applied_root = float(profile_root)
+                        root_confidence = 1.0
+                        root_source = "palette_name"
+                        pitch_follow = True
+                expression = expression_for(
+                    msg.note,
+                    msg.velocity,
+                    applied_root,
+                    transpose=transpose,
+                    volume_trim_db=volume_trim_db,
+                )
+                metadata = {
+                    "id": note_id,
+                    "profile_root_pitch": profile_root,
+                    "root_confidence": root_confidence,
+                    "root_source": root_source,
+                    "pitch_follow": pitch_follow,
+                }
+                active[(msg.channel, msg.note)].append(
+                    (now, shader, sustained, family, expression, metadata)
+                )
             else:
                 dropped += 1
         elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
             pending = active.get((msg.channel, msg.note))
             if pending:
-                started, shader, sustained, family = pending.pop(0)
+                started, shader, sustained, family, expression, metadata = pending.pop(0)
                 note = Note(started, now, shader, sustained, msg.channel, family)
-                # Note's declared field order is a byte-level compatibility
-                # contract. Dataclasses without slots may still carry this UI
-                # annotation without changing that ordered schema.
-                note.pitch = msg.note
-                notes.append(note)
+                notes.append(annotate(note, expression, **metadata))
 
     end = int(elapsed * 1000)
     for (channel, pitch), pending in active.items():
-        for started, shader, sustained, family in pending:
+        for started, shader, sustained, family, expression, metadata in pending:
             # Still sounding when the file ended; hold it rather than drop it.
             note = Note(started, end, shader, sustained, channel, family)
-            note.pitch = pitch
-            notes.append(note)
+            notes.append(annotate(note, expression, **metadata))
 
-    stats = {"drums_on": drums_on, "dropped": dropped, "duration_s": round(elapsed, 2)}
+    stats = {
+        "drums_on": drums_on,
+        "dropped": dropped,
+        "duration_s": round(elapsed, 2),
+        "pitch_adjusted": sum(note.pitch_modifier != 0 for note in notes),
+        "volume_adjusted": sum(note.volume_db != 0 for note in notes),
+        "pitch_limited": sum(note.pitch_limited for note in notes),
+        "volume_limited": sum(note.volume_limited for note in notes),
+    }
     return notes, stats

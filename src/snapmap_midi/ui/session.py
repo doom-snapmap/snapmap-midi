@@ -30,10 +30,18 @@ from threading import RLock
 
 from snapmap_midi import paths
 from snapmap_midi import settings as settings_module
-from snapmap_midi.compile import compile_to_rawmap, installed_event_is_looping
+from snapmap_midi.compile import (
+    compile_to_rawmap,
+    installed_event_duration_ms,
+    installed_event_is_looping,
+)
 from snapmap_midi.music import analysis
 from snapmap_midi.music.midi import parse_notes
-from snapmap_midi.music.voices import allocate_voices, thin_polyphony
+from snapmap_midi.music.voices import (
+    allocate_voices,
+    prepare_voice_layers,
+    thin_polyphony,
+)
 from snapmap_midi.sound import palette
 
 #: The axis every ruler row is drawn against: MIDI's own range, which is also
@@ -43,60 +51,6 @@ from snapmap_midi.sound import palette
 #: would sit somewhere else on the strip for a reason that has nothing to do
 #: with it.
 _AXIS = (0, 127)
-
-#: How many channels may carry their own range sentence before they collapse
-#: into one. Sixteen near-identical lines in a status bar is not information,
-#: and the per-row ruler already carries the detail.
-_RANGE_LINES = 3
-
-#: The spelling the window's ruler prints under its C-octave gridlines. Sharps,
-#: where `palette` spells flats: that module's table exists to PARSE the game's
-#: sound names, which are written `play_violindb6`, and this one exists to print
-#: a note to somebody reading a sentence. Spelling the same note both ways in
-#: one window is exactly the two-vocabulary problem this replaced.
-_NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
-
-def _note_name(midi: int) -> str:
-    """A MIDI note number as the note it is: 48 is C3.
-
-    Here rather than in `palette` beside `note_to_midi`, because it is not that
-    function's inverse and putting it there would say it was. `note_to_midi`
-    reads the game's own flat spelling off a sound name; this writes the
-    window's sharp one for a person to read. Two small tables are a smaller trap
-    than a pair of functions that look like a round trip and are not.
-
-    The octave numbering is the one every editor prints and the window's ruler
-    is labelled with: middle C, MIDI 60, is C4.
-    """
-    return "%s%d" % (_NOTE_NAMES[midi % 12], midi // 12 - 1)
-
-
-def _apply_caps(sustained, levers) -> None:
-    """Shorten notes the way a compile shortens them, before anybody counts them.
-
-    The caps are why a layer's width cannot be read off the written note
-    lengths. They run before voices are allocated, and a note cut to 50ms
-    overlaps nothing that a note held for two bars would have -- so counting the
-    written lengths reports a concurrency the compile never had, and hands the
-    warning whichever channel holds the longest chords rather than the one that
-    actually ran out of speakers.
-
-    Edits the notes in place, which is safe only because the caller parsed them
-    for this and nothing else looks at them again.
-    """
-    cap_all = levers["cap_sustain_ms"]
-    bass_cap = levers["bass_cap_ms"]
-    family_caps = levers["family_caps"]
-    if not (cap_all or bass_cap or family_caps):
-        return
-    for note in sustained:
-        cap = family_caps.get(note.fam, cap_all or 10**9)
-        pitch = palette.shader_pitch(note.shader)
-        if bass_cap and pitch is not None and pitch < levers["bass_pitch"]:
-            cap = min(cap, bass_cap)
-        if note.duration > cap:
-            note.end = note.start + cap
 
 
 def _timing_manifest(mid_path) -> dict:
@@ -249,6 +203,7 @@ class Session:
             candidate = dict(self._doc)
             candidate["midi"] = midi_path
             candidate["channels"] = {}
+            candidate["notes"] = {}
             candidate["drum_keys"] = {}
             candidate = settings_module.validate(candidate)
 
@@ -266,6 +221,43 @@ class Session:
         """
         with self._lock:
             return None if self._analysis is None else analysis.as_dict(self._analysis)
+
+    def relative_pitch_anchor(self, channel) -> int:
+        """The stable natural-playback reference for an exact channel sound.
+
+        Effects, voices, impacts, and random containers often have no honest
+        acoustic root, but SnapMap can still transpose them. The midpoint of
+        the imported channel's source range minimizes the largest requested
+        shift, so every note fits inside the engine's +/-24 semitone window
+        whenever the channel spans no more than four octaves.
+
+        This is chosen from source notes rather than current note overrides and
+        is persisted with the sound selection. Moving one note later therefore
+        changes that note relative to the established reference instead of
+        silently retuning the entire channel.
+        """
+        with self._lock:
+            if isinstance(channel, bool):
+                raise ValueError("a MIDI channel from 0 to 15 is required")
+            try:
+                number = int(channel)
+            except (TypeError, ValueError):
+                raise ValueError("a MIDI channel from 0 to 15 is required") from None
+            try:
+                if float(channel) != number or not 0 <= number <= 15:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError("a MIDI channel from 0 to 15 is required") from None
+            if self._analysis is None:
+                raise ValueError("no song is open -- open a MIDI file first")
+            info = next(
+                (item for item in self._analysis.channels if item.channel == number),
+                None,
+            )
+            if info is None or info.lowest is None or info.highest is None:
+                raise ValueError("channel %d has no notes to anchor" % number)
+            # On an exact half-step, choose the upper note deterministically.
+            return (int(info.lowest) + int(info.highest) + 1) // 2
 
     # ---- the document ----
 
@@ -377,15 +369,21 @@ class Session:
                 channel_mutes=levers["channel_mutes"],
                 drum_key_overrides=levers["drum_key_overrides"],
                 event_is_looping=installed_event_is_looping,
+                channel_pitch_profiles=levers["channel_pitch_profiles"],
+                note_overrides=levers["note_overrides"],
             )
             decaying = [note for note in notes if not note.sustained]
             sustained = [note for note in notes if note.sustained]
-            _apply_caps(sustained, levers)
-
-            prepared = list(decaying)
-            layers: dict = {}
-            for note in sustained:
-                layers.setdefault(note.chan, []).append(note)
+            shared_decaying, _expressive_decaying, layers = prepare_voice_layers(
+                decaying,
+                sustained,
+                cap_sustain_ms=levers["cap_sustain_ms"],
+                bass_pitch=levers["bass_pitch"],
+                bass_cap_ms=levers["bass_cap_ms"],
+                family_caps=levers["family_caps"],
+                duration_lookup=installed_event_duration_ms,
+            )
+            prepared = list(shared_decaying)
             for channel in sorted(layers):
                 layer = layers[channel]
                 if levers["max_poly"]:
@@ -393,8 +391,8 @@ class Session:
                 allocate_voices(layer, levers["max_speakers"])
 
                 # Starting a note on a stolen speaker cuts off the note that
-                # owned it. Reflect that effective end in preview rather than
-                # letting Web Audio sustain a note the exported map truncates.
+                # owned it. Reflect that effective end for both sustains and
+                # expressive one-shots so browser preview matches the map.
                 by_voice: dict = {}
                 for note in layer:
                     by_voice.setdefault(note.voice, []).append(note)
@@ -402,35 +400,56 @@ class Session:
                     voice_notes.sort(key=lambda note: note.start)
                     for index, note in enumerate(voice_notes[:-1]):
                         following = voice_notes[index + 1]
-                        # ``compile_to_rawmap`` deliberately emits no fade or
-                        # stop when the next note starts before, or exactly
-                        # when, this one ends: starting the next sound on the
-                        # same speaker is the cutoff. Keep that fact beside the
-                        # preview event so Web Audio does not add the global
-                        # release and briefly layer a tail the map never has.
-                        if following.start <= note.end:
+                        effective_end = (
+                            note.end if note.sustained else getattr(note, "voice_end", note.end)
+                        )
+                        if following.start <= effective_end:
                             note.preview_cut = True
-                        if following.start < note.end:
-                            note.end = following.start
+                        if following.start < effective_end:
+                            note.preview_end = following.start
                 prepared.extend(layer)
 
             events = [
                 {
+                    "id": note.id,
                     "start": note.start,
-                    "end": max(note.start, note.end),
+                    "end": max(
+                        note.start,
+                        getattr(note, "preview_end", note.end),
+                    ),
                     "sound": note.shader,
                     "channel": note.chan,
-                    "pitch": getattr(note, "pitch", palette.shader_pitch(note.shader)),
+                    "source_pitch": note.source_pitch,
+                    "pitch": note.target_pitch,
+                    "velocity": note.velocity,
                     "family": note.fam,
                     "sustained": note.sustained,
                     "cut": bool(getattr(note, "preview_cut", False)),
+                    "pitch_follow": note.pitch_follow,
+                    "root_pitch": note.profile_root_pitch,
+                    "applied_root_pitch": note.root_pitch,
+                    "root_confidence": note.root_confidence,
+                    "root_source": note.root_source,
+                    "transpose": note.transpose,
+                    "applied_transpose": note.applied_transpose,
+                    "automatic_pitch": note.automatic_pitch,
+                    "requested_pitch": note.requested_pitch,
+                    "pitch_modifier": note.pitch_modifier,
+                    "pitch_limited": note.pitch_limited,
+                    "velocity_db": note.velocity_db,
+                    "volume_trim_db": note.volume_trim_db,
+                    "requested_volume_db": note.requested_volume_db,
+                    "volume_db": note.volume_db,
+                    "volume_limited": note.volume_limited,
+                    "voice_end": getattr(note, "voice_end", None),
                 }
                 for note in sorted(
                     prepared,
                     key=lambda note: (
                         note.start,
                         note.chan,
-                        -1 if getattr(note, "pitch", None) is None else getattr(note, "pitch"),
+                        note.target_pitch,
+                        note.id,
                     ),
                 )
             ]
@@ -505,7 +524,14 @@ class Session:
             rulers = {}
             for channel in self._analysis.channels:
                 family = self._family_for(channel)
-                span = None if family is None else palette.family_range(family, self._note_index)
+                sample_span = (
+                    None if family is None else palette.family_range(family, self._note_index)
+                )
+                span = (
+                    None
+                    if sample_span is None
+                    else (max(_AXIS[0], sample_span[0] - 24), min(_AXIS[1], sample_span[1] + 24))
+                )
                 rulers[str(channel.channel)] = analysis.ruler_segments(channel, span, _AXIS)
             return rulers
 
@@ -555,13 +581,20 @@ class Session:
             channel_mutes=levers["channel_mutes"],
             drum_key_overrides=levers["drum_key_overrides"],
             event_is_looping=installed_event_is_looping,
+            channel_pitch_profiles=levers["channel_pitch_profiles"],
+            note_overrides=levers["note_overrides"],
         )
+        decaying = [note for note in notes if not note.sustained]
         sustained = [note for note in notes if note.sustained]
-        _apply_caps(sustained, levers)
-
-        layers: dict = {}
-        for note in sustained:
-            layers.setdefault(note.chan, []).append(note)
+        _, _, layers = prepare_voice_layers(
+            decaying,
+            sustained,
+            cap_sustain_ms=levers["cap_sustain_ms"],
+            bass_pitch=levers["bass_pitch"],
+            bass_cap_ms=levers["bass_cap_ms"],
+            family_caps=levers["family_caps"],
+            duration_lookup=installed_event_duration_ms,
+        )
         counts = {}
         for channel, layer in layers.items():
             if levers["max_poly"]:
@@ -606,85 +639,17 @@ class Session:
             )
         return sorted(keys)
 
-    def _range_warnings(self, muted) -> list:
-        """One sentence per channel whose family cannot reach its notes.
-
-        Muted channels are skipped: reporting that a channel somebody just
-        silenced cannot reach its notes is noise about a decision already made.
-
-        Past `_RANGE_LINES` affected channels the sentences collapse into the
-        worst one plus a count. Ranked by how many notes are actually displaced
-        rather than by proportion, because that is what a listener hears; a
-        channel with no overlap at all displaces every note it has and sorts
-        itself to the top without needing a special case.
-        """
-        lines = []
-        for channel in self._analysis.channels:
-            if channel.channel in muted or not channel.pitches:
-                continue
-            family = self._family_for(channel)
-            span = None if family is None else palette.family_range(family, self._note_index)
-            if span is None:
-                continue
-            low, high = span
-            if channel.highest < low or channel.lowest > high:
-                lines.append(
-                    (
-                        channel.notes,
-                        "%s shares no note with %s at all. Every note is transposed."
-                        % (self._who(channel.channel), family),
-                    )
-                )
-                continue
-            outside = analysis.notes_outside(channel, span)
-            if outside:
-                # Pitches as note names, counts as counts. The window's ruler is
-                # labelled in note names, so a sentence that said "plays 48-67"
-                # made the reader convert before they could tell whether it was
-                # about the row in front of them -- but "1 of its 2 notes" is a
-                # tally and dressing a tally as a pitch would be worse than the
-                # problem it fixed.
-                lines.append(
-                    (
-                        outside,
-                        "%s plays %s-%s. %s only reaches %s-%s, so %d of its %d notes %s "
-                        "to another octave, or to the nearest pitch the family has."
-                        % (
-                            self._who(channel.channel),
-                            _note_name(channel.lowest),
-                            _note_name(channel.highest),
-                            family,
-                            _note_name(low),
-                            _note_name(high),
-                            outside,
-                            channel.notes,
-                            "moves" if outside == 1 else "move",
-                        ),
-                    )
-                )
-        if len(lines) <= _RANGE_LINES:
-            return [text for _, text in lines]
-        # `max` keeps the first of a tie, and these were built in channel order,
-        # so two equally bad channels resolve to the lower number rather than to
-        # whichever the dict happened to yield.
-        worst = max(lines, key=lambda line: line[0])
-        return [
-            "%s %d other channels have notes their family cannot reach -- each row's ruler "
-            "shows where." % (worst[1], len(lines) - 1)
-        ]
-
     def _warnings(self, stats) -> list:
         """Plain-language problems, each with the number that decides whether to
         care and the lever that changes it.
 
-        The thresholds are `docs/limits.md`'s, not invented here. That doc gives
-        one practical target -- notes held under about a second cut reliably --
-        and states that decaying one-shots are immune because they hold no
-        emitter slot, so only the sustained path is exposed. An earlier draft
-        warned on total event count, which is dominated by exactly those immune
-        one-shots: it fired hardest on a drum-heavy song that cannot reach the
-        limit and stayed silent on the three-voice pad that will. The two
-        quantities below are the ones that doc actually names.
+        The thresholds are `docs/limits.md`'s, not invented here. Neutral
+        decaying notes hold no dedicated speaker, while expressive one-shots
+        reserve one for their measured or fallback tail and are included in the
+        same per-channel peak as sustains. Total event count still says nothing
+        about simultaneous pressure: a long sequence can be cheap and one dense
+        chord expensive. The quantities below describe duration and peak voice
+        use instead.
 
         Ordered by what each costs a listener. Silence first, then notes that do
         not play, then notes that play at the wrong pitch, then the smearing the
@@ -715,7 +680,16 @@ class Session:
                 )
             warnings.append(text)
 
-        warnings.extend(self._range_warnings(muted))
+        if stats.get("pitch_limited"):
+            warnings.append(
+                "%d notes need more than SnapMap's -24 to +24 semitone range. "
+                "Their pitch is clamped at the nearest engine limit." % stats["pitch_limited"]
+            )
+        if stats.get("volume_limited"):
+            warnings.append(
+                "%d notes exceed SnapMap's -60 to +20 dB range after velocity "
+                "and per-note trim. Their loudness is clamped." % stats["volume_limited"]
+            )
 
         if stats["long_sustains"]:
             # Counted from the sustained notes before `max_poly` thinning, so

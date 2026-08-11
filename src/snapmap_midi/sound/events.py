@@ -59,6 +59,31 @@ def fade(
     }
 
 
+def fade_pitch(
+    time_ms: int,
+    to_semitones: float,
+    over_s: float = 0.0,
+    channel: str = STOP_CHANNEL,
+) -> dict:
+    """Set the active sound's pitch in SnapMap semitones.
+
+    The engine calls this event fadePitch even when the duration is zero.
+    Native code forwards the value directly to the sound emitter as semitones.
+    """
+    return {
+        "eventCall": {
+            "\neventHandle_t eventDef": "fadePitch",
+            "args": {
+                "\nnum": 3,
+                "item[0]": {"soundChannel_t": channel},
+                "item[1]": {"float": float(to_semitones)},
+                "item[2]": {"float": float(over_s)},
+            },
+        },
+        "eventTime": int(time_ms),
+    }
+
+
 def stop(time_ms: int, channel: str = STOP_CHANNEL) -> dict:
     """Cut whatever is playing immediately."""
     return {

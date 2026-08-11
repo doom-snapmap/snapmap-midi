@@ -238,6 +238,18 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .notification-copy { min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
 .notification-empty { padding: 16px 13px; color: var(--muted); font-style: italic; }
 
+.note-inspector { width: 390px; }
+.note-facts { margin: 5px 0 0; }
+.note-facts > div { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.note-facts dt { color: var(--muted); }
+.note-facts dd { min-width: 0; margin: 0; text-align: right; }
+.note-sound { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.expression-readout { margin-top: 7px; color: var(--muted); line-height: 1.45; }
+.expression-readout strong { color: var(--text); font-weight: 600; }
+.expression-warning { margin-top: 11px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--sqWarn) 58%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--sqWarn) 9%, var(--panel)); color: var(--text); line-height: 1.4; }
+.channel-root-group .threshold-line { grid-template-columns: minmax(0,1fr) 82px 46px; }
+.channel-root-group .threshold-line input { width: 82px; }
+
 .panel-body.pad { padding:10px; }
 .list-empty { padding:10px; color:var(--muted); font-style:italic; }
 

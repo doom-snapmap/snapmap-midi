@@ -36,7 +36,8 @@ The application has no Channels, Drums, Tuning, or Export tabs. The persistent s
 ```
 
 All MIDI channels are peers in the left column. Percussion is not sent to a separate
-workspace. The right side is a read-only piano roll for the converted song.
+workspace. The right side is the converted piano roll. Source composition remains read-only,
+while clicking a note can edit that note's conversion expression.
 
 The shell deliberately matches Snapmap Plus: the same light and dark colors, Segoe UI and
 Consolas type, 30 px menu bar, status bar, toast treatment, brand image, window controls,
@@ -57,7 +58,8 @@ The menu bar keeps infrequent commands out of the note surface.
 
 The main shortcuts are `Ctrl+I` to import, `Ctrl+E` to export, `Ctrl+R` to reopen, `Ctrl+,`
 for Conversion settings, `Space` to play or pause, and `Home` to return to zero. Press
-`Escape` to close an open menu, the sound browser, the Conversion inspector, or the Notifications inspector.
+`Escape` to close an open menu, the sound browser, or the active Conversion, Notifications,
+or Note expression inspector.
 
 Drag an unused part of the top menu bar to move the window. The menu labels and window
 buttons remain clickable rather than acting as drag handles. The invisible edge grips use
@@ -73,10 +75,10 @@ Safe compiler defaults are applied immediately. If the converted arrangement app
 SnapMap engine limit, the warning-colored Notifications control shows a count in the bottom
 control plane. Opening it shows every warning without covering the channel list.
 
-Opening another song clears channel sound choices and percussion-key overrides, because
-channel numbers in two files do not mean the same parts. General conversion limits, output
-location, button name, and optional baseline remain session preferences. A valid sidecar
-beside the new MIDI is then applied.
+Opening another song clears channel sound/root choices, sparse note overrides, and
+percussion-key overrides, because channel numbers and note ids in two files do not mean the
+same parts. General conversion limits, output location, button name, and optional baseline
+remain session preferences. A valid sidecar beside the new MIDI is then applied.
 
 ## Control plane and notifications
 
@@ -92,14 +94,15 @@ warning is shown in full in its own row; faint separators match the channel list
 the button again, its close button, or `Escape` closes the inspector. With no warnings, the
 same inspector reports that the current conversion has none.
 
-Notifications and Conversion share the side-panel position and are mutually exclusive.
-Opening either one closes the other. The audio-source banner remains separate because it
-reports preview availability rather than a conversion warning.
+Notifications, Conversion, and Note expression share the side-panel position and are
+mutually exclusive. Opening the modal sound browser also closes an inspector so the surfaces
+never stack. The audio-source banner remains separate because it reports preview availability
+rather than a conversion warning.
 
 Grid choices are `1`, `1/2`, `1/4`, `1/8`, `1/16`, and `1/32`. They select the musical note
 value used for faint vertical subdivisions. The marks use the MIDI file's real tempo map, so
-they remain aligned when tempo changes. This is a read-only workstation: changing Grid does
-not quantize, move, or resize a note.
+they remain aligned when tempo changes. Grid is a view control: changing it does not
+quantize, move, or resize a note.
 
 Time signature starts from the source MIDI and offers common simple and compound meters.
 It groups the ruler into numbered measures and moves the stronger bar lines. Changing it is
@@ -144,15 +147,25 @@ event catalog, the exact-sound browser falls back to all 890 identifiers in the 
 24-category SnapMap palette.
 
 Automatic conversion does not guess among the full event catalog. Most game events have no
-musical pitch coverage, so widening that algorithm would turn instrument selection into
+instrument identity or chromatic coverage, so widening family selection would turn it into
 arbitrary effects. Automatic and Pitched instrument set remain on the curated pitch index;
-the full catalog is an explicit manual override.
+the full catalog is an explicit manual event override.
 
-An exact sound is intentionally exact: choosing one piano sample does not retune it across
-the keyboard. Choose the piano instrument set when the melody should follow MIDI pitch;
-choose one exact sound when every note should trigger the same DOOM event. Installed Wwise
-duration metadata determines whether that event is fire-and-forget or needs a paired stop.
-Mixed events are treated as looping so an infinite branch cannot leak a speaker emitter.
+Selecting an exact event analyzes its local media root before committing the choice. Curated
+palette names use their authoritative nominal pitch. Other direct-media events are decoded in
+bounded memory, and every available leaf must agree before the event is marked pitchable. A
+pitchable exact event keeps the same Play string on every note but receives a root-relative
+SnapMap semitone modifier. If speech, noise, impacts, unstable tones, or variable containers
+have no defensible root, natural playback is assigned to the midpoint of the channel's imported
+note range and every note is shifted relative to that reference. This preserves the written
+intervals without pretending the sound has an acoustic note. The Note expression inspector
+labels root and relative modes separately, lets either basis be adjusted, and can disable pitch
+following for fixed playback.
+
+Installed Wwise duration metadata independently determines whether the event decays or needs a
+paired stop. Mixed events are treated as looping so an infinite branch cannot leak a speaker
+emitter. A decaying event that needs pitch or gain still receives an isolated speaker for its
+measured tail.
 
 Mute removes the channel from preview and export without forgetting its assignment. Click a
 channel row to emphasize that channel's notes on the piano roll; click it again to show all
@@ -196,9 +209,9 @@ two enormous keys. Zoom is anchored to the blue playhead: its on-screen position
 while the notes, grid, and ruler expand or contract around the current song position. If the
 playhead is outside the visible passage, zoom brings that position to the center first.
 
-The piano roll is a visualization and transport surface, not a composition editor. Notes
-cannot be moved, resized, created, or deleted here; those edits belong in the MIDI program
-that authored the source file.
+The piano roll is not a composition editor. Notes cannot be created, deleted, moved in time,
+or resized; those edits belong in the MIDI program that authored the source file. Clicking a
+note edits only its conversion expression, described below.
 
 One accent-colored playhead spans the ruler and visible note surface. During playback it
 sweeps across a zoomed passage. When it reaches the following threshold, the time viewport
@@ -212,7 +225,7 @@ glow while the song is playing or paused, and remains highlighted during a seek 
 line does not light notes as it crosses them. To seek:
 
 - drag the transport scrubber;
-- click anywhere in the piano roll; or
+- click or drag empty space in the piano roll; or
 - drag the playhead across the piano roll.
 
 Seeking while the song is playing pauses scheduling during the drag and resumes from the new
@@ -231,6 +244,35 @@ is rasterized once within a fixed memory budget, so vertical scrolling copies on
 slice. At inspection zoom the renderer queries a pitch-and-time index and draws only events
 overlapping the viewport. Pausing immediately restores the horizontal scrollbar.
 
+## Editing note expression
+
+Click a note block to pause playback and open **Note expression** in the same right-side panel
+used by Conversion and Notifications. The selected block receives an outline; hover glow remains
+pointer-only. Clicking or dragging empty roll space still seeks. The inspectors and modal sound
+browser are mutually exclusive, and `Escape` closes the active one.
+
+The inspector distinguishes source data from conversion data:
+
+| Readout | Meaning |
+|---|---|
+| Imported / target note | MIDI note from the file and the row after manual transpose |
+| Velocity | original MIDI velocity, 1 through 127 |
+| Sound / pitch basis | exact Play event plus trusted root or explicit relative reference |
+| Pitch calculation | automatic basis-relative shift + note trim = final SnapMap semitones |
+| Volume calculation | velocity dB + note trim = final SnapMap dB |
+| Clamp notice | requested value and the -24..24 pitch or -60..20 volume limit applied |
+
+**Pitch trim** is an integral -24 through 24 semitones and **Volume trim** is an integral
+-60 through 20 dB. With a detected/manual root or relative reference, pitch is calculated from
+that channel-wide basis. Without either, the trim is sent as a direct SnapMap modifier and the
+inspector labels the sound fixed-pitch. For an exact channel, the field is labeled **Root MIDI
+note** for acoustic tuning and **Reference MIDI note** for relative tuning. **Follow MIDI pitch**
+enables or disables either mode. **Reset note** removes only the selected note's sparse trim.
+
+Notes are identified as `channel:source-pitch:occurrence` before mute or sound mapping, so an
+edit stays attached while the channel is retimbred. The target block may move to another row,
+but timing, duration, channel, and the source MIDI file are not changed.
+
 ## Previewing the song
 
 There is exactly one transport Play/Pause control. It plays the entire converted
@@ -238,10 +280,12 @@ arrangement from the current position; pressing it again pauses without returnin
 There are no per-channel song controls. The sound browser's audition button plays one event
 for identification and never starts a channel or arrangement.
 
-Preview uses the same resolved notes, sound assignments, duration caps, polyphony thinning,
-speaker allocation, voice stealing, hard stops, and releases as export. It is not the
-computer's General MIDI synthesizer. When a later note reuses a SnapMap speaker, preview
-hard-cuts the earlier note at that same point just as the exported timeline does.
+Preview uses the same resolved sound/root, target pitch, velocity-derived dB, per-note
+trims, clamps, duration caps, polyphony thinning, speaker allocation, voice stealing, hard
+stops, and releases as export. It is not the computer's General MIDI synthesizer. Web Audio
+receives the final compiler values: pitch modifier times 100 cents and
+`10 ** (volume_db / 20)` gain. When a later note reuses a SnapMap speaker, preview hard-cuts
+the earlier note at that same point just as the exported timeline does.
 
 The package contains no audio. When the workstation starts or imports a song, it finds the
 user's DOOM installation and indexes the language-neutral retail banks plus one installed
@@ -282,7 +326,7 @@ Sliders are paired with exact numeric fields where a bounded number is meaningfu
 
 | Control | Shape | Effect |
 |---|---|---|
-| **Maximum speakers** | slider + integer, 1-128 | speaker voices available to each sustained channel layer |
+| **Maximum speakers** | slider + integer, 1-128 | isolated voices available per channel to sustained notes and expressive one-shots |
 | **Limit maximum polyphony** | enable checkbox + slider + integer | keeps at most this many simultaneous notes in a layer, preferring higher notes |
 | **Hard stop notes** | checkbox | cuts at note-off instead of fading |
 | **Release** | slider + seconds field | note-off fade; disabled while Hard stop is on |
@@ -293,8 +337,9 @@ Sliders are paired with exact numeric fields where a bounded number is meaningfu
 The **Sound behavior** section lists categories used by the current conversion. These are
 categorical choices rather than sliders:
 
-- **Fire and forget** forces the category onto the decaying one-shot path, where no speaker
-  has to remain allocated for a later note-off.
+- **Fire and forget** classifies the category as naturally decaying, so it receives no
+  later note-off. A note that needs pitch or gain still uses an isolated, duration-reserved
+  speaker; a neutral note stays on the shared Timeline path.
 - **Sustain cap** gives that category its own maximum duration in milliseconds.
 
 Every accepted change immediately rebuilds statistics, warnings, the preview manifest, and
@@ -327,17 +372,37 @@ versioned with a project or edited by hand. A typical file is:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "midi": "D:/music/song.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
   "baseline": null,
   "channels": {
     "0": {"family": "ins_piano", "muted": false},
-    "1": {"family": null, "sound": "play_noise_hat", "muted": false},
+    "1": {
+      "family": null,
+      "sound": "play_pianoc4",
+      "muted": false,
+      "pitch_follow": true,
+      "root_midi": 60,
+      "root_confidence": 1.0,
+      "root_source": "palette_name"
+    },
+    "2": {
+      "family": null,
+      "sound": "play_noise_crash",
+      "muted": false,
+      "pitch_follow": true,
+      "root_midi": 66,
+      "root_confidence": 0.0,
+      "root_source": "relative"
+    },
     "9": {"family": null, "muted": false}
   },
   "drums": "auto",
+  "notes": {
+    "0:60:1": {"transpose": 1, "volume_db": -3}
+  },
   "drum_keys": {
     "38": "play_noise_clap"
   },
@@ -356,16 +421,30 @@ versioned with a project or edited by hand. A typical file is:
 ```
 
 Within a channel, `family` and `sound` are mutually exclusive. `family: null` with no
-`sound` means Automatic. `muted` defaults to false. Channel and drum-key keys are strings
-because JSON object keys are strings; validation converts them back to integers for the MIDI
-parser.
+`sound` means Automatic. `muted` defaults to false. Exact sounds may also carry
+`pitch_follow`, `root_midi` (0 through 127), `root_confidence` (0 through 1), and
+`root_source` (`palette_name`, `detected`, `manual`, or `relative`). For the first three,
+`root_midi` describes the sound's root. For `relative`, it assigns natural playback to the
+channel-centered reference and `root_confidence` is zero because no acoustic claim is made.
+A root or reference is required before pitch following can be enabled.
+
+The `notes` object is sparse. Its key is `channel:source-pitch:occurrence`, assigned from
+the imported MIDI before mute or sound mapping so the edit survives retimbre. `transpose` is
+an integer -24 through 24 semitones and `volume_db` an integer -60 through 20 dB. Zero values
+are omitted. Opening a different MIDI clears this section together with song-specific channel
+choices.
+
+Channel, note-id, and drum-key components are strings because JSON object keys are strings;
+validation converts them back to integers for the MIDI parser. Version 1 documents migrate in
+memory; their old exact sounds remain fixed until reassigned or given a root/reference, so an
+upgrade does not silently change an existing export.
 
 `null` disables optional duration and polyphony limits. `decaying_families` and
-`family_caps` accept any real palette category, including unpitched categories used by exact
-sound assignments. Unknown keys, malformed Play event identifiers,
-incompatible family-and-sound pairs, and out-of-range values are rejected by name rather than
-silently ignored. A syntactically valid exact event remains loadable when DOOM has moved, so a
-sidecar is not coupled to the current install path.
+`family_caps` accept any real palette category. Unknown keys, malformed Play event
+identifiers, incompatible family-and-sound pairs, impossible root/follow combinations, malformed
+note ids, and out-of-range values are rejected by name rather than silently ignored. A
+syntactically valid exact event remains loadable when DOOM has moved, so a sidecar is not coupled
+to the current install path.
 
 A broken sidecar never prevents the MIDI from opening. The workstation opens the song with
 defaults and reports why that sidecar was ignored. A sidecar that cannot be written does not

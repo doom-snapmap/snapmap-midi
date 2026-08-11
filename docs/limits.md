@@ -19,24 +19,29 @@ compiler bug is a dead end — the map is correct and the events are correct.
 
 **Sparse arrangements never hit it.** If your song is not dense, none of this matters.
 
-**Dense ones need the levers.** Every tuning lever in
-[`capabilities.md`](capabilities.md) does the same underlying thing: reduce how many sounds
-are live at the same moment. Start with `max_speakers` and `max_poly`, which are global and
-blunt, then reach for the per-family caps if one instrument is the culprit.
+**Dense ones need the density levers.** Start with `max_speakers` and `max_poly`,
+which are global and blunt, then reach for duration or per-family caps if one instrument is the
+culprit. Pitch, velocity, and note trims are expression controls; they do not reduce density.
 
-**The practical target: notes held under about a second cut reliably.** If you can get the
-long tail of your arrangement under that, the problem goes away. `cap_sustain_ms` truncates
-across the board; `bass_cap_ms` targets just the low register, which is usually where the
-long notes live.
+**The practical target: held notes under about a second cut reliably.** If you can get the long
+tail of a sustained arrangement under that, the problem goes away. `cap_sustain_ms` truncates
+across the board; `bass_cap_ms` targets just the low register, which is usually where the long
+notes live.
 
-This limit is also why the compiler splits decaying sounds from sustained ones at all. A
-decaying sound needs no slot held open, so it is immune. Only the sustained path is exposed.
+Decay behavior no longer tells the whole allocation story:
 
-For an exact full-game assignment, the installed Wwise duration metadata makes that decision.
-OneShot events stay decaying; Infinite and Mixed events receive a dedicated speaker and paired
-stop. If a valid manually entered Play event is not present in the current install, compilation
-uses the conservative sustained path: an unnecessary stop is harmless, while an unstopped loop
-can leak an emitter for the rest of the song.
+- A neutral decaying note has no pitch or gain modifier and remains on the shared Timeline
+  emitter. It holds no dedicated speaker and is effectively immune to this voice-pool limit.
+- A decaying note with pitch or gain expression needs isolation. It reserves a speaker through
+  installed-event duration, or 750 ms for drums and 1000 ms for other sounds when metadata is
+  unavailable. Under pressure, a new attack can steal and shorten that tail.
+- A sustained note reserves a speaker until its capped note end and receives a stop or release.
+
+For an exact full-game assignment, installed Wwise metadata still decides decay behavior.
+OneShot events decay naturally; Infinite and Mixed events use the sustained path and receive a
+paired stop. If a valid manually entered Play event is absent from the current install,
+compilation uses the conservative sustained path: an unnecessary stop is harmless, while an
+unstopped loop can leak an emitter for the rest of the song.
 
 ## The byte-gate honesty rule
 

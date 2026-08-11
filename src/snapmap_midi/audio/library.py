@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from snapmap_midi import paths
-from snapmap_midi.audio import locate, wwise
+from snapmap_midi.audio import locate, pitch, wwise
 from snapmap_midi.music.gm import SUSTAINED
 from snapmap_midi.sound import palette
 
@@ -69,6 +69,9 @@ _SOURCE_LOADED = False
 _SOURCE_PATH: Optional[Path] = None
 _SOURCE: Optional[wwise.DoomSounds] = None
 _SOURCE_ERROR: Optional[Exception] = None
+_PROFILE_LOCK = threading.RLock()
+_PROFILE_VERSION = 1
+_PROFILE_MEMORY: dict[str, dict] = {}
 
 
 def cache_dir() -> Path:
@@ -245,6 +248,9 @@ def reset_source() -> None:
         _SOURCE = None
         _SOURCE_ERROR = None
 
+        with _PROFILE_LOCK:
+            _PROFILE_MEMORY.clear()
+
 
 def _source(refresh: bool = False) -> tuple:
     """(install, indexed banks, error) for the current retail game data."""
@@ -389,6 +395,127 @@ def event_is_looping(name: str) -> Optional[bool]:
         return source.event_is_looping(name)
     except _SOUND_ERRORS:
         return None
+
+
+def event_duration_ms(name: str) -> Optional[int]:
+    """Maximum authored event duration in milliseconds, when trustworthy."""
+    event = event_info(name)
+    if event is None or event.looping:
+        return None
+    duration = float(event.duration_max)
+    if not 0 < duration < 60.0:
+        return None
+    return max(1, int(round(duration * 1000.0)))
+
+
+def _profile_document(install) -> dict:
+    try:
+        payload = json.loads(paths.pitch_profile_cache().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": _PROFILE_VERSION, "install": str(install), "profiles": {}}
+    if (
+        payload.get("version") != _PROFILE_VERSION
+        or payload.get("install") != str(install)
+        or not isinstance(payload.get("profiles"), dict)
+    ):
+        return {"version": _PROFILE_VERSION, "install": str(install), "profiles": {}}
+    return payload
+
+
+def _write_profile_document(payload) -> None:
+    target = paths.pitch_profile_cache()
+    temporary = target.with_name(target.name + ".part")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+
+def _unavailable_profile(reason: str, classification: str = "unavailable") -> dict:
+    return {
+        "classification": classification,
+        "pitchable": False,
+        "root_midi": None,
+        "confidence": 0.0,
+        "cents_spread": None,
+        "sources": 0,
+        "source": "none",
+        "reason": reason,
+    }
+
+
+def pitch_profile(name: str, refresh: bool = False) -> dict:
+    """Trusted root-pitch evidence for one named Play event.
+
+    Curated named notes are immediate and authoritative. Other events are
+    analysed from every decodable installed-bank leaf and cached as numeric
+    metadata only.
+    """
+    key = str(name).lower()
+    categories = palette.sound_categories()
+    if key in categories:
+        root = palette.shader_pitch(key)
+        if root is not None:
+            return {
+                "classification": "pitched",
+                "pitchable": True,
+                "root_midi": float(root),
+                "confidence": 1.0,
+                "cents_spread": 0.0,
+                "sources": 1,
+                "source": "palette_name",
+                "reason": "curated sound name identifies its note",
+            }
+
+    install, source, source_error = _source()
+    if source is None:
+        return _unavailable_profile(
+            "installed game soundbanks are unavailable"
+            + (": %s" % source_error if source_error else "")
+        )
+
+    signature = source.source_signature(name)
+    if not signature:
+        return _unavailable_profile("event has no standalone local media")
+    memory_key = json.dumps([str(install), key, signature], separators=(",", ":"))
+
+    with _PROFILE_LOCK:
+        if not refresh and memory_key in _PROFILE_MEMORY:
+            return dict(_PROFILE_MEMORY[memory_key])
+        document = _profile_document(install)
+        record = document["profiles"].get(key)
+        if (
+            not refresh
+            and isinstance(record, dict)
+            and record.get("signature") == signature
+            and isinstance(record.get("profile"), dict)
+        ):
+            profile = dict(record["profile"])
+            _PROFILE_MEMORY[memory_key] = profile
+            return dict(profile)
+
+    try:
+        with _DECODE_LOCK:
+            decoded = source.pcm_sources(name)
+        profile = pitch.analyze_sources(decoded)
+    except _SOUND_ERRORS as exc:
+        profile = _unavailable_profile(str(exc) or exc.__class__.__name__)
+    if profile.get("pitchable"):
+        profile["source"] = "detected"
+    else:
+        profile.setdefault("source", "none")
+
+    with _PROFILE_LOCK:
+        _PROFILE_MEMORY[memory_key] = dict(profile)
+        document = _profile_document(install)
+        document["profiles"][key] = {"signature": signature, "profile": profile}
+        _write_profile_document(document)
+    return dict(profile)
 
 
 def read_wavs(names) -> dict:

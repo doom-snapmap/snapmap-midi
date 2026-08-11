@@ -150,29 +150,39 @@ snapmap-midi
 
 That plain command is the application launcher; there is no audition command. Import a MIDI
 file and the complete converted arrangement appears on one screen: every channel, including
-percussion, lives in the left column and the read-only piano roll fills the rest of the
-window. Choose Automatic mapping, one of the pitched instrument sets, or open the searchable
-sound browser for an exact event. With DOOM installed, that browser presents the complete
-retail Play-event catalog as a folder tree and marks which events support local audition;
-without installed metadata it falls back to the 890 curated SnapMap palette.
+percussion, lives in the left column and the piano roll fills the rest of the window. Choose
+Automatic mapping, one of the pitched instrument sets, or open the searchable sound browser for
+an exact event. With DOOM installed, that browser presents the complete retail Play-event catalog
+as a folder tree and marks which events support local audition; without installed metadata it
+falls back to the 890 curated SnapMap palette.
 
 There is one Play/Pause control for the whole converted song. Its playhead sweeps across the
 entire note surface and can be dragged to seek, as can the transport scrubber. The note under the
-pointer brightens for inspection whether playback is running or paused; playback itself does not
-change note colors. The roll covers all 128 MIDI pitches with synchronized piano keys, measure
-ruler, vertical and horizontal scrollbars, and section-based playback following. Its static grid
-and notes are cached separately from the moving playhead, so vertical wheel navigation remains
-responsive during playback, including when the pointer is over the disabled horizontal time
-scrollbar. Dragging the channel/roll divider trades width between the two panes, while bottom
-controls set the visual note grid, time signature, and playhead-anchored pitch/time zoom without
-changing the source notes. Conversion limits open in a nonblocking inspector instead of an import
-wizard or a separate tab. If DOOM is installed, preview indexes its retail soundbanks and generated event hierarchy in
+pointer brightens whether playback is running or paused; playback itself does not change note
+colors. Clicking a note pauses playback and opens the Note expression inspector. It shows the
+imported and target pitch, MIDI velocity, selected event and root evidence, and final SnapMap
+pitch/volume values. Per-note semitone and dB trims change the conversion without rewriting the
+MIDI; exact sounds also expose their detected root or relative reference together with a
+pitch-follow switch. Clicking or dragging empty
+roll space continues to seek.
+
+The roll covers all 128 MIDI pitches with synchronized piano keys, measure ruler, vertical and
+horizontal scrollbars, and section-based playback following. Its static grid and notes are cached
+separately from the moving playhead, so vertical wheel navigation remains responsive during
+playback, including when the pointer is over the disabled horizontal time scrollbar. Dragging the
+channel/roll divider trades width between the two panes, while bottom controls set the visual
+note grid, time signature, and playhead-anchored pitch/time zoom without changing the source
+notes. Conversion limits open in a nonblocking inspector instead of an import wizard or a
+separate tab.
+
+If DOOM is installed, preview indexes its retail soundbanks and generated event hierarchy in
 place, including one installed localization, and prepares only the sounds selected by the
 current song. There is no audio setup step; conversion and export continue to work when preview
 audio is unavailable.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
-produced it. Open that song again and the choices are already there;
+produced it: channel sounds, detected roots or relative references, conversion limits, and
+sparse per-note pitch/volume trims. Open that song again and the choices are already there;
 `snapmap-midi compile song.mid --settings song.mid.snapmap.json` replays them without the
 window. Full detail is in [`docs/ui.md`](docs/ui.md).
 
@@ -207,25 +217,33 @@ snapmap-midi compile song.mid --out-dir D:/songs/bach
 
 ## How it works
 
-A MIDI file streams note-on and note-off events. snapmap-midi pairs them into notes, maps
-each note's instrument program to a curated pitched family and its pitch to the nearest sound
-in that family, then schedules the result as timed events on a timeline entity. That automatic
-algorithm deliberately remains constrained to sounds with measured pitch coverage. A manually
-chosen full-game event bypasses pitch mapping and triggers that exact event for every note on
-its channel.
+A MIDI file streams note-on and note-off events. snapmap-midi pairs them into stable,
+velocity-bearing notes, maps each General MIDI program to a curated pitched family, and chooses
+the nearest sample in that family. It then applies the residual semitone shift needed to make
+that sample sound at the target MIDI pitch. Automatic mapping remains constrained to the
+curated sounds with known pitch coverage.
 
-The arrangement then splits in two, because the halves must be scheduled differently:
+A manually chosen full-game event still triggers that exact event string for every note on its
+channel. When its media has a stable musical root, snapmap-midi detects and caches that numeric
+profile and tunes from it. When no honest root exists, snapmap-midi assigns natural playback to
+the midpoint of the imported channel's note range and pitches every note relative to that
+reference. This preserves the MIDI intervals without claiming that an effect, voice, or impact
+has an acoustic note. Pitch following can still be disabled explicitly when fixed playback is
+preferred.
 
-- **Decaying sounds and drums** fade on their own. They are fired and forgotten, layered
-  polyphonically on the timeline entity itself.
-- **Sustained notes** hold at full volume until something stops them. Each gets a dedicated
-  speaker voice so it *can* be stopped, and an explicit note-off when the note ends.
+MIDI velocity becomes an integral dB modifier, then per-note pitch and volume trims are applied.
+SnapMap receives pitch in semitones (-24 through 24) and volume in dB (-60 through 20). The
+arrangement then uses three scheduling paths:
 
-That distinction is the whole design. A sustained note with no note-off rings its entire
-sample and smears into the next phrase.
+- **Neutral decaying sounds** need no pitch or gain change. They stay on the cheap, fully
+  polyphonic shared Timeline path.
+- **Expressive decaying sounds** need independent pitch or gain. They receive isolated speaker
+  voices reserved for the installed event duration, then decay naturally without a note-off.
+- **Sustained notes** receive isolated speaker voices plus an explicit stop or release at note
+  end.
 
-Voices are allocated per layer, so one instrument can never steal another's voice or cut it
-off mid-phrase.
+Voice pools are allocated per MIDI channel, so one instrument cannot steal another channel's
+voice. Preview and export share this same preparation and expression model.
 
 ### The map is built from nothing
 

@@ -551,6 +551,18 @@ class DoomSounds:
         """
         return self.stream.get(media_id) or self.media.get(media_id)
 
+    def _media_locations(self, name: str) -> list:
+        """Every unique available leaf medium named by an event."""
+        locations = []
+        seen = set()
+        for media_id, _stream_type in resolve_sources(self.objects, fnv1_32(name)):
+            location = self._locate(media_id)
+            if location is None or media_id in seen:
+                continue
+            seen.add(media_id)
+            locations.append((media_id, location))
+        return locations
+
     def _media_location(self, name: str):
         """The first available medium named by an event.
 
@@ -559,11 +571,19 @@ class DoomSounds:
         decided by the first source present in this install rather than by list
         position alone.
         """
-        for media_id, _stream_type in resolve_sources(self.objects, fnv1_32(name)):
-            location = self._locate(media_id)
-            if location is not None:
-                return location
-        return None
+        locations = self._media_locations(name)
+        return locations[0][1] if locations else None
+
+    def source_signature(self, name: str) -> list:
+        """Small immutable media identity used by the numeric pitch cache."""
+        signature = []
+        for media_id, (path, offset, size) in self._media_locations(name):
+            try:
+                stamp = os.stat(path).st_mtime_ns
+            except OSError:
+                stamp = 0
+            signature.append([media_id, int(offset), int(size), int(stamp)])
+        return signature
 
     def names(self, candidates) -> set:
         """Which candidate event names this install can decode."""
@@ -629,13 +649,9 @@ class DoomSounds:
             return True
         return False if self._loop_metadata_complete else None
 
-    def pcm(self, name: str) -> tuple:
-        """A sound name to (channels, sample rate, per-channel samples)."""
-        sources = resolve_sources(self.objects, fnv1_32(name))
-        if not sources:
-            raise KeyError("%s: no such Wwise event in these soundbanks" % name)
-        location = self._media_location(name)
-        wem = _read_slice(location) if location else None
+    @staticmethod
+    def _decode_location(name: str, location) -> tuple:
+        wem = _read_slice(location)
         if not wem or wem[:4] != b"RIFF":
             raise KeyError("%s: the media it names is not present in this install" % name)
         fmt, data = _riff_chunks(wem)
@@ -648,6 +664,29 @@ class DoomSounds:
                 % (name, tag, WWISE_IMA_FORMAT_TAG)
             )
         return channels, rate, decode_wwise_ima(data, channels, align)
+
+    def pcm_sources(self, name: str) -> list:
+        """Every available event leaf as independently decoded PCM."""
+        locations = self._media_locations(name)
+        if not locations:
+            raise KeyError("%s: no decodable Wwise media in these soundbanks" % name)
+        decoded = []
+        for media_id, location in locations:
+            channels, rate, per_channel = self._decode_location(name, location)
+            decoded.append(
+                {
+                    "media_id": media_id,
+                    "channels": channels,
+                    "rate": rate,
+                    "per_channel": per_channel,
+                }
+            )
+        return decoded
+
+    def pcm(self, name: str) -> tuple:
+        """A sound name to its first (channels, rate, per-channel samples)."""
+        source = self.pcm_sources(name)[0]
+        return source["channels"], source["rate"], source["per_channel"]
 
     def wav_bytes(self, name: str) -> bytes:
         """The sound as a complete little-endian PCM16 WAV, in memory."""

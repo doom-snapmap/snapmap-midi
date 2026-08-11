@@ -13,11 +13,11 @@ answers to different questions -- and getting it backwards is silent either
 way, which is why both directions are pinned.
 
 The third is the warnings, which are the reason this module exists rather than
-`compile_to_rawmap` being called directly. `docs/limits.md` names exactly two
-quantities the engine limit touches, and neither is the event count. The test
-at the bottom compiles a file of six hundred one-shots -- the arrangement an
-event-count warning fires hardest on and the limit cannot touch at all -- and
-demands silence.
+`compile_to_rawmap` being called directly. `docs/limits.md` makes density,
+not event count, the pressure signal. The test at the bottom compiles six
+hundred sequential neutral one-shots at velocity 127, proves they stayed on
+the shared Timeline path, and demands no pressure warning; expressive
+one-shots are covered separately through the speaker-allocation path.
 """
 
 from __future__ import annotations
@@ -55,13 +55,15 @@ def _midi(tmp_path, messages, name="song.mid") -> str:
     return str(path)
 
 
-def _hits(channel, note, count=1, ticks=120, program=None) -> list:
+def _hits(channel, note, count=1, ticks=120, program=None, velocity=100) -> list:
     """`count` back-to-back hits of one note, optionally naming an instrument."""
     messages = []
     if program is not None:
         messages.append(mido.Message("program_change", channel=channel, program=program, time=0))
     for _ in range(count):
-        messages.append(mido.Message("note_on", channel=channel, note=note, velocity=100, time=0))
+        messages.append(
+            mido.Message("note_on", channel=channel, note=note, velocity=velocity, time=0)
+        )
         messages.append(
             mido.Message("note_off", channel=channel, note=note, velocity=0, time=ticks)
         )
@@ -122,6 +124,17 @@ def test_loading_a_song_keeps_its_analysis():
     assert [c["channel"] for c in payload["channels"]] == [0, 1, 9]
     assert session.analysis_dict() == payload
     assert session.settings()["midi"] == TINY_MIDI
+
+
+def test_relative_pitch_anchor_centers_the_source_range_and_stays_stable(tmp_path):
+    midi = _midi(tmp_path, _hits(0, 48, program=0) + _hits(0, 73), name="wide.mid")
+    session = Session(midi=midi)
+    assert session.relative_pitch_anchor(0) == 61
+
+    session.apply({"notes": {"0:48:1": {"transpose": 12}}})
+    assert session.relative_pitch_anchor(0) == 61
+    with pytest.raises(ValueError, match="no notes"):
+        session.relative_pitch_anchor(1)
 
 
 def test_a_song_that_is_not_there_is_a_plain_missing_file(tmp_path):
@@ -224,6 +237,37 @@ def test_preview_manifest_uses_an_exact_channel_sound_without_losing_note_positi
     assert {event["sound"] for event in events} == {sound}
     assert {event["family"] for event in events} == {"amb_air"}
     assert all(event["sustained"] for event in events)
+
+
+def test_relative_exact_sound_follows_the_channel_without_claiming_a_root(tmp_path):
+    midi = _midi(
+        tmp_path,
+        _hits(0, 60, program=0, velocity=127) + _hits(0, 72, velocity=127),
+        name="relative.mid",
+    )
+    session = Session(midi=midi)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 66,
+                    "root_confidence": 0,
+                    "root_source": "relative",
+                }
+            }
+        }
+    )
+    events = sorted(
+        session.preview_manifest()["events"],
+        key=lambda event: event["source_pitch"],
+    )
+
+    assert [event["pitch_modifier"] for event in events] == [-6, 6]
+    assert {event["root_source"] for event in events} == {"relative"}
+    assert all(event["pitch_follow"] for event in events)
 
 
 def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
@@ -435,14 +479,14 @@ def test_every_row_is_drawn_against_the_same_axis():
     assert rulers["1"]["cells"][0]["left"] == pytest.approx(48 / 127 * 100)
 
 
-def test_the_ruler_tracks_the_family_the_user_chose():
+def test_the_ruler_tracks_the_family_and_its_pitch_adjustment_reach():
     session = Session(midi=TINY_MIDI)
     automatic = session.rulers()["0"]["instrument"]
     session.apply({"channels": {"0": {"family": "ins_brass_bells"}}})
     chosen = session.rulers()["0"]
     assert chosen["instrument"]["left"] > automatic["left"]
-    assert chosen["disjoint"] is True
-    assert chosen["outside"] == 1
+    assert chosen["disjoint"] is False
+    assert chosen["outside"] == 0
 
 
 # ---- exporting ----
@@ -490,43 +534,33 @@ def test_the_advice_tells_a_map_that_landed_where_the_loader_reads_how_to_play(
 # ---- warnings ----
 
 
-def test_the_automatic_family_is_warned_about_too():
-    """The compiler's own guess can be the thing that is wrong: this file's
-    channel 1 is a General MIDI Violin whose low note the violin family cannot
-    reach. A warning that only fired on a family somebody had picked would stay
-    silent on every file nobody had touched yet."""
+def test_automatic_family_pitch_follows_the_low_note_without_a_range_warning():
+    """The piano roll note is now the audible target, not a sample lookup hint."""
     session = Session(midi=TINY_MIDI)
-    assert [w for w in _warnings(session) if w.startswith("Channel 1")] == [
-        "Channel 1 (Violin) plays C3-G4. ins_violin only reaches G3-E7, so 1 of its 2 "
-        "notes moves to another octave, or to the nearest pitch the family has."
-    ]
+    low = [
+        event
+        for event in session.preview_manifest()["events"]
+        if event["channel"] == 1 and event["source_pitch"] == 48
+    ][0]
+
+    assert low["pitch"] == 48
+    assert low["root_pitch"] == 60
+    assert low["automatic_pitch"] == -12
+    assert low["pitch_modifier"] == -12
+    assert low["pitch_limited"] is False
+    assert not any("only reaches" in warning for warning in _warnings(session))
 
 
-def test_a_warning_speaks_the_note_names_the_ruler_is_labelled_with():
-    """The window labels its C-octave gridlines in note names, so a sentence
-    that said "plays 48-67" made the reader convert between two vocabularies to
-    find out whether it was about the row they were looking at. Counts stay
-    counts: a number that means "how many" is not a pitch and must not be
-    dressed as one."""
+def test_family_ruler_shows_sample_range_plus_snapmap_pitch_reach():
     session = Session(midi=TINY_MIDI)
-    warning = [w for w in _warnings(session) if w.startswith("Channel 1")][0]
-    assert "48" not in warning
-    assert "55" not in warning
-    assert "plays C3-G4" in warning
-    assert "1 of its 2 notes" in warning
+    sample_low, sample_high = palette.family_range("ins_violin", palette.build_note_index())
+    instrument = session.rulers()["1"]["instrument"]
 
-
-def test_a_muted_channel_is_not_warned_about():
-    """Reporting that a channel you just silenced cannot reach its notes is
-    noise about a decision already made. Unmuting it brings the sentence back,
-    which is what proves the silence is the mute and not the absence of a
-    problem."""
-    session = Session(midi=TINY_MIDI)
-    session.apply({"channels": {"0": {"family": "ins_brass_bells", "muted": True}}})
-    assert not any("Channel 0" in w for w in _warnings(session))
-
-    session.apply({"channels": {"0": {"muted": False}}})
-    assert any("Channel 0" in w for w in _warnings(session))
+    effective_low = max(0, sample_low - 24)
+    effective_high = min(127, sample_high + 24)
+    assert instrument["left"] == pytest.approx(effective_low / 127 * 100)
+    assert instrument["width"] == pytest.approx((effective_high - effective_low) / 127 * 100)
+    assert session.rulers()["1"]["outside"] == 0
 
 
 def test_muting_everything_says_nothing_will_play():
@@ -549,59 +583,70 @@ def test_an_unmapped_drum_key_names_the_unified_track_choices_that_fix_it(tmp_pa
     assert not any("no sound" in w for w in _warnings(session))
 
 
-def test_a_family_that_cannot_reach_some_notes_names_how_many(tmp_path):
-    """Both counts, because two notes out of three is a different decision from
-    two out of two thousand and the ruler is the only other place that says
-    so."""
-    song = _midi(
-        tmp_path,
-        _hits(0, 30, program=0) + _hits(0, 40) + _hits(0, 100),
-        name="range.mid",
-    )
+def test_pitch_beyond_the_engine_range_is_clamped_and_warned(tmp_path):
+    song = _midi(tmp_path, _hits(0, 0, program=0), name="pitch-clamp.mid")
     session = Session(midi=song)
     session.apply({"channels": {"0": {"family": "ins_sine"}}})
-    assert [w for w in _warnings(session) if w.startswith("Channel 0")] == [
-        "Channel 0 (Acoustic Grand Piano) plays F#1-E7. ins_sine only reaches C2-G4, so 2 "
-        "of its 3 notes move to another octave, or to the nearest pitch the family has."
+
+    event = session.preview_manifest()["events"][0]
+    assert event["source_pitch"] == event["pitch"] == 0
+    assert event["root_pitch"] == 36
+    assert event["requested_pitch"] == -36
+    assert event["pitch_modifier"] == -24
+    assert event["pitch_limited"] is True
+    assert _warnings(session) == [
+        "1 notes need more than SnapMap's -24 to +24 semitone range. "
+        "Their pitch is clamped at the nearest engine limit."
     ]
 
 
-def test_a_family_that_shares_no_note_with_the_channel_says_every_note_is_transposed():
-    """Zero overlap is not a worse degree of overhang. The melody is gone, and a
-    sentence about a proportion would read as a matter of degree."""
-    session = Session(midi=TINY_MIDI)
-    session.apply({"channels": {"0": {"family": "ins_brass_bells"}}})
-    assert (
-        "Channel 0 (Acoustic Grand Piano) shares no note with ins_brass_bells at all. "
-        "Every note is transposed."
-    ) in _warnings(session)
+def test_muting_a_clamped_channel_removes_its_expression_warning(tmp_path):
+    song = _midi(tmp_path, _hits(0, 0, program=0), name="muted-clamp.mid")
+    session = Session(midi=song)
+    session.apply({"channels": {"0": {"family": "ins_sine", "muted": True}}})
+    assert not any("semitone range" in warning for warning in _warnings(session))
+
+    session.apply({"channels": {"0": {"muted": False}}})
+    assert any("semitone range" in warning for warning in _warnings(session))
 
 
-def test_three_range_warnings_are_still_three_sentences(tmp_path):
-    messages = []
-    for channel in range(3):
-        messages.extend(_hits(channel, 20, program=0))
-        messages.extend(_hits(channel, 100))
-    session = Session(midi=_midi(tmp_path, messages, name="three.mid"))
-    session.apply({"channels": {str(c): {"family": "ins_sine"} for c in range(3)}})
-    assert len([w for w in _warnings(session) if w.startswith("Channel")]) == 3
+def test_velocity_and_trim_volume_clamp_is_reported(tmp_path):
+    song = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=1, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=120),
+        ],
+        name="volume-clamp.mid",
+    )
+    session = Session(midi=song)
+    session.apply({"notes": {"0:60:1": {"volume_db": -60}}})
+
+    event = session.preview_manifest()["events"][0]
+    assert event["velocity_db"] == -60
+    assert event["requested_volume_db"] == -120
+    assert event["volume_db"] == -60
+    assert event["volume_limited"] is True
+    assert any("-60 to +20 dB" in warning for warning in _warnings(session))
 
 
-def test_more_than_three_range_warnings_collapse_to_the_worst_one(tmp_path):
-    """Sixteen near-identical sentences in a status bar is not information, and
-    the per-row ruler already carries the detail. What the line has to keep is
-    which channel is worst and how much else is wrong."""
-    messages = []
-    for channel in range(5):
-        messages.extend(_hits(channel, 20, count=channel + 1, program=0))
-        messages.extend(_hits(channel, 100))
-    session = Session(midi=_midi(tmp_path, messages, name="wide.mid"))
-    session.apply({"channels": {str(c): {"family": "ins_sine"} for c in range(5)}})
+def test_per_note_override_moves_only_the_selected_note(tmp_path):
+    song = _midi(
+        tmp_path,
+        _hits(0, 60, count=2, program=0),
+        name="note-edit.mid",
+    )
+    session = Session(midi=song)
+    session.apply({"notes": {"0:60:2": {"transpose": 1, "volume_db": 5}}})
 
-    lines = [w for w in _warnings(session) if w.startswith("Channel")]
-    assert len(lines) == 1
-    assert lines[0].startswith("Channel 4 (Acoustic Grand Piano) plays G#0-E7.")
-    assert "4 other channels" in lines[0]
+    events = session.preview_manifest()["events"]
+    assert [event["id"] for event in events] == ["0:60:1", "0:60:2"]
+    assert events[0]["pitch"] == 60
+    assert events[0]["transpose"] == 0
+    assert events[1]["pitch"] == 61
+    assert events[1]["transpose"] == 1
+    assert events[1]["volume_trim_db"] == 5
 
 
 def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp_path):
@@ -678,18 +723,19 @@ def test_a_layer_count_that_disagrees_with_the_compile_names_no_channel(tmp_path
     assert any("The busiest channel used all 2 speakers" in w for w in _warnings(session))
 
 
-def test_a_file_of_one_shots_that_cannot_hit_the_limit_is_not_warned_about(tmp_path):
+def test_many_neutral_one_shots_do_not_create_a_voice_pressure_warning(tmp_path):
     """The regression this whole warning set exists to undo. An earlier draft
-    warned on total event count; `docs/limits.md` says a decaying sound holds no
-    emitter slot and is immune, and that only the sustained path is exposed. Six
-    hundred drum hits is the arrangement that number screams about and the limit
-    cannot touch, and the sparse pad it stays silent on is the one that will."""
+    warned on total event count. These velocity-127 hits need no pitch or gain
+    expression, so all six hundred stay on the shared Timeline path; density,
+    not the total number of attacks, is what speaker pressure measures."""
     messages = []
     for key in (36, 38, 42):
-        messages.extend(_hits(9, key, count=200))
+        messages.extend(_hits(9, key, count=200, velocity=127))
     session = Session(midi=_midi(tmp_path, messages, name="busy.mid"))
 
     report = session.stats()
     assert report["events"] > 400
     assert report["long_sustains"] == 0
+    assert report["shared_one_shots"] == 600
+    assert report["expressive_one_shots"] == 0
     assert report["warnings"] == []

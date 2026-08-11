@@ -203,8 +203,17 @@ def test_an_unknown_tuning_lever_names_itself():
 def test_a_document_from_a_later_build_is_refused_by_number():
     """The version exists so a document this build does not understand is
     refused rather than half-read."""
-    with pytest.raises(settings.SettingsError, match="2"):
-        settings.validate({**settings.defaults(), "version": 2})
+    with pytest.raises(settings.SettingsError, match="3"):
+        settings.validate({**settings.defaults(), "version": 3})
+
+
+def test_a_version_one_document_migrates_without_inventing_expression():
+    old = settings.defaults()
+    old["version"] = 1
+    old.pop("notes")
+    migrated = settings.validate(old)
+    assert migrated["version"] == 2
+    assert migrated["notes"] == {}
 
 
 def test_a_channel_entry_that_is_not_a_mapping_is_a_clean_error():
@@ -244,6 +253,94 @@ def test_a_channel_may_choose_any_exact_sound_in_the_shipped_palette():
     sound = palette.sounds_in_category("amb_air")[0]
     doc = _patch({"channels": {"0": {"sound": sound}}})
     assert doc["channels"]["0"] == {"family": None, "sound": sound, "muted": False}
+
+
+def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    doc = _patch(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60.25,
+                    "root_confidence": 0.88,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )
+    assert doc["channels"]["0"] == {
+        "family": None,
+        "sound": sound,
+        "muted": False,
+        "pitch_follow": True,
+        "root_midi": 60.25,
+        "root_confidence": 0.88,
+        "root_source": "detected",
+    }
+    assert settings.to_compile_kwargs(doc)["channel_pitch_profiles"][0] == {
+        "pitch_follow": True,
+        "root_midi": 60.25,
+        "root_confidence": 0.88,
+        "root_source": "detected",
+    }
+
+
+def test_relative_reference_is_not_mislabeled_as_an_acoustic_root():
+    sound = palette.sounds_in_category("amb_air")[0]
+    doc = _patch(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 66,
+                    "root_confidence": 0,
+                    "root_source": "relative",
+                }
+            }
+        }
+    )
+    assert doc["channels"]["0"]["root_source"] == "relative"
+    assert doc["channels"]["0"]["root_confidence"] == 0.0
+
+
+def test_pitch_follow_requires_a_root():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    with pytest.raises(settings.SettingsError, match="root_midi"):
+        _patch({"channels": {"0": {"sound": sound, "pitch_follow": True}}})
+
+
+def test_per_note_expression_is_sparse_and_forwarded():
+    doc = _patch(
+        {
+            "notes": {
+                "0:60:1": {"transpose": -12, "volume_db": 3},
+                "0:60:2": {"transpose": 0, "volume_db": 0},
+            }
+        }
+    )
+    assert doc["notes"] == {"0:60:1": {"transpose": -12, "volume_db": 3}}
+    kwargs = settings.to_compile_kwargs(doc)
+    assert kwargs["note_overrides"] == doc["notes"]
+    assert kwargs["note_overrides"] is not doc["notes"]
+
+
+@pytest.mark.parametrize(
+    "note_id",
+    ["0:60", "16:60:1", "0:128:1", "0:60:0", "0:60:01", 123],
+)
+def test_invalid_note_ids_are_refused_by_name(note_id):
+    with pytest.raises(settings.SettingsError, match="note"):
+        _patch({"notes": {note_id: {"transpose": 1}}})
+
+
+def test_note_expression_stays_inside_snapmap_limits():
+    with pytest.raises(settings.SettingsError, match="transpose"):
+        _patch({"notes": {"0:60:1": {"transpose": 25}}})
+    with pytest.raises(settings.SettingsError, match="volume_db"):
+        _patch({"notes": {"0:60:1": {"volume_db": -61}}})
 
 
 def test_a_full_game_play_event_is_valid_without_reading_the_install():

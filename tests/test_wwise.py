@@ -625,6 +625,51 @@ def test_a_later_available_container_source_is_playable(tmp_path):
     assert sounds.wav_bytes(name)[:4] == b"RIFF"
 
 
+def test_pcm_sources_decodes_every_available_container_leaf(tmp_path):
+    name = "Play_Multi_Tones"
+    first_sound = 0x42000000
+    second_sound = first_sound + 1
+    container = first_sound + 2
+    action = first_sound + 3
+    objects = [
+        hirc_object(2, sound_payload(first_sound, 100)),
+        hirc_object(2, sound_payload(second_sound, 101)),
+        hirc_object(5, container_payload(container, [first_sound, second_sound])),
+        hirc_object(3, action_payload(action, container)),
+        hirc_object(4, event_payload(wwise.fnv1_32(name), [action])),
+    ]
+    first_audio = wem(frame(predictor=700, nibbles=[4]))
+    second_audio = wem(frame(predictor=-700, nibbles=[4]))
+    bank = chunk(b"BKHD", struct.pack("<IIII", wwise.BANK_VERSION, 1, 0, 0))
+    bank += chunk(
+        b"DIDX",
+        b"".join(
+            [
+                struct.pack("<III", 100, 0, len(first_audio)),
+                struct.pack("<III", 101, len(first_audio), len(second_audio)),
+            ]
+        ),
+    )
+    bank += chunk(b"DATA", first_audio + second_audio)
+    bank += chunk(b"HIRC", struct.pack("<I", len(objects)) + b"".join(objects))
+    write_install(
+        tmp_path,
+        banks=[bank],
+        events=build_event_catalog([{"name": name, "path": "test/multi/"}]),
+    )
+
+    sounds = wwise.DoomSounds(tmp_path)
+    decoded = sounds.pcm_sources(name)
+
+    assert [source["media_id"] for source in decoded] == [100, 101]
+    assert [source["per_channel"][0][0] for source in decoded] == [700, -700]
+    signature = sounds.source_signature(name)
+    assert [entry[0] for entry in signature] == [100, 101]
+    assert all(len(entry) == 4 for entry in signature)
+    # Compatibility readers still hear the first resolved leaf.
+    assert sounds.pcm(name)[2][0][0] == 700
+
+
 def test_the_selected_localised_voice_banks_join_the_retail_banks(tmp_path):
     name = "Play_Voice_Line"
     folder = Path(tmp_path) / wwise.SOUND_SUBDIR

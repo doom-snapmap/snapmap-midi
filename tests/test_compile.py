@@ -25,6 +25,7 @@ from snapmap_midi.sound.events import (
     STOP_CHANNEL,
     events_block,
     fade,
+    fade_pitch,
     start,
     stop,
 )
@@ -97,6 +98,13 @@ def test_eventcall_encodings_match_proven_forms():
     assert f["eventCall"]["\neventHandle_t eventDef"] == "fadeSound"
     assert f["eventCall"]["args"]["\nnum"] == 3
 
+    pitch = fade_pitch(1000, to_semitones=-7, over_s=0)
+    assert pitch["eventCall"]["\neventHandle_t eventDef"] == "fadePitch"
+    assert pitch["eventCall"]["args"]["item[0]"] == {"soundChannel_t": STOP_CHANNEL}
+    assert pitch["eventCall"]["args"]["item[1]"] == {"float": -7.0}
+    assert pitch["eventCall"]["args"]["item[2]"] == {"float": 0.0}
+    assert pitch["eventTime"] == 1000
+
     block = events_block([s, st])
     assert block["num"] == 2 and "item[0]" in block and "item[1]" in block
     # The count key is inserted last and key order is preserved on output.
@@ -151,6 +159,11 @@ def test_parse_notes_pairing_families_and_sustain():
     assert by_channel[9][0].shader == DRUM_MAP[36]
     assert by_channel[9][0].fam == "drums"
 
+    assert [note.id for note in notes] == ["0:60:1", "1:67:1", "1:48:1", "9:36:1"]
+    assert [note.velocity for note in notes] == [64, 64, 64, 100]
+    assert all(note.volume_db <= 0 for note in notes)
+    assert stats["volume_adjusted"] == 4
+
 
 def test_parse_notes_channel_family_override_wins(tmp_path):
     p = _drumless_midi(tmp_path)
@@ -193,6 +206,34 @@ def test_unpaired_note_is_held_to_the_end_not_dropped(tmp_path):
 
 # ---- hermetic byte gate ----
 #
+
+
+def test_retriggered_notes_keep_stable_source_ids_and_independent_expression(tmp_path):
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("program_change", channel=0, program=0, time=0))
+    track.append(mido.Message("note_on", channel=0, note=60, velocity=32, time=0))
+    track.append(mido.Message("note_on", channel=0, note=60, velocity=96, time=120))
+    track.append(mido.Message("note_off", channel=0, note=60, velocity=0, time=120))
+    track.append(mido.Message("note_off", channel=0, note=60, velocity=0, time=120))
+    path = tmp_path / "retrigger.mid"
+    mid.save(str(path))
+
+    notes, _ = parse_notes(
+        path,
+        note_index=_SYNTHETIC_INDEX,
+        note_overrides={"0:60:2": {"transpose": 1, "volume_db": 4}},
+    )
+
+    assert [note.id for note in notes] == ["0:60:1", "0:60:2"]
+    assert [note.velocity for note in notes] == [32, 96]
+    assert notes[0].target_pitch == 60
+    assert notes[1].target_pitch == 61
+    assert notes[1].transpose == 1
+    assert notes[1].volume_trim_db == 4
+
+
 # The gates below this one need real game data and therefore SKIP after the
 # product is lifted out of its host repository -- which would silently delete
 # the entire behaviour-neutrality proof at exactly the moment it matters most.
@@ -245,8 +286,10 @@ def test_hermetic_compile_structure(minimal_timeline_map):
 
 
 def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
-    """The default golden contains no stopSound at all, so the hard-stop
-    branch would otherwise be entirely uncovered."""
+    """Hard stop replaces only the release fade.
+
+    Velocity expression legitimately emits fadeSound at note onset.
+    """
     raw, _ = compile_to_rawmap(
         TINY_MIDI,
         json.dumps(minimal_timeline_map).encode("utf-8"),
@@ -256,7 +299,75 @@ def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
     )
     text = raw.decode("utf-8")
     assert "stopSound" in text
-    assert "fadeSound" not in text
+    assert '"float":-60.0' not in text
+
+
+def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timeline_map):
+    raw, stats = compile_to_rawmap(
+        TINY_MIDI,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_pianoc4"},
+        channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 60}},
+        note_overrides={"0:60:1": {"transpose": 1, "volume_db": 3}},
+        button_name="expression-test",
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    matched = None
+    for group_index in range(groups["num"]):
+        block = groups["item[%d]" % group_index]["events"]
+        events = [block["item[%d]" % index] for index in range(block["num"])]
+        definitions = [event["eventCall"]["\neventHandle_t eventDef"] for event in events]
+        if definitions[:3] == ["startSoundShader", "fadePitch", "fadeSound"]:
+            matched = events[:3]
+            break
+
+    assert matched is not None
+    assert [event["eventTime"] for event in matched] == [0, 0, 0]
+    assert matched[0]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
+    assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": 1.0}
+    assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": -9.0}
+    assert stats["expressive_one_shots"] >= 1
+    assert stats["pitch_adjusted"] == 1
+
+
+def test_neutral_one_shot_keeps_the_shared_timeline_fast_path(tmp_path, minimal_timeline_map):
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("program_change", channel=0, program=0, time=0))
+    track.append(mido.Message("note_on", channel=0, note=60, velocity=127, time=0))
+    track.append(mido.Message("note_off", channel=0, note=60, velocity=0, time=120))
+    path = tmp_path / "neutral.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        button_name="neutral-test",
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    shared = groups["item[0]"]["events"]
+
+    assert stats["shared_one_shots"] == 1
+    assert stats["expressive_one_shots"] == 0
+    assert stats["voices"] == 0
+    assert groups["num"] == 1
+    assert shared["num"] == 1
+    assert shared["item[0]"]["eventCall"]["\neventHandle_t eventDef"] == "startSoundShader"
 
 
 def test_hermetic_multi_voice_steps_speaker_positions(minimal_timeline_map):

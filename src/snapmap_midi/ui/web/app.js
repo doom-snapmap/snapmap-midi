@@ -75,6 +75,8 @@
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
   var NOTIFICATIONS_OPEN = false;
+  var NOTE_INSPECTOR_OPEN = false;
+  var SELECTED_NOTE_ID = null;
   var DRAW_FRAME = null;
   var SEEK_DRAG = null;
   var SCRUB_DRAG = null;
@@ -1033,6 +1035,7 @@
     closeMenus();
     closeInspector();
     closeNotifications();
+    closeNoteInspector();
     pausePlayback();
     SOUND_BROWSER.open = true;
     SOUND_BROWSER.channel = channelNumber;
@@ -1072,11 +1075,59 @@
     if (!candidate || channel === null || channel === undefined) { return; }
     var body = { family: null, sound: null };
     if (candidate.kind === "family") { body.family = candidate.value; }
-    if (candidate.kind === "sound") { body.sound = candidate.value; }
-    var patch = { channels: {} };
-    patch.channels[String(channel)] = body;
-    closeSoundBrowser();
-    applyPatch(patch, false);
+    function commit() {
+      var patch = { channels: {} };
+      patch.channels[String(channel)] = body;
+      closeSoundBrowser();
+      applyPatch(patch, false);
+    }
+    if (candidate.kind !== "sound") {
+      commit();
+      return;
+    }
+
+    body.sound = candidate.value;
+    body.pitch_follow = false;
+    body.root_midi = null;
+    var useButton = el("soundBrowserUse");
+    useButton.disabled = true;
+    el("soundSelection").textContent = "Finding a root or relative pitch anchor...";
+    setBusy(true, "Resolving sound pitch...");
+    api().sound_profile(candidate.value, channel).then(function (response) {
+      setBusy(false);
+      if (response && response.ok && response.profile) {
+        var profile = response.profile;
+        if (profile.pitchable && isFinite(Number(profile.root_midi))) {
+          body.pitch_follow = true;
+          body.root_midi = Number(profile.root_midi);
+          body.root_confidence = Number(profile.confidence || 0);
+          body.root_source = profile.source || "detected";
+        } else if (isFinite(Number(response.relative_anchor))) {
+          body.pitch_follow = true;
+          body.root_midi = Number(response.relative_anchor);
+          body.root_confidence = 0;
+          body.root_source = "relative";
+          toast(
+            "No stable musical root was found. Natural playback is anchored to " +
+            noteName(body.root_midi) + " so this channel still follows MIDI."
+          );
+        } else {
+          toast(
+            "No stable root or channel reference was available; this sound is fixed-pitch",
+            "warn"
+          );
+        }
+      } else {
+        toast("Pitch analysis was unavailable; this sound will remain fixed-pitch", "warn");
+      }
+      commit();
+    }, function () {
+      setBusy(false);
+      toast("Pitch analysis was unavailable; this sound will remain fixed-pitch", "warn");
+      commit();
+    }).finally(function () {
+      if (useButton && useButton.isConnected) { useButton.disabled = false; }
+    });
   }
 
   function initSoundBrowser() {
@@ -1228,6 +1279,7 @@
       eventPitch = Math.round(eventPitch);
       var eventStart = Math.max(0, Number(event.start) || 0);
       var record = {
+        id: String(event.id || ""),
         source: event,
         pitch: eventPitch,
         start: eventStart,
@@ -2014,6 +2066,34 @@
     var height = ROLL.viewportHeight;
     context.clearRect(0, 0, width, height);
 
+    if (SELECTED_NOTE_ID) {
+      var selectedRecords = eventRenderIndex().records;
+      for (var selectedIndex = 0; selectedIndex < selectedRecords.length; selectedIndex += 1) {
+        var selected = selectedRecords[selectedIndex];
+        if (selected.id !== SELECTED_NOTE_ID) { continue; }
+        var selectedGeometry = eventGeometry(
+          selected,
+          el('pianoRollViewport').scrollLeft,
+          el('pianoRollViewport').scrollTop,
+          Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1)
+        );
+        context.save();
+        context.strokeStyle = palette.accent;
+        context.lineWidth = 2;
+        roundedRectPath(
+          context,
+          selectedGeometry.x + 1,
+          selectedGeometry.y + 1,
+          Math.max(1, selectedGeometry.width - 2),
+          Math.max(1, selectedGeometry.height - 2),
+          Math.max(0, selectedGeometry.radius - 1)
+        );
+        context.stroke();
+        context.restore();
+        break;
+      }
+    }
+
     var hovered = hoveredRenderEvent(el('pianoRoll'));
     if (hovered) {
       var geometry = hovered.geometry;
@@ -2163,6 +2243,14 @@
 
   function beginCanvasSeek(event) {
     if (!hasSong()) { return; }
+    NOTE_POINTER = { clientX: event.clientX, clientY: event.clientY };
+    var hit = hoveredRenderEvent(el("pianoRoll"));
+    if (hit && hit.record && hit.record.id) {
+      event.preventDefault();
+      pausePlayback();
+      openNoteInspector(hit.record.id);
+      return;
+    }
     event.preventDefault();
     var wasPlaying = AUDIO.playing;
     pausePlayback();
@@ -2353,7 +2441,12 @@
     var source = AUDIO.context.createBufferSource();
     var gain = AUDIO.context.createGain();
     source.buffer = buffer;
-    gain.gain.value = 0.34;
+    var expressionGain = Math.pow(10, Number(event.volume_db || 0) / 20);
+    var baseGain = 0.34 * expressionGain;
+    gain.gain.value = baseGain;
+    if (source.detune) {
+      source.detune.value = Number(event.pitch_modifier || 0) * 100;
+    }
     source.connect(gain);
     gain.connect(AUDIO.master);
     var offset = Math.max(0, (audiblePosition - event.start) / 1000);
@@ -2376,7 +2469,7 @@
       stopAfter = Math.max(0.01, total - Math.max(0, (audiblePosition - event.start) / 1000));
       var noteEndAt = when + Math.max(0, (event.end - audiblePosition) / 1000);
       if (release > 0 && noteEndAt >= AUDIO.context.currentTime) {
-        gain.gain.setValueAtTime(0.34, noteEndAt);
+        gain.gain.setValueAtTime(baseGain, noteEndAt);
         gain.gain.exponentialRampToValueAtTime(0.001, noteEndAt + release);
       }
       source.start(when, offset);
@@ -2384,6 +2477,11 @@
     } else {
       if (offset >= buffer.duration) { return; }
       source.start(when, offset);
+      if (event.cut) {
+        var untilCut = Math.max(0, (event.end - audiblePosition) / 1000);
+        if (untilCut <= 0) { source.stop(); return; }
+        source.stop(when + Math.max(0.01, untilCut));
+      }
     }
     AUDIO.sources.push(source);
     source.onended = function () { forgetSource(source); };
@@ -2407,7 +2505,9 @@
       var buffer = AUDIO.buffers[event.sound];
       var end = event.sustained
         ? event.end + (STATE.preview.hard_stop || event.cut ? 0 : Number(STATE.preview.release_s || 0) * 1000)
-        : event.start + (buffer ? buffer.duration * 1000 : 0);
+        : (event.cut
+          ? event.end
+          : event.start + (buffer ? buffer.duration * 1000 : 0));
       if (end > position) { scheduleEvent(event, position, AUDIO.context.currentTime + 0.025); }
     }
   }
@@ -2645,6 +2745,7 @@
 
   function openInspector() {
     closeNotifications();
+    closeNoteInspector();
     INSPECTOR_OPEN = true;
     el('conversionInspector').hidden = false;
     el('conversionBtn').setAttribute('aria-expanded', 'true');
@@ -2659,6 +2760,7 @@
 
   function openNotifications() {
     closeInspector();
+    closeNoteInspector();
     NOTIFICATIONS_OPEN = true;
     el('notificationsInspector').hidden = false;
     el('notificationsBtn').setAttribute('aria-expanded', 'true');
@@ -2674,6 +2776,214 @@
   function toggleNotifications() {
     if (NOTIFICATIONS_OPEN) { closeNotifications(); }
     else { openNotifications(); }
+  }
+
+  function selectedNoteEvent() {
+    var events = previewEvents();
+    for (var index = 0; index < events.length; index += 1) {
+      if (String(events[index].id || "") === SELECTED_NOTE_ID) { return events[index]; }
+    }
+    return null;
+  }
+
+  function signed(value) {
+    value = Number(value) || 0;
+    return (value > 0 ? "+" : "") + String(value);
+  }
+
+  function rootDisplay(root) {
+    if (root === null || root === undefined || !isFinite(Number(root))) {
+      return "Unresolved - fixed pitch";
+    }
+    root = Number(root);
+    return noteName(Math.round(root)) + " (" + root.toFixed(2) + ")";
+  }
+
+  function syncNoteInspector() {
+    if (!NOTE_INSPECTOR_OPEN) { return; }
+    var note = selectedNoteEvent();
+    if (!note) {
+      closeNoteInspector();
+      return;
+    }
+    var channel = channelByNumber(Number(note.channel));
+    el("noteInspectorSubtitle").textContent =
+      "Channel " + (Number(note.channel) + 1) +
+      (channel ? " - " + channel.program_name : "");
+    el("noteSourcePitch").textContent =
+      noteName(note.source_pitch) + " (" + note.source_pitch + ")";
+    el("noteTargetPitch").textContent =
+      noteName(note.pitch) + " (" + note.pitch + ")";
+    el("noteVelocity").textContent = String(note.velocity);
+    el("noteSound").textContent = String(note.sound || "");
+    var relativePitch = String(note.root_source || "") === "relative";
+    el("notePitchBasisLabel").textContent = relativePitch ? "Pitch anchor" : "Sound root";
+    el("noteRoot").textContent = rootDisplay(note.root_pitch);
+    syncPair("notePitchRange", "notePitchNumber", Number(note.transpose || 0));
+    syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.volume_trim_db || 0));
+
+    if (note.automatic_pitch === null || note.automatic_pitch === undefined) {
+      el("notePitchReadout").textContent =
+        "No trusted root. The trim is a direct SnapMap modifier; final " +
+        signed(note.pitch_modifier) + " semitones.";
+    } else {
+      el("notePitchReadout").textContent =
+        (relativePitch ? "Relative " : "Automatic ") + signed(note.automatic_pitch) +
+        " + trim " + signed(note.transpose) +
+        " = " + signed(note.pitch_modifier) + " semitones in SnapMap.";
+    }
+    el("noteVolumeReadout").textContent =
+      "Velocity " + note.velocity + " maps to " + signed(note.velocity_db) +
+      " dB; trim " + signed(note.volume_trim_db) +
+      " dB; final " + signed(note.volume_db) + " dB.";
+
+    var channelSettings = STATE.settings && STATE.settings.channels &&
+      STATE.settings.channels[String(note.channel)];
+    var exact = channelSettings && channelSettings.sound;
+    var rootGroup = el("noteChannelRootGroup");
+    rootGroup.hidden = !exact;
+    if (exact) {
+      var root = channelSettings.root_midi;
+      var rootSource = String(channelSettings.root_source || "manual");
+      var relativeRoot = rootSource === "relative";
+      el("noteChannelPitchTitle").textContent =
+        relativeRoot ? "Exact-sound reference" : "Exact-sound root";
+      el("noteRootNumberLabel").textContent =
+        relativeRoot ? "Reference MIDI note" : "Root MIDI note";
+      el("notePitchFollow").checked = !!channelSettings.pitch_follow;
+      el("noteRootNumber").value =
+        root === null || root === undefined ? "" : String(root);
+      el("noteRootName").textContent =
+        root === null || root === undefined ? "" : noteName(Math.round(Number(root)));
+      if (root === null || root === undefined) {
+        el("noteRootEvidence").textContent =
+          "No root or relative reference is assigned. Enter one to enable pitch following.";
+      } else if (relativeRoot) {
+        el("noteRootEvidence").textContent =
+          "Relative reference: natural playback is assigned to " +
+          noteName(Math.round(Number(root))) + ". No acoustic root is claimed.";
+      } else {
+        var confidence = channelSettings.root_confidence;
+        el("noteRootEvidence").textContent =
+          "Source: " + rootSource +
+          (confidence === null || confidence === undefined
+            ? ""
+            : "; confidence " + Math.round(Number(confidence) * 100) + "%.");
+      }
+
+    }
+    var limits = [];
+    if (note.pitch_limited) {
+      limits.push(
+        "Pitch requested " + signed(note.requested_pitch) +
+        " semitones and was clamped to " + signed(note.pitch_modifier) + "."
+      );
+    }
+    if (note.volume_limited) {
+      limits.push(
+        "Volume requested " + signed(note.requested_volume_db) +
+        " dB and was clamped to " + signed(note.volume_db) + " dB."
+      );
+    }
+    el("noteClampNotice").hidden = limits.length === 0;
+    el("noteClampNotice").textContent = limits.join(" ");
+  }
+
+  function openNoteInspector(noteId) {
+    closeInspector();
+    closeNotifications();
+    SELECTED_NOTE_ID = String(noteId || "");
+    NOTE_INSPECTOR_OPEN = !!SELECTED_NOTE_ID;
+    el("noteInspector").hidden = !NOTE_INSPECTOR_OPEN;
+    if (NOTE_INSPECTOR_OPEN) { syncNoteInspector(); }
+    queueDraw();
+  }
+
+  function closeNoteInspector() {
+    NOTE_INSPECTOR_OPEN = false;
+    SELECTED_NOTE_ID = null;
+    el("noteInspector").hidden = true;
+    queueDraw();
+  }
+
+  function updateNoteOverride(noteId, key, rawValue) {
+    if (!STATE.settings || !noteId) { return; }
+    var limits = key === "transpose" ? [-24, 24] : [-60, 20];
+    var value = clamp(Math.round(Number(rawValue) || 0), limits[0], limits[1]);
+    var next = Object.assign({}, STATE.settings.notes || {});
+    var entry = Object.assign({}, next[noteId] || {});
+    if (value === 0) { delete entry[key]; }
+    else { entry[key] = value; }
+    if (Object.keys(entry).length) { next[noteId] = entry; }
+    else { delete next[noteId]; }
+    applyPatch({ notes: next }, true);
+  }
+
+  function updateSelectedChannelRoot(fields) {
+    var note = selectedNoteEvent();
+    if (!note) { return; }
+    var patch = { channels: {} };
+    patch.channels[String(note.channel)] = fields;
+    applyPatch(patch, true);
+  }
+
+  function initNoteInspector() {
+    el("closeNoteInspector").addEventListener("click", closeNoteInspector);
+    var sendPitch = debounce(function (value, noteId) {
+      updateNoteOverride(noteId, "transpose", value);
+    }, 180);
+    var sendVolume = debounce(function (value, noteId) {
+      updateNoteOverride(noteId, "volume_db", value);
+    }, 180);
+    el("notePitchRange").addEventListener("input", function () {
+      el("notePitchNumber").value = this.value;
+      sendPitch(this.value, SELECTED_NOTE_ID);
+    });
+    el("notePitchNumber").addEventListener("change", function () {
+      el("notePitchRange").value = this.value;
+      updateNoteOverride(SELECTED_NOTE_ID, "transpose", this.value);
+    });
+    el("noteVolumeRange").addEventListener("input", function () {
+      el("noteVolumeNumber").value = this.value;
+      sendVolume(this.value, SELECTED_NOTE_ID);
+    });
+    el("noteVolumeNumber").addEventListener("change", function () {
+      el("noteVolumeRange").value = this.value;
+      updateNoteOverride(SELECTED_NOTE_ID, "volume_db", this.value);
+    });
+    el("resetNoteExpression").addEventListener("click", function () {
+      if (!STATE.settings || !SELECTED_NOTE_ID) { return; }
+      var next = Object.assign({}, STATE.settings.notes || {});
+      delete next[SELECTED_NOTE_ID];
+      applyPatch({ notes: next }, true);
+    });
+    el("noteRootNumber").addEventListener("change", function () {
+      var value = Number(this.value);
+      if (!isFinite(value) || value < 0 || value > 127) {
+        toast("Root or reference MIDI note must be between 0 and 127", "warn");
+        syncNoteInspector();
+        return;
+      }
+      var note = selectedNoteEvent();
+      var saved = note && STATE.settings && STATE.settings.channels &&
+        STATE.settings.channels[String(note.channel)];
+      var relative = saved && saved.root_source === "relative";
+      updateSelectedChannelRoot({
+        root_midi: value,
+        root_confidence: relative ? 0 : 1,
+        root_source: relative ? "relative" : "manual",
+        pitch_follow: el("notePitchFollow").checked
+      });
+    });
+    el("notePitchFollow").addEventListener("change", function () {
+      var root = Number(el("noteRootNumber").value);
+      if (this.checked && (!isFinite(root) || el("noteRootNumber").value === "")) {
+        this.checked = false;
+        toast("Enter a root or reference MIDI note before enabling pitch follow", "warn");
+        return;
+      }
+      updateSelectedChannelRoot({ pitch_follow: this.checked });
+    });
   }
 
   function bindPair(rangeId, numberId, key, decimal) {
@@ -2739,6 +3049,7 @@
     invalidateAudio(true);
     TRACK_KEY = '';
     SELECTED_CHANNEL = null;
+    closeNoteInspector();
     adopt(response, sequence);
     render();
     prepareSongAudio();
@@ -3012,6 +3323,7 @@
     renderStatus();
     renderWindow();
     if (INSPECTOR_OPEN) { syncInspector(); }
+    if (NOTE_INSPECTOR_OPEN) { syncNoteInspector(); }
     requestAnimationFrame(function () {
       constrainPaneSplit();
       resizeCanvas();
@@ -3027,6 +3339,7 @@
       if (SOUND_BROWSER.open) { event.preventDefault(); closeSoundBrowser(); }
       else if (OPEN_MENU) { closeMenus(); }
       else if (NOTIFICATIONS_OPEN) { closeNotifications(); }
+      else if (NOTE_INSPECTOR_OPEN) { closeNoteInspector(); }
       else if (INSPECTOR_OPEN) { closeInspector(); }
       return;
     }
@@ -3100,6 +3413,7 @@
     initTheme();
     initPaneSplitter();
     initInspector();
+    initNoteInspector();
     initSoundBrowser();
     el('notificationsBtn').addEventListener('click', toggleNotifications);
     el('closeNotifications').addEventListener('click', closeNotifications);

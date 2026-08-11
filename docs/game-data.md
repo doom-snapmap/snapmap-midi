@@ -60,22 +60,30 @@ The event string is the value written into a SnapMap timeline sound call. The nu
 is shown for search and diagnostics, but it cannot replace the event string in rawmap export.
 
 The banks remain where Steam installed them. Opening the browser reads names and hierarchy;
-audition or full-song preview decodes only the requested sounds into memory. Normal use creates
-no audio library on disk. Nothing is downloaded, packaged, committed, or copied into an
-export.
+audition, root analysis, and full-song preview decode only requested media into memory. Root
+analysis examines every available leaf of a selected exact event and rejects leaves that do not
+agree on a stable musical pitch.
 
-The optional snapmap-midi extract command can still build a resumable offline cache under
-the user's local application-data snapmap-midi/sounds directory. It is roughly 450 MB, safe
-to delete, and intentionally contains only the 890 curated palette sounds. Expanding it to
-the full catalog would recreate the multi-gigabyte duplication this direct-bank design avoids.
-The workstation never runs extraction as a setup step.
+Normal use creates no audio library on disk. It may create
+`%LOCALAPPDATA%\snapmap-midi\pitch-profiles-v1.json`, a small numeric cache containing event
+identity, media signature, root/confidence, and rejection state. It contains no PCM, Wwise
+payload, event catalog, or other game content, and can be deleted safely; it is rebuilt lazily.
+Nothing is downloaded, packaged, committed, or copied into an export.
 
-No compile depends on either preview source. With no game and no valid offline cache, the
-browser falls back to the curated 890-name palette, assignments and export still work, and
-only audio preview is unavailable. A sidecar containing a valid Play event string remains
+The optional `snapmap-midi extract` command can still build a resumable offline audio cache
+under `%LOCALAPPDATA%\snapmap-midi\sounds`. It is roughly 450 MB, safe to delete, and
+intentionally contains only the 890 curated palette sounds. Expanding it to the full catalog
+would recreate the multi-gigabyte duplication this direct-bank design avoids. The workstation
+never runs extraction as a setup step.
+
+No compile depends on either preview source or on the numeric profile cache. With no game and
+no valid offline cache, the browser falls back to the curated 890-name palette, assignments and
+export still work, and only audio preview and new arbitrary-event root detection are unavailable.
+Relative pitch references still work because they are derived from the imported MIDI range.
+A sidecar containing a valid Play event string or an already saved root/reference remains
 loadable if DOOM is later moved or temporarily absent. If an installed in-game-only event is
-assigned to a channel, full-song preview skips that event and raises a notification while the
-export keeps the exact requested string.
+assigned to a channel, full-song preview skips that event and raises a notification while export
+keeps the exact requested string.
 
 Normal discovery is deliberately limited to the retail soundbank directory under the DOOM
 base directory. It does not recursively scan the mods directory, so dynamically injected
@@ -179,6 +187,7 @@ print(paths.rawmap_destination())  # where a compiled map will be written
 print(paths.baseline_map())  # None unless you configured one
 print(paths.doom_install())  # explicit direct-preview override, or None for Steam discovery
 print(paths.sound_cache())  # optional offline-cache location
+print(paths.pitch_profile_cache())  # small numeric root-profile cache; never audio
 print(paths.baseline_configured())  # what the savedmap-marked tests ask
 ```
 

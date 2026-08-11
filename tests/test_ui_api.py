@@ -436,6 +436,50 @@ def test_an_invalid_event_identifier_is_refused_before_the_banks_are_read(monkey
     assert "valid DOOM Play_ event" in result["error"]
 
 
+def test_root_pitch_profile_crosses_the_bridge_as_numeric_evidence(monkeypatch):
+    from snapmap_midi.audio import library
+
+    profile = {
+        "classification": "pitched",
+        "pitchable": True,
+        "root_midi": 60.125,
+        "confidence": 0.91,
+        "source": "detected",
+    }
+    monkeypatch.setattr(library, "pitch_profile", lambda name: dict(profile))
+
+    assert Bridge().sound_profile("Play_Custom_Tone") == {
+        "ok": True,
+        "profile": profile,
+    }
+
+
+def test_unpitched_sound_profile_includes_the_channel_relative_anchor(monkeypatch):
+    from snapmap_midi.audio import library
+
+    profile = {
+        "classification": "unpitched",
+        "pitchable": False,
+        "root_midi": None,
+        "confidence": 0.0,
+        "source": "none",
+    }
+    monkeypatch.setattr(library, "pitch_profile", lambda name: dict(profile))
+
+    response = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Grunt", 0)
+    assert response["profile"] == profile
+    assert response["relative_anchor"] == 60
+
+
+def test_invalid_root_profile_event_is_refused_before_analysis(monkeypatch):
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library, "pitch_profile", lambda name: pytest.fail("invalid name reached analysis")
+    )
+    assert Bridge().sound_profile("../bad")["ok"] is False
+
+
 def test_an_unavailable_sound_names_both_preview_sources(monkeypatch):
     from snapmap_midi.audio import library
 

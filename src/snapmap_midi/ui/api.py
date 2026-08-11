@@ -434,6 +434,28 @@ class Bridge:
         except Exception as exc:
             return _fail(exc)
 
+    def sound_profile(self, sound, channel=None) -> dict:
+        """Return acoustic evidence and the channel's relative fallback.
+
+        Root analysis describes the sound alone. The optional reference anchor
+        describes the open song, so it is calculated separately and never
+        presented as detected acoustic evidence.
+        """
+        try:
+            if not isinstance(sound, str) or not sound:
+                raise ValueError("a sound name is required")
+            if _PLAY_EVENT.fullmatch(sound) is None:
+                raise ValueError("%r is not a valid DOOM Play_ event identifier" % sound)
+            from snapmap_midi.audio import library
+
+            profile = library.pitch_profile(sound)
+            result = {"ok": True, "profile": profile}
+            if channel is not None and not profile.get("pitchable"):
+                result["relative_anchor"] = self._session.relative_pitch_anchor(channel)
+            return result
+        except Exception as exc:
+            return _fail(exc)
+
     def preview_note(self, family, midi_note) -> dict:
         """Resolve one family and MIDI pitch exactly as the compiler does."""
         try:

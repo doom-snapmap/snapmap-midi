@@ -501,6 +501,52 @@ def test_note_glow_is_hover_only_and_the_playhead_stays_independent():
     assert "canvas.addEventListener('pointerleave', clearNotePointer)" in _JS
 
 
+def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_seeks():
+    for control in (
+        "noteInspector",
+        "closeNoteInspector",
+        "noteSourcePitch",
+        "noteTargetPitch",
+        "noteVelocity",
+        "noteSound",
+        "noteRoot",
+        "notePitchRange",
+        "notePitchBasisLabel",
+        "noteChannelPitchTitle",
+        "noteRootNumberLabel",
+        "notePitchNumber",
+        "noteVolumeRange",
+        "noteVolumeNumber",
+        "notePitchFollow",
+        "noteRootNumber",
+        "noteClampNotice",
+        "resetNoteExpression",
+    ):
+        assert 'id="%s"' % control in _HTML
+
+    assert 'class="inspector note-inspector"' in _HTML
+    assert ".note-inspector { width: 390px; }" in _CSS
+    assert 'id: String(event.id || "")' in _JS
+    assert "openNoteInspector(hit.record.id)" in _JS
+    assert "pausePlayback();\n      openNoteInspector(hit.record.id)" in _JS
+    assert "SEEK_DRAG = {" in _JS
+    assert "setPosition(positionFromCanvas(event), false)" in _JS
+    assert "applyPatch({ notes: next }, true)" in _JS
+    assert "delete next[SELECTED_NOTE_ID]" in _JS
+    assert "context.strokeStyle = palette.accent" in _JS
+
+
+def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_them():
+    assert "source.detune.value = Number(event.pitch_modifier || 0) * 100" in _JS
+    assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
+    assert "api().sound_profile(candidate.value, channel)" in _JS
+    assert "body.root_midi = Number(profile.root_midi)" in _JS
+    assert "body.pitch_follow = true" in _JS
+    assert "body.root_midi = Number(response.relative_anchor)" in _JS
+    assert 'body.root_source = "relative"' in _JS
+    assert 'relativePitch ? "Pitch anchor" : "Sound root"' in _JS
+
+
 def test_the_playhead_and_hover_use_lightweight_overlay_canvases():
     for control in ("pianoRollOverlay", "timeRulerOverlay"):
         assert 'id="%s"' % control in _HTML

@@ -138,15 +138,20 @@ Open `src/snapmap_midi/ui/web/index.html` in an ordinary browser. There is no br
 so the window shows its empty state rather than throwing — that is deliberate, because
 opening the file directly is how anybody iterating on the markup will look at it.
 
-Everything that changes the conversion is decided in Python. The preview manifest already
-contains resolved sounds, original MIDI pitches, effective start/end times, sustained versus
-decaying behavior, and speaker-reuse cutoffs. JavaScript may convert those facts to canvas
-coordinates and Web Audio times; it must not resolve a family, reapply an engine limit, or
-invent a second note list. The same rule bans hard-coded sound families or game events from the markup. The startup
-catalog derives automatic and pitched-family choices from the shipped 24-category,
-890-identifier palette. The complete installed catalog arrives through a separate lazy bridge
-when the sound-browser modal opens. Preserve its folder indexing, global search, and bounded
-pagination; rendering every installed event as a live select option or DOM row is a regression.
+Everything that changes the conversion is decided in Python. The preview manifest contains
+stable note id, source/target pitch, velocity, sound, root-or-reference evidence and source,
+automatic/manual pitch, velocity/trim/final dB, clamp state, effective start/end, sustain
+behavior, and speaker-reuse cutoffs. Compiler and preview share `prepare_voice_layers`.
+JavaScript may convert those facts to canvas coordinates, Web Audio time, cents, and linear
+gain; it must not calculate a root or relative anchor, resolve a family, repeat velocity math,
+reapply a clamp/engine limit, or invent a second note list.
+
+The same rule bans hard-coded sound families or game events from markup. The startup catalog
+derives automatic and pitched-family choices from the shipped 24-category, 890-identifier
+palette. The complete installed catalog, lazy numeric root profile, and Python-calculated
+channel reference arrive through bridge calls when a sound is browsed and selected. Preserve
+folder indexing, global search, bounded pagination, and the rule that root analysis never blocks
+export; rendering every installed event as a live select option or DOM row is a regression.
 
 The shared design contract comes from Snapmap Plus: the light and dark tokens, Segoe UI and
 Consolas roles, 30 px menu bar, fields, buttons, status bar, toast, brand asset, window
@@ -161,11 +166,16 @@ assertion when a new icon is actually needed rather than adding an icon runtime 
 fetch. Keep `LUCIDE_LICENSE.txt` in the shipped `web/` assets. Do not reintroduce tabs or
 per-row Play controls.
 
-Audio previews are optional and local. Use the synthetic fixtures for compact event-catalog
+Audio previews are optional and local. Use synthetic fixtures for compact event-catalog
 parsing, XML loop overlays, localized bank indexing, direct decoding, fallback, and
-mod-isolation work. Running `snapmap-midi extract` against a real
-install is an explicit offline-cache test that writes roughly 450 MB under the user's
-application-data folder, not the checkout; never turn that cache into a fixture.
+mod-isolation work. Root-analysis tests must synthesize tones, silence, noise/unstable cases,
+and agreeing/disagreeing container leaves in memory; never turn decoded game media into a
+fixture. Numeric pitch-profile cache tests use temporary JSON and must assert that no PCM is
+written.
+
+Running `snapmap-midi extract` against a real install is an explicit offline-audio-cache test
+that writes roughly 450 MB under the user's application-data folder, not the checkout; never
+turn that cache into a fixture.
 
 To see it running, `.venv/Scripts/python.exe -m snapmap_midi`. [`ui.md`](ui.md) describes
 what should be on screen.

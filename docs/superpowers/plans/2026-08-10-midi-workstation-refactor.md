@@ -235,7 +235,9 @@ Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
   events as locally previewable and retain engine-only music/state/legacy/DLC events for
   export. The reference retail install has 7,589 choices and 7,353 local previews.
 - [x] Keep automatic MIDI and pitched-family mapping on the curated 890-name palette.
-  Treat the full catalog as an exact manual channel override with no pitch shifting.
+  Treat the full catalog as an exact manual channel override. The later
+  [pitch/dynamics architecture](2026-08-11-pitch-dynamics-note-inspector-architecture.md)
+  may apply root-relative pitch to that one selected event; it does not widen automatic mapping.
 - [x] Replace the channel select with a lazy searchable file-explorer modal, organized by
   Wwise folders and paginated to bound live DOM rows.
 - [x] Show readable names, exact event strings, paths, buses, loop behavior, durations,

@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -62,7 +62,19 @@ _MAX_SPEAKERS = 128
 _MAX_RELEASE_S = 10.0
 
 _DRUM_MODES = ("auto", "on", "off")
-_CHANNEL_KEYS = frozenset({"family", "sound", "muted"})
+_CHANNEL_KEYS = frozenset(
+    {
+        "family",
+        "sound",
+        "muted",
+        "pitch_follow",
+        "root_midi",
+        "root_confidence",
+        "root_source",
+    }
+)
+_NOTE_KEYS = frozenset({"transpose", "volume_db"})
+_ROOT_SOURCES = frozenset({"palette_name", "detected", "manual", "relative"})
 
 #: Stock event names measured from soundbanksinfo.events use this complete
 #: alphabet and are at most 64 characters. Accepting the identifier rather than
@@ -124,6 +136,7 @@ def defaults(midi=None) -> dict:
         "baseline": None,
         "channels": {},
         "drums": "auto",
+        "notes": {},
         "drum_keys": {},
         "tuning": copy.deepcopy(_TUNING_DEFAULTS),
     }
@@ -176,6 +189,19 @@ def _whole(value, what: str, low: int, high=None) -> int:
         limit = "at least %d" % low if high is None else "between %d and %d" % (low, high)
         raise SettingsError("%s is %r; it has to be %s" % (what, value, limit))
     return value
+
+
+def _number(value, what: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SettingsError("%s is %r, which is not a number" % (what, value))
+    value = float(value)
+    if not low <= value <= high:
+        raise SettingsError("%s is %r; it has to be between %g and %g" % (what, value, low, high))
+    return value
+
+
+def _optional_number(value, what: str, low: float, high: float) -> float | None:
+    return None if value is None else _number(value, what, low, high)
 
 
 def _optional_whole(value, what: str, low: int) -> int | None:
@@ -252,10 +278,85 @@ def _channels(section, families, sounds) -> dict:
             "family": family,
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
         }
-        # Preserve the shape of old sidecars until an exact sound is selected.
         if sound is not None:
             normalized["sound"] = sound
+            expression_fields = _CHANNEL_KEYS - {"family", "sound", "muted"}
+            if any(key in entry for key in expression_fields):
+                pitch_follow = _flag(
+                    entry.get("pitch_follow", False),
+                    "channel %s: pitch_follow" % channel,
+                )
+                root_midi = _optional_number(
+                    entry.get("root_midi"),
+                    "channel %s: root_midi" % channel,
+                    0,
+                    _MAX_NOTE,
+                )
+                if pitch_follow and root_midi is None:
+                    raise SettingsError(
+                        "channel %s: pitch_follow needs a root_midi between 0 and 127" % channel
+                    )
+                normalized["pitch_follow"] = pitch_follow
+                if root_midi is not None:
+                    normalized["root_midi"] = root_midi
+                    normalized["root_confidence"] = _number(
+                        entry.get("root_confidence", 1.0),
+                        "channel %s: root_confidence" % channel,
+                        0,
+                        1,
+                    )
+                    root_source = entry.get("root_source", "manual")
+                    if root_source not in _ROOT_SOURCES:
+                        raise SettingsError(
+                            "channel %s: root_source is %r; it has to be one of %s"
+                            % (channel, root_source, ", ".join(sorted(_ROOT_SOURCES)))
+                        )
+                    normalized["root_source"] = root_source
         out[channel] = normalized
+    return out
+
+
+def _note_id(value) -> str:
+    if not isinstance(value, str):
+        raise SettingsError("note id %r is not text" % (value,))
+    pieces = value.split(":")
+    if len(pieces) != 3:
+        raise SettingsError("note id %r must be channel:source-pitch:occurrence" % value)
+    _index(pieces[0], _MAX_CHANNEL, "note channel")
+    _index(pieces[1], _MAX_NOTE, "note source pitch")
+    try:
+        occurrence = int(pieces[2])
+    except ValueError:
+        occurrence = 0
+    if occurrence < 1 or str(occurrence) != pieces[2]:
+        raise SettingsError("note id %r has an invalid occurrence" % value)
+    return value
+
+
+def _notes(section) -> dict:
+    """Validate sparse per-note pitch and volume trims.
+
+    The key is generated from source MIDI identity, not conversion output, so
+    changing an instrument or root profile cannot move an edit to another note.
+    Empty/default records are dropped to keep sidecars compact.
+    """
+    section = _mapping(section, "notes")
+    out = {}
+    for raw_id, entry in section.items():
+        note_id = _note_id(raw_id)
+        entry = _mapping(entry, "note %s" % note_id)
+        unknown = sorted(set(entry) - _NOTE_KEYS)
+        if unknown:
+            raise SettingsError("note %s: unknown setting(s): %s" % (note_id, ", ".join(unknown)))
+        transpose = _whole(entry.get("transpose", 0), "note %s: transpose" % note_id, -24, 24)
+        volume_db = _whole(entry.get("volume_db", 0), "note %s: volume_db" % note_id, -60, 20)
+        normalized = {}
+        if transpose:
+            normalized["transpose"] = transpose
+        if volume_db:
+            normalized["volume_db"] = volume_db
+        if normalized:
+            out[note_id] = normalized
     return out
 
 
@@ -285,7 +386,7 @@ def _drum_keys(section) -> dict:
 
 
 def _decaying_families(value, families) -> list:
-    """Families forced down the fire-and-forget path.
+    """Families classified as naturally decaying instead of sustained.
 
     Sorted rather than kept in the order given, because a caller may hand this
     over as a set and two sessions that chose the same families have to write
@@ -374,6 +475,12 @@ def validate(doc) -> dict:
         raise SettingsError("unknown setting(s): %s" % ", ".join(unknown))
 
     version = doc.get("version", SETTINGS_VERSION)
+    if version == 1:
+        # Version 2 adds sparse note expression and optional exact-sound roots.
+        # No version 1 setting changes meaning, so migration is lossless.
+        doc = dict(doc)
+        doc["version"] = SETTINGS_VERSION
+        version = SETTINGS_VERSION
     if version != SETTINGS_VERSION:
         raise SettingsError(
             "this document says version %r; this build reads and writes version %d only"
@@ -395,6 +502,7 @@ def validate(doc) -> dict:
     if drums not in _DRUM_MODES:
         raise SettingsError("drums is %r; it has to be one of %s" % (drums, ", ".join(_DRUM_MODES)))
     out["drums"] = drums
+    out["notes"] = _notes(doc.get("notes", {}))
     out["drum_keys"] = _drum_keys(doc.get("drum_keys", {}))
     # Exact sounds retain their palette category as ``Note.fam``. Conversion
     # behavior can therefore be tuned for every category, not only the twelve
@@ -489,6 +597,17 @@ def to_compile_kwargs(doc) -> dict:
             for channel, entry in channels.items()
             if entry.get("sound") is not None
         },
+        "channel_pitch_profiles": {
+            int(channel): {
+                "pitch_follow": entry.get("pitch_follow", False),
+                "root_midi": entry.get("root_midi"),
+                "root_confidence": entry.get("root_confidence"),
+                "root_source": entry.get("root_source"),
+            }
+            for channel, entry in channels.items()
+            if entry.get("sound") is not None
+        },
+        "note_overrides": copy.deepcopy(doc["notes"]),
         "channel_mutes": {int(channel) for channel, entry in channels.items() if entry["muted"]},
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},
     }

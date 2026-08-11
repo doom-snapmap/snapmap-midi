@@ -73,6 +73,9 @@ APP_DIR_NAME = "snapmap-midi"
 #: Where decoded game audio is cached, under this tool's own folder.
 SOUND_CACHE_NAME = "sounds"
 
+#: Numeric analysis only; never decoded audio.
+PITCH_PROFILE_NAME = "pitch-profiles-v1.json"
+
 
 def loader_dir() -> Path | None:
     """The folder the map loader reads from, or None when there isn't one.
@@ -104,6 +107,16 @@ def sound_cache() -> Path:
     if local:
         return Path(local) / APP_DIR_NAME / SOUND_CACHE_NAME
     return Path.home() / (".%s" % APP_DIR_NAME) / SOUND_CACHE_NAME
+
+
+def pitch_profile_cache() -> Path:
+    """Where small root-pitch analysis records are persisted."""
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        base = Path(local) / APP_DIR_NAME
+    else:
+        base = Path.home() / (".%s" % APP_DIR_NAME)
+    return base / PITCH_PROFILE_NAME
 
 
 def rawmap_destination(out_dir=None) -> Path:

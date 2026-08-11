@@ -9,7 +9,8 @@ Three separate claims live here, and they fail in different ways:
     by resolved shader and post-processes what the TABLE picked, so applying it
     on top of a per-key override silently replaces a sound just chosen.
   - The statistics name what `docs/limits.md` names. Total event count is
-    dominated by decaying one-shots, which hold no emitter slot and are immune.
+    not a density measure; shared neutral one-shots and isolated expressive
+    notes are reported separately from peak per-channel voice use.
 
 The byte gate at the end is the fourth claim: both levers are inert when empty.
 """
@@ -261,14 +262,14 @@ def test_a_muted_drum_channel_ignores_its_key_overrides(tmp_path):
 # ---- statistics the engine limit justifies ----
 
 
-def test_statistics_report_the_sustained_path_the_engine_limit_actually_touches():
-    """`docs/limits.md`: "A decaying sound needs no slot held open, so it is
-    immune. Only the sustained path is exposed." Total event count is dominated
-    by immune one-shots, so warning on it flags drum-heavy songs that cannot hit
-    the limit and misses the three-voice pad that will."""
+def test_statistics_report_voice_pressure_and_expression_paths():
+    """Pressure is peak simultaneous isolated voices, not total event count."""
     _, stats = compile_to_rawmap(TINY_MIDI)
     assert "long_sustains" in stats
     assert "peak_voices" in stats
+    assert "shared_one_shots" in stats
+    assert "expressive_one_shots" in stats
+    assert "expressive_notes" in stats
     assert stats["max_speakers"] == 32
 
 

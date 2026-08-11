@@ -1,6 +1,10 @@
 # snapmap-midi workstation redesign
 
-Status: approved direction, 2026-08-10.
+Status: implemented 2026-08-10; pitch/dynamics amendment implemented 2026-08-11.
+
+The expression amendment is specified in
+[`../plans/2026-08-11-pitch-dynamics-note-inspector-architecture.md`](../plans/2026-08-11-pitch-dynamics-note-inspector-architecture.md)
+and supersedes this document's original fixed-pitch exact-event and no-per-note-control rules.
 
 ## Product statement
 
@@ -86,9 +90,13 @@ The result list never materializes the complete catalog at once. A bounded page 
 small while search and the tree filter the in-memory metadata. Escape, the close control, or
 the darkened backdrop cancels the modal.
 
-An exact sound is not retuned. Choosing one piano sample repeats that sample; choosing a
-pitched family follows MIDI pitch. Infinite and Mixed events receive paired stops so an
-infinite branch cannot leak a speaker emitter.
+An exact choice retains one Play event string across the channel. Curated or conservatively
+detected roots enable MIDI-following semitone modifiers. Rejected events receive a persisted
+natural-playback reference at the midpoint of the channel's imported range, preserving relative
+MIDI intervals without claiming an acoustic root; fixed pitch is an explicit opt-out. Infinite
+and Mixed events receive paired stops so an infinite branch cannot leak a speaker emitter.
+Expressive one-shots use duration-reserved
+isolated voices while neutral one-shots retain shared layering.
 
 rawmap export contains references only to events used by the arrangement. It never embeds the
 audio library. Preview reads the user's installed retail banks and decodes only an auditioned
@@ -106,8 +114,8 @@ Playback requirements:
 - Pressing the same control pauses without resetting position.
 - Pressing Home returns to zero.
 - The transport scrubber and the playhead are synchronized.
-- Clicking or dragging anywhere across the piano roll moves the playhead and
-  playback position. Dragging while playing continues from the new position.
+- Clicking a note pauses and opens Note expression. Clicking or dragging empty roll space
+  moves the playhead; a seek begun during playback resumes from the new position.
 - The playhead is one continuous vertical line spanning the ruler and complete
   note surface.
 - Changing a channel assignment invalidates the old preview manifest and the
@@ -128,8 +136,9 @@ A canvas is preferred over one DOM element per note.
   grid use the source tempo map to place note-value subdivisions and measures.
 - Vertical axis: all 128 MIDI pitches behind a native scrollbar, with a fixed
   piano-key ruler and every note named from C-1 through G9.
-- Notes: original pitch and duration, colored consistently by MIDI channel,
-  with 4 px rounded corners and high-DPI Segoe UI labels when space permits.
+- Notes: target pitch after manual transpose and source duration, colored consistently by
+  MIDI channel, with 4 px rounded corners and high-DPI Segoe UI labels when space permits.
+  The inspector separately names the imported pitch.
 - Note hover: only the note rectangle under the pointer receives a restrained
   bright glow. Hover remains available during playback, pause, and seeking;
   the playhead does not change note colors.
@@ -147,8 +156,9 @@ without turning each key into the height of the viewport. Zoom preserves the
 blue playhead's screen position so the notes, grid, and ruler expand around the
 current song position. During playback, the playhead sweeps through the visible
 passage; following returns it near the left third only when the viewport advances.
-At inspection sizes, notes carry pitch names. The piano roll remains read-only;
-note editing is outside this product.
+At inspection sizes, notes carry pitch names. Source composition remains read-only:
+notes cannot be created, deleted, moved in time, or resized. Clicking a note may edit only its
+SnapMap pitch/volume expression in the right-side inspector.
 
 The implementation separates the static roll from the playhead and hover overlays.
 Whole-song overview uses a bounded full-height raster cache for cheap vertical

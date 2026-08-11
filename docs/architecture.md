@@ -12,9 +12,10 @@ the ones above, and a test asserts exactly that.
 ```
    compile.py / cli.py / settings.py / ui/  the product surface
                   |
-   audio/     locate, wwise, library        installed catalog, direct preview, fallback
+   audio/     locate, wwise, pitch, library installed catalog, roots, preview
                   |
-   music/     midi, gm, voices, analysis    notes: pairing, timbre, density
+   music/     midi, gm, expression, voices  notes: pairing, timbre, expression
+              analysis
                   |
    sound/     palette, events, timeline     sounds: names, event calls, scheduling
                   |
@@ -31,28 +32,29 @@ compiler present. Both stay true only if the layering is proven rather than assu
 
 ## The pipeline
 
-A compile is a straight line. Each stage owns one module, and each hands the next a plain
-Python value rather than a shared mutable context.
+A compile is a straight line. Each stage owns one module, and each hands the next explicit
+values rather than a hidden audio or UI context.
 
 ```
-song.mid
+song.mid + settings v2
    |
-   |  music/midi.py     parse the file, pair note-on with note-off
+   |  music/midi.py       pair events; preserve stable id, source pitch, velocity
+   |  music/gm.py         program -> family; channel 9 -> percussion
+   |  sound/palette.py    family + target pitch -> nearest rooted sample
    v
-notes  (start, end, pitch, channel, program)
+annotated notes  (+ sound, + root evidence, + sustained?)
    |
-   |  music/gm.py       program number -> sound family; channel 9 -> percussion
-   |  sound/palette.py  family + pitch -> the nearest available sound
+   |  music/expression.py root-relative semitones + velocity/per-note dB
    v
-notes  (+ shader, + family, + sustained?)
+expressed notes  (+ target pitch, + final clamped modifiers)
    |
-   |  music/voices.py   allocate a speaker voice per sustained layer; thin polyphony
+   |  music/voices.py     shared/isolated split, duration policy, thinning, voices
    v
-notes  (+ voice)
+scheduled notes  (+ voice and effective tail)
    |
    |  rawmap/template.py  author the blank stage the song is played in
-   |  sound/events.py     build the engine event calls: start, stop, fade
-   |  sound/timeline.py   write them onto the timeline; add the trigger switch
+   |  sound/events.py     start -> fadePitch -> fadeSound -> stop/release
+   |  sound/timeline.py   write events onto the timeline; add the trigger switch
    v
    |  compile.py          orchestrate the above, return bytes + statistics
    v
@@ -64,6 +66,10 @@ rawmap.json
 Reads the file with `mido` and pairs each note-on with its matching note-off, producing a
 list of notes with a start and an end. An unmatched note-on is closed at the end of the
 track rather than dropped: a stuck note is audible and diagnosable, a missing one is not.
+Each positive note-on gets `channel:source-pitch:occurrence` identity before mute or sound
+mapping, and retains velocity 1 through 127. Sound choice then annotates the note with source
+and target pitch, root evidence, and the complete expression calculation; the imported MIDI
+file and the dataclass's load-bearing serialized field order remain unchanged.
 
 Percussion is detected here too. MIDI reserves channel 9 for drums, where the note number
 selects an instrument rather than a pitch.
@@ -101,27 +107,47 @@ so prefix-based classification would silently route an entire channel to nothing
 
 The installed full-game catalog is deliberately separate. It supplies thousands of exact
 manual choices, but those events generally have no instrument family or chromatic coverage.
-Automatic mapping therefore remains on the curated index. Selecting an exact full-game event
-bypasses pitch resolution and repeats that same event for every MIDI note on the channel.
+Automatic mapping therefore remains on the curated index. Selecting an exact event repeats its
+event string for every MIDI note on the channel, then lazily asks `audio/pitch.py` whether its
+decoded media has a trustworthy musical root. Pitchable events follow MIDI from that root.
+Rejected speech, noise, impacts, ambience, and variable containers instead receive a relative
+reference at the midpoint of the imported channel's source-note range. Their natural playback
+is assigned to that reference and the same root-relative expression math preserves every MIDI
+interval. The reference is explicitly labeled relative rather than acoustic evidence, and the
+user can disable pitch following for fixed playback.
+
+### `music/expression.py` — one pitch and loudness contract
+
+Every parsed note carries a stable source id and its MIDI velocity. The expression module
+derives target MIDI pitch, automatic root-relative shift, per-note trim, and final SnapMap
+modifiers without changing the `Note` dataclass's serialized field order.
+
+SnapMap pitch values are integral semitones clamped to -24 through 24. Velocity uses a squared
+amplitude response, `40 * log10(velocity / 127)`, then the per-note dB trim is added and the
+result is clamped to -60 through 20. The same pure functions feed map export, preview manifests,
+warnings, and inspector readouts.
 
 ### The split that defines the design
 
-Every note goes down one of two paths, and the choice is the single most important decision
-in the compiler.
+A sound's decay behavior and a note's expression requirements are independent. The compiler
+therefore uses three paths:
 
-- **Decaying sounds and drums** fade on their own. They are fired and forgotten, layered
-  polyphonically onto the timeline entity itself. They need no voice and no note-off.
-- **Sustained notes** hold at full volume until something stops them. Each one gets a
-  dedicated speaker voice so that it *can* be stopped, plus an explicit note-off event when
-  the note ends.
+- **Neutral decaying notes** have zero pitch and volume modifiers. They stay fully polyphonic
+  on the shared Timeline entity and need neither a dedicated voice nor a note-off.
+- **Expressive decaying notes** need independent pitch or gain. They receive a speaker voice
+  reserved through installed-event duration, or a conservative fallback when duration metadata
+  is unavailable. They decay naturally and are not explicitly stopped.
+- **Sustained notes** receive a speaker voice plus an explicit stop or release at note end.
 
-A sustained note with no note-off rings its entire sample and smears into the next phrase.
-That is the failure this split exists to prevent.
+A shared emitter cannot safely receive per-note pitch or gain because its modifier would also
+affect a neighboring note. A sustained note with no note-off can ring its entire sample and
+smear into the next phrase. Those two constraints define the split.
 
-### `music/voices.py` — allocation and thinning
+### `music/voices.py` — preparation, allocation, and thinning
 
-Allocates a speaker voice per sustained layer. Allocation is per layer, not global, so one
-instrument can never steal another's voice or cut it off mid-phrase.
+`prepare_voice_layers` is shared by compiler and preview. It applies duration caps, separates
+neutral and expressive one-shots, reserves expressive tails, and builds per-channel layers.
+Allocation is per channel, not global, so one instrument cannot steal another channel's voice.
 
 Thinning drops notes when too many would be live at once. It is the mechanism behind
 `max_poly` and the family caps; see [`limits.md`](limits.md) for why a dense arrangement
@@ -129,8 +155,9 @@ needs it.
 
 ### `sound/events.py` — event construction
 
-Builds the engine's event calls: start a sound, stop it, fade it. Nothing here knows about
-MIDI; it takes a sound name and a time and emits the call structure.
+Builds the engine's event calls: start a sound, set pitch with `fadePitch`, set gain with
+`fadeSound`, and stop or release a sustained sound. Nothing here knows about MIDI; it takes
+resolved values and times and emits the raw event-call structure.
 
 ### `sound/timeline.py` — the authoring API
 
@@ -150,11 +177,11 @@ Runs the stages above in order and returns `(bytes, statistics)`. The statistics
 is not decoration: the byte gates assert on it, so a byte difference reports *what* changed
 rather than only *that* something did.
 
-Two of its numbers are there for the window and are worth naming. `long_sustains` counts
-notes held past a second and `peak_voices` the largest allocation any layer reached, because
-those are the two quantities [`limits.md`](limits.md) actually names. `events` is the biggest
-number in the summary and the least useful one to judge a map by: it is dominated by decaying
-one-shots, which hold no emitter slot and are immune.
+The summary distinguishes `shared_one_shots`, `expressive_one_shots`, and total
+`expressive_notes`, and reports pitch/volume adjustment and clamp counts from parsing.
+`long_sustains` counts notes held past a second and `peak_voices` is the largest allocation
+any channel layer reached. Event count alone is not a pressure metric: neutral one-shots hold no
+dedicated speaker, while expressive one-shots reserve one for their measured or fallback tail.
 
 ### `settings.py` — one document, two surfaces
 
@@ -174,38 +201,63 @@ measured Play-event alphabet and maximum length, but validation does not require
 game install. That keeps sidecars loadable after DOOM moves and permits an explicit mod event;
 the UI itself offers the Play events declared by the installed retail catalog.
 
+Settings version 2 adds optional `pitch_follow`, `root_midi`, `root_confidence`, and
+`root_source` fields to exact channel choices, plus a sparse top-level `notes` mapping.
+`root_source: "relative"` means `root_midi` is a natural-playback reference, not a detected
+root; zero confidence is intentional for that mode.
+A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute, and
+root changes. Each entry may hold an integral `transpose` (-24 through 24) and `volume_db`
+trim (-60 through 20). Derived modifiers and decoded audio never enter the sidecar. Version 1
+documents migrate in memory, and their old exact sounds remain fixed until reassigned or given
+a root/reference, preserving existing exports.
+
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
 every mistake a hand edit makes here is a quiet one. See
 [`ui.md`](ui.md#the-settings-sidecar).
 
 ### audio/ — installed catalog and optional local preview
 
-This layer supplies local sound metadata to the UI and preview bytes to Web Audio; rawmap
-authoring still does not embed or copy audio. locate.py finds a usable DOOM install from the
-explicit override or Steam records. wwise.py indexes the language-neutral retail banks and
-one localization, resolves event hashes through HIRC to the first available medium, and
-decodes the measured Wwise IMA ADPCM format without an external codec.
+This layer supplies local sound metadata, root analysis, and preview bytes to Web Audio;
+rawmap authoring still does not embed or copy audio. `locate.py` finds a usable DOOM install
+from the explicit override or Steam records. `wwise.py` indexes the language-neutral retail
+banks plus one localization, resolves event hashes through HIRC to every reachable media leaf,
+and decodes the measured Wwise IMA ADPCM format without an external codec. A source signature
+covers all leaf IDs so cache entries invalidate when an event's media topology changes.
 
 HIRC stores hashes rather than names, so it cannot enumerate a sound browser. The generated
 soundbanksinfo.events file supplies event strings, Wwise paths, buses, environments, numeric
 IDs, and compact duration data. The larger soundbanksinfo.xml overlay distinguishes Mixed
 duration events from ordinary one-shots. DoomSounds joins the two metadata sources and keeps
-every Play event string while separately recording whether it resolves to a standalone local
-medium. The reference retail installation contains 7,589 Play events across 7,649 catalog
+every Play event string while separately recording whether it resolves to standalone local
+media. The reference retail installation contains 7,589 Play events across 7,649 catalog
 records; 7,353 support local decoding.
 
-library.py exposes that full catalog lazily, overlays the small curated label set, and falls
-back to the shipped 890-name palette when installed metadata is absent. Direct audition and
-song preview decode only requested sounds. Engine-only composite events remain exportable,
-have a disabled audition control, and are skipped with a warning if used in song preview. The
-explicit extract command remains a 890-sound, versioned offline cache; expanding it to every
-event would defeat the in-place architecture.
+`library.py` exposes that full catalog lazily, overlays the small curated label set, and falls
+back to the shipped 890-name palette when installed metadata is absent. Curated palette pitches
+are authoritative. For an arbitrary exact event, `pitch.py` analyzes bounded windows from all
+available leaves with a conservative YIN-style estimator. Silence, weak or unstable periodicity,
+and containers whose leaves disagree are rejected rather than assigned a guessed root.
+
+Rejection only says that the media has no defensible absolute root. It does not prevent playback
+rate transposition. On exact-sound selection, Python chooses the midpoint of the channel's
+lowest and highest imported source notes, rounding a half-step upward, and returns it separately
+from the acoustic profile. The UI persists that integer as a relative reference so note edits
+cannot move the basis for every other note. A span of no more than 48 semitones fits entirely
+inside SnapMap's -24 through 24 range; wider channels expose ordinary clamp diagnostics.
+
+Accepted and rejected profiles are cached as small numeric JSON records keyed by install,
+event, complete media signature, and analysis version. The cache contains root, confidence,
+source, and rejection state only—never PCM or game content. Direct audition and song preview
+still decode only requested sounds. Engine-only composite events remain exportable, have a
+disabled audition control, and are skipped with a warning if used in song preview. The explicit
+extract command remains a 890-sound, versioned offline audio cache; expanding it to every event
+would defeat the in-place architecture.
 
 The decoder remains rooted at the retail base soundbank directory and never recursively merges
 runtime-injected mod banks, preventing a colliding mod event or media ID from overriding stock
 content. Every decoded byte is derived on the user's machine, preview failure cannot stop the
 editor or change a compile, and synthetic tests cover parser, provider, localization, fallback,
-and mod isolation without redistributing game data.
+pitch acceptance/rejection, and mod isolation without redistributing game data.
 
 ### `ui/` — the MIDI workstation
 
@@ -228,23 +280,28 @@ Nothing is served and nothing listens. The markup is loaded from the filesystem 
 `file:///` URI, so the window has no address and no port;
 `test_product_has_no_network_client` still passes over the whole package.
 
-**The division of labour is the design.** Python decides every conversion fact: which sound
-each note resolves to, whether it is sustained, which duration caps and polyphony rules keep
-it, which speaker voice it receives, when reuse cuts it off, and which audio samples the
-current conversion may request. The same settings document feeds both the preview manifest
-and `compile_to_rawmap`.
+**The division of labour is the design.** Python decides every conversion fact: sound and
+root, source and target pitch, MIDI-velocity dB, per-note trims, clamp state, sustain behavior,
+duration caps, polyphony, speaker voice, reuse cutoff, and requested audio samples. Compiler and
+preview both call the same voice-layer preparation, and the same versioned settings document
+feeds the preview manifest and `compile_to_rawmap`.
 
-Javascript owns presentation and transport: it virtualizes the full 0-127 pitch range and
-song duration behind native scrollbars, draws synchronized pitch and measure rulers, converts
-MIDI ticks through the supplied tempo map, moves and auto-follows the single playhead against
-Web Audio's output timestamp rather than its ahead-of-output scheduling clock, schedules
-decoded buffers with a rolling look-ahead, and forwards settings changes to the bridge.
+Javascript owns presentation and transport: it virtualizes the full 0-127 pitch range and song
+duration behind native scrollbars, draws synchronized pitch and measure rulers, converts MIDI
+ticks through the supplied tempo map, moves and auto-follows the single playhead against Web
+Audio's output timestamp rather than its ahead-of-output scheduling clock, and schedules
+decoded buffers with a rolling look-ahead. It applies the manifest's final pitch as
+`detune = pitch_modifier * 100` cents and final loudness as
+`gain = 10 ** (volume_db / 20)`; it does not repeat root, velocity, or clamp logic. Settings
+changes cross the bridge and return a rebuilt manifest.
 
 Rendering is split by update frequency. The base canvas holds pitch rows, timing lines, notes,
 labels, and channel emphasis; separate pointer-transparent canvases hold the moving playhead and
-the one hovered note. A playback animation therefore clears and paints only the overlays until
-the viewport actually changes. Note glow is pointer-only and remains available while playing;
-the playhead never starts an all-events active-note scan.
+hover/selection feedback. A playback animation therefore clears and paints only the overlays
+until the viewport actually changes. Note glow is pointer-only and remains available while
+playing; the playhead never starts an all-events active-note scan. Indexed hit testing opens the
+Note expression inspector for a note, while empty surface input keeps the existing seek path.
+Selection uses an outline and does not become a playback animation.
 
 The preview events are normalized once into 128 pitch buckets sorted by start time. Each bucket
 also stores prefix maximum end times, allowing two binary searches to reject events outside the
@@ -267,8 +324,11 @@ canvas repaint on every audio frame.
 Zoom captures the playhead's viewport coordinate before resizing and restores that coordinate
 against the new time scale. The draggable pane separator stores only the preferred channel
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
-high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, and hover are view
-state and never enter the conversion settings document. JavaScript names no palette family or game event in source. The small startup catalog comes
+high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, hover, and which
+note inspector is open are view state. Per-note transpose/volume values and exact-channel root
+choices are conversion state and go through the validated settings bridge.
+
+JavaScript names no palette family or game event in source. The small startup catalog comes
 from the curated palette; the full installed event catalog crosses a separate lazy bridge only
 when the modal opens. Results are folder-indexed and paginated so thousands of events do not
 become thousands of live DOM controls.

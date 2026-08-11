@@ -119,3 +119,16 @@ def test_allocate_voices_steals_the_earliest_free_voice_at_the_ceiling():
     notes = [Note(i * 10, 5000, "a", True, 0, "f") for i in range(6)]
     assert allocate_voices(notes, max_speakers=3) == 3
     assert sorted({n.voice for n in notes}) == [0, 1, 2]
+
+
+def test_decaying_voice_reservation_controls_allocation_and_thinning():
+    first = Note(0, 100, "play_noise_one", False, 0, "ins_noise")
+    first.pitch = 72
+    first.voice_end = 1000
+    second = Note(200, 300, "play_noise_two", False, 0, "ins_noise")
+    second.pitch = 60
+    second.voice_end = 1200
+
+    notes = [first, second]
+    assert allocate_voices(notes, max_speakers=8) == 2
+    assert thin_polyphony(notes, max_poly=1) == [first]

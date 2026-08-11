@@ -13,8 +13,59 @@ means fewer chances to lose that race.
 from __future__ import annotations
 
 import heapq
+from collections.abc import Callable
 
 from snapmap_midi.sound.palette import shader_pitch
+
+
+def prepare_voice_layers(
+    decaying,
+    sustained,
+    *,
+    cap_sustain_ms: int | None = None,
+    bass_pitch: int = 78,
+    bass_cap_ms: int | None = None,
+    family_caps: dict | None = None,
+    duration_lookup: Callable[[str], int | None] | None = None,
+):
+    """Apply duration policy and build the isolated per-channel voice layers.
+
+    Neutral one-shots remain on the shared timeline entity. Notes that need a
+    pitch or volume modifier must use a speaker of their own, so they reserve a
+    voice for the installed event duration (or a conservative fallback). This
+    function is shared by map export and browser preview so their cutoffs cannot
+    drift apart.
+    """
+
+    family_caps = family_caps or {}
+    if cap_sustain_ms or bass_cap_ms or family_caps:
+        for note in sustained:
+            cap = family_caps.get(note.fam, cap_sustain_ms or 10**9)
+            pitch = _note_pitch(note)
+            if bass_cap_ms and pitch < bass_pitch:
+                cap = min(cap, bass_cap_ms)
+            if note.duration > cap:
+                note.end = note.start + cap
+
+    expressive = [note for note in decaying if note.pitch_modifier != 0 or note.volume_db != 0]
+    expressive_ids = {id(note) for note in expressive}
+    shared = [note for note in decaying if id(note) not in expressive_ids]
+
+    durations = {}
+    for note in expressive:
+        if note.shader not in durations:
+            durations[note.shader] = (
+                duration_lookup(note.shader) if duration_lookup is not None else None
+            )
+        duration = durations[note.shader]
+        if duration is None:
+            duration = 750 if note.fam == "drums" else 1000
+        note.voice_end = note.start + max(1, int(duration))
+
+    layers = {}
+    for note in sustained + expressive:
+        layers.setdefault(note.chan, []).append(note)
+    return shared, expressive, layers
 
 
 def allocate_voices(notes, max_speakers: int) -> int:
@@ -36,8 +87,15 @@ def allocate_voices(notes, max_speakers: int) -> int:
             else:
                 voice = min(range(len(free_at)), key=lambda i: free_at[i])
         note.voice = voice
-        free_at[voice] = note.end
+        free_at[voice] = getattr(note, "voice_end", note.end)
     return len(free_at)
+
+
+def _note_pitch(note) -> int:
+    pitch = getattr(note, "pitch", None)
+    if pitch is not None:
+        return int(pitch)
+    return shader_pitch(note.shader) or 0
 
 
 #: One past the highest pitch a sound name can encode. The octave is a single
@@ -71,7 +129,7 @@ def thin_polyphony(notes, max_poly: int):
     the same pitch.
     """
     ordered = sorted(notes, key=lambda n: n.start)
-    pitches = [shader_pitch(n.shader) or 0 for n in ordered]
+    pitches = [_note_pitch(note) for note in ordered]
 
     sounding = [0] * (_PITCH_CEILING + 1)
     ending: list[tuple[int, int]] = []  # min-heap of (end, index), the live notes
@@ -87,7 +145,10 @@ def thin_polyphony(notes, max_poly: int):
         group_end = index
         while group_end < total and ordered[group_end].start == onset:
             sounding[pitches[group_end]] += 1
-            heapq.heappush(ending, (ordered[group_end].end, group_end))
+            heapq.heappush(
+                ending,
+                (getattr(ordered[group_end], "voice_end", ordered[group_end].end), group_end),
+            )
             group_end += 1
 
         # Anything that has finished by now is no longer sounding. A note is

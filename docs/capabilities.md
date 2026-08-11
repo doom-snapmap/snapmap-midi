@@ -110,21 +110,26 @@ accepts these arguments:
 | `midi` | path | none | open on this song |
 | `--settings` | path | none | open with these settings |
 
-The workstation is one persistent surface: a unified channel list, a read-only full-range
-piano roll, one global Play/Pause transport, a draggable sweeping playhead, and a nonblocking
-Conversion inspector. The roll has synchronized pitch/time axes, native two-dimensional
-scrolling, playhead-anchored zoom, source-tempo-aware grid divisions, selectable visual meter,
-rounded high-resolution note labels, pointer-only note glow during both playback and pause, and
-section-based playback following. The static roll, animated playhead, and hover feedback are
-separate layers. Whole-song overview scrolling reuses a bounded raster cache; inspection zoom
-queries only notes overlapping the visible pitch and time ranges. Vertical wheel input remains
-active over the disabled horizontal scrollbar. A persistent draggable divider trades width
-between the channel list and roll while preserving useful minimums for both. Percussion stays
-with the other channels. Every channel can use Automatic mapping, one of the 12 pitched
-instrument sets, or an exact event from the installed full-game sound browser. The browser
-falls back to the 890 curated palette names when installed metadata is unavailable. Export
-writes the map and a settings file beside the song, so the next session opens where this one
-stopped.
+The workstation is one persistent surface: a unified channel list, a full-range piano roll,
+one global Play/Pause transport, a draggable sweeping playhead, and mutually exclusive
+Conversion, Notifications, and Note expression inspectors. Source composition stays read-only:
+notes cannot be created, deleted, moved, or resized. Clicking a note instead edits how that
+specific imported note is converted—pitch trim and volume trim—while clicking empty space seeks.
+
+The roll has synchronized pitch/time axes, native two-dimensional scrolling,
+playhead-anchored zoom, source-tempo-aware grid divisions, selectable visual meter, rounded
+high-resolution note labels, pointer-only note glow during playback and pause, and section-based
+playback following. The static roll, animated playhead, and hover/selection feedback are separate
+layers. Whole-song overview scrolling reuses a bounded raster cache; inspection zoom queries
+only notes overlapping the visible pitch and time ranges. Vertical wheel input remains active
+over the disabled horizontal scrollbar. A persistent draggable divider trades width between the
+channel list and roll while preserving useful minimums for both.
+
+Percussion stays with the other channels. Every channel can use Automatic mapping, one of the
+12 pitched instrument sets, or an exact event from the installed full-game sound browser. The
+browser falls back to the 890 curated palette names when installed metadata is unavailable.
+Export writes the map and versioned settings beside the song, so channel roots and sparse
+per-note expression edits return in the next session.
 
 It needs pywebview, which is an ordinary dependency on Windows and the `[ui]` extra
 everywhere else. [`ui.md`](ui.md) covers the complete workstation and the settings document
@@ -140,9 +145,36 @@ entries remain selectable for export and are clearly marked.
 
 The reference retail installation contains 7,589 Play events, of which 7,353 support local
 preview; those counts can vary with localization and edition. Exact assignment repeats the
-chosen event for every note and does not pitch-shift it. Infinite and Mixed Wwise events use
-the sustained speaker path and receive a stop; known one-shots remain fire-and-forget. The
-full catalog is a manual layer only and does not widen General MIDI automatic mapping.
+chosen event string for every note. On selection, a conservative all-leaf analysis accepts a
+root only for stable pitched media. Accepted events follow MIDI from that root; rejected events
+follow the same MIDI intervals from a relative natural-playback reference centered on the
+channel's imported note range. The inspector labels the distinction and can adjust the basis or
+disable pitch following for fixed playback. Infinite and Mixed Wwise events use the sustained
+path and receive a stop. One-shots with non-zero pitch or gain use duration-reserved speaker
+voices; neutral one-shots retain the shared fire-and-forget path. The full catalog remains a
+manual layer and does not widen General MIDI automatic mapping.
+
+### Per-note pitch and dynamics
+
+Clicking a rendered note pauses transport and opens the Note expression inspector. It shows
+source and target note, channel, velocity, exact event, root and confidence, automatic shift,
+user trims, final SnapMap values, and any clamp.
+
+- **Pitch trim** is an integer -24 through 24 semitones. With a trusted root or relative
+  reference, the compiler retunes the sound from that basis to the new target note. Without
+  either, the same control is an explicit SnapMap pitch modifier and the inspector says so.
+- **Volume trim** is an integer -60 through 20 dB. MIDI velocity first maps through
+  `40 * log10(velocity / 127)`; the trim is added afterward.
+- **Exact-channel pitch basis** accepts MIDI 0 through 127 and can enable or disable pitch
+  following. A detected/manual root describes the sound's absolute pitch; a relative reference
+  assigns its natural playback to one channel note without claiming an acoustic root. Both are
+  channel-wide because changing the basis for one note would detune the interval pattern.
+- **Reset note** removes only that note's sparse override.
+
+Final pitch is clamped to SnapMap's -24 through 24 semitone range and final volume to -60
+through 20 dB. The notification/inspector readouts expose a requested value that was limited.
+Edits are keyed by `channel:source-pitch:occurrence`; they survive sound changes but never
+modify the source MIDI.
 
 ### The palette's categories
 
@@ -168,23 +200,24 @@ fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 
 The workstation can play the entire converted arrangement directly from an installed game's
 retail soundbanks, with a valid 890-sound offline cache as fallback. The same direct source
-auditions full-catalog events in the browser. Preview uses the same channel assignments and
-engine-limit processing as export and decodes only samples the current song uses. See [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
+auditions full-catalog events in the browser. Preview receives the compiler's resolved root,
+pitch, velocity-derived dB, note trim, duration, and voice-cut facts; Web Audio applies the final
+semitones and dB without recalculating them. It decodes only samples the current song uses. See
+[`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
 
-## Tuning levers
+## Tuning, routing, and expression arguments
 
-**Every lever below reduces how many sounds are live at once.** That is the one thing they
-have in common, and it is why they exist: the engine recycles sound emitter slots under
-load, and a note whose slot is recycled can no longer be stopped. Read
-[`limits.md`](limits.md) before reaching for any of them — a sparse arrangement needs none.
+The duration/polyphony controls reduce how many sounds are live at once because the engine
+recycles emitter slots under load. Read [`limits.md`](limits.md) before changing them—a sparse
+arrangement needs none. Routing and expression arguments answer a different question: which
+sound a note uses and how that note is pitched or amplified.
 
-Some are on the command line; the rest are library-only arguments to `compile_to_rawmap`.
-They are not hidden so much as unproven — they were added while tuning specific songs, and
-promoting one to a flag is a welcome pull request.
+Some are on the command line, some are represented by the versioned UI sidecar, and the rest
+remain library-only arguments to `compile_to_rawmap`.
 
 | Lever | CLI | Type | Reach for it when |
 |---|---|---|---|
-| `max_speakers` | `--max-speakers` | int | too many simultaneous sustained voices; the cheapest global limit |
+| `max_speakers` | `--max-speakers` | int | too many sustained or expressive voices in one channel; the cheapest global limit |
 | `release_s` | `--release` | seconds | note-offs sound abrupt, or notes bleed together |
 | `hard_stop` | `--hard-stop` | flag | a fade is still audible under the next phrase; cuts instead |
 | `max_events` | `--max-events` | int | the timeline is too dense overall |
@@ -197,9 +230,11 @@ promoting one to a flag is a welcome pull request.
 | `min_sustain_ms` | — | ms | very short sustained notes are wasting voices |
 | `drop_sustain_over_ms` | — | ms | drop sustained notes longer than this outright |
 | `family_caps` | — | dict | one instrument is monopolising voices; cap per family |
-| `decaying_families` | — | set | force a family down the fire-and-forget path |
+| `decaying_families` | — | set | classify a family as naturally decaying; expression can still require an isolated voice |
 | `channel_families` | — | dict | override the family for a whole MIDI channel |
 | `channel_sounds` | — | dict | trigger one exact DOOM Play event for every note on a MIDI channel |
+| `channel_pitch_profiles` | — | dict | enable exact-sound pitch following from detected roots or relative references |
+| `note_overrides` | — | dict | sparse per-note semitone and dB trims keyed by stable source-note id |
 | `channel_mutes` | — | set | silence whole channels; the notes are not counted as dropped |
 | `drop_shaders` | — | set | one specific sound is wrong; exclude it |
 | `drum_overrides` | — | dict | retimbre whatever the drum table picked, keyed by sound |
@@ -212,15 +247,17 @@ why the per-key choice is applied first and the shader table only ever post-proc
 table's own answer. Applied the other way round it silently replaced the sound somebody had
 just picked.
 
-The workstation directly exposes `max_speakers`, `release_s`, `hard_stop`, `max_poly`,
-`cap_sustain_ms`, `bass_pitch`, `bass_cap_ms`, `decaying_families`, `family_caps`,
-`channel_families`, `channel_sounds`, and `channel_mutes`. Automatic percussion still obeys
-`drums` and `drum_key_overrides` restored from a sidecar, but percussion is not a separate UI
-mode. The rest stay sidecar or library controls. `max_events` is deliberately not in the
-inspector: the compiler implements it as
-`decaying_events[:max_events]`, which truncates the one-shot list in time order, so the drums
-stop partway through the song rather than thinning out. Behind a slider that reads as a
-density limit, that is a trap.
+The Conversion inspector exposes `max_speakers`, `release_s`, `hard_stop`,
+`max_poly`, `cap_sustain_ms`, `bass_pitch`, `bass_cap_ms`, `decaying_families`, and
+`family_caps`. Channel rows expose family/sound selection and mute. Selecting an exact sound
+records a detected root when trustworthy or a channel-centered relative reference otherwise;
+clicking a note exposes sparse `note_overrides` and the exact channel's pitch-basis controls.
+
+Automatic percussion still obeys `drums` and `drum_key_overrides` restored from a sidecar,
+but percussion is not a separate UI mode. The rest stay sidecar or library controls.
+`max_events` is deliberately not in the inspector: the compiler slices the chronological
+one-shot list, so the drums stop partway through the song rather than thinning out. Behind a
+slider that reads as a density limit, that is a trap.
 
 Notes held under about a second cut reliably. That is the practical target when tuning.
 
