@@ -314,9 +314,7 @@ def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
             [
                 mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
                 mido.Message("note_on", channel=0, note=72, velocity=127, time=672),
-                mido.Message(
-                    "note_off", channel=0, note=72, velocity=64, time=final_note_ticks
-                ),
+                mido.Message("note_off", channel=0, note=72, velocity=64, time=final_note_ticks),
             ]
         )
         path = tmp_path / ("shape-%d.mid" % final_note_ticks)

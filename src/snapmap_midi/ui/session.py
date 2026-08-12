@@ -122,10 +122,7 @@ def _timing_manifest(mid_path) -> dict:
             marker = candidate
         return round(
             float(marker["time_ms"])
-            + (target_tick - int(marker["tick"]))
-            * int(marker["tempo"])
-            / 1000
-            / ticks_per_beat,
+            + (target_tick - int(marker["tick"])) * int(marker["tempo"]) / 1000 / ticks_per_beat,
             6,
         )
 
