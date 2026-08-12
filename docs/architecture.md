@@ -36,7 +36,7 @@ A compile is a straight line. Each stage owns one module, and each hands the nex
 values rather than a hidden audio or UI context.
 
 ```
-song.mid + settings v4
+song.mid + settings v5
    |
    |  music/midi.py       pair events; preserve stable id, source pitch, velocity
    |  music/gm.py         program -> family; channel 9 -> percussion
@@ -44,7 +44,7 @@ song.mid + settings v4
    v
 annotated notes  (+ sound, + root evidence, + sustained?)
    |
-   |  music/expression.py root-relative semitones + velocity/global/per-note dB
+   |  music/expression.py root-relative semitones + note/global dB
    v
 expressed notes  (+ immutable source pitch, + final clamped modifiers)
    |
@@ -110,21 +110,24 @@ manual choices, but those events generally have no instrument family or chromati
 Automatic mapping therefore remains on the curated index. Selecting an exact event repeats its
 event string for every MIDI note on the channel, then lazily asks `audio/pitch.py` whether its
 decoded media has a trustworthy musical root. Pitchable events follow MIDI from that root.
-Rejected speech, noise, impacts, ambience, and variable containers keep natural playback.
-Python returns the midpoint of the imported channel's source-note range only as an optional
-relative reference. It is labeled relative rather than acoustic evidence, and MIDI following
-remains off until the user enables it deliberately.
+The trusted pitch class may move by whole octaves to minimize overflow for that channel. A
+spectral guard rejects a candidate above the strongest lower component instead of promoting a
+chime overtone to a fundamental. Tonal but root-ambiguous media follows MIDI from the channel
+midpoint without making an acoustic claim. Rejected speech, noise, impacts, ambience, and
+variable containers keep natural playback and offer the midpoint only as an optional reference.
 
 ### `music/expression.py` — one pitch and loudness contract
 
 Every parsed note carries a stable source id and its MIDI velocity. The expression module
 keeps source pitch immutable while deriving an optional automatic root-relative shift, a
-playback-only Pitch offset, global volume, per-note volume trim, and final
+playback-only Pitch adjustment, velocity-derived initial note volume, an optional absolute note
+volume override, global volume, and final
 SnapMap modifiers without changing the `Note` dataclass's serialized field order.
 
 SnapMap pitch values are integral semitones clamped to -24 through 24. Velocity uses a squared
-amplitude response, `40 * log10(velocity / 127)`, then the global dB offset and per-note dB trim
-are added and the result is clamped to -60 through 20. The same pure functions feed map export,
+amplitude response, `40 * log10(velocity / 127)`, to initialize note volume. A per-note
+override replaces that level; global dB is added afterward, and the output is clamped to -60
+through 20. The same pure functions feed map export,
 preview manifests,
 warnings, and inspector readouts.
 
@@ -208,11 +211,13 @@ Settings version 2 added optional `pitch_follow`, `root_midi`, `root_confidence`
 root; zero confidence is intentional for that mode.
 A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute,
 solo, and root changes. Each entry may hold integral `pitch_offset` (-24 through 24) and
-`volume_db` (-60 through 20) playback offsets.
+`volume_db` (-60 through 20), the absolute pre-master note level. Explicit zero is retained.
 
 Settings version 3 adds integral `tuning.master_volume_db` (-60 through 20). Version 4 adds
-`soloed` and renames legacy note `transpose` to `pitch_offset`. Derived values and decoded
-audio never persist; versions 1 through 3 migrate in memory.
+`soloed` and renames legacy note `transpose` to `pitch_offset`. Version 5 makes note
+`volume_db` absolute; version 1 through 4 relative values migrate to a compatibility-only
+`volume_trim_db` field and retain their prior playback until edited. Derived values and
+decoded audio never persist.
 
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
 every mistake a hand edit makes here is a quiet one. See
@@ -239,15 +244,15 @@ records; 7,353 support local decoding.
 back to the shipped 890-name palette when installed metadata is absent. Curated palette pitches
 are authoritative. For an arbitrary exact event, `pitch.py` analyzes bounded windows from all
 available leaves with a conservative YIN-style estimator. Silence, weak or unstable periodicity,
-and containers whose leaves disagree are rejected rather than assigned a guessed root.
+containers whose leaves disagree, and candidates contradicted by lower dominant spectral energy
+are rejected rather than assigned a guessed root.
 
-Rejection says that the media has no defensible absolute root, so the event keeps natural
-playback. Python still computes the midpoint of the channel's lowest and highest imported source
-notes, rounding a half-step upward, and returns it separately from the acoustic profile. The UI
-persists that integer only as an optional relative reference so note edits cannot move the basis
-for every other note. It does not enable pitch following. If the user enables it, a span of no
-more than 48 semitones fits inside SnapMap's -24 through 24 range; wider channels expose ordinary
-clamp diagnostics.
+An ambiguous periodic result says the event is tonal but its fundamental cannot be trusted.
+Python centers such an event on the midpoint of the channel's lowest and highest source notes,
+rounding a half-step upward, and enables following without calling that reference a root. Clearly
+nonmusical rejection keeps natural playback while retaining the midpoint as an optional
+reference. A span of no more than 48 semitones fits inside SnapMap's -24 through 24 range; wider
+channels expose ordinary clamp diagnostics. A trusted root is octave-fitted to the same channel.
 
 Accepted and rejected profiles are cached as small numeric JSON records keyed by install,
 event, complete media signature, and analysis version. The cache contains root, confidence,
@@ -285,8 +290,9 @@ Nothing is served and nothing listens. The markup is loaded from the filesystem 
 `test_product_has_no_network_client` still passes over the whole package.
 
 **The division of labour is the design.** Python decides every conversion fact: sound and
-root, immutable source pitch, automatic and offset pitch, MIDI-velocity dB, global and per-note
-volume, mute/solo inclusion, clamp state, sustain behavior, duration caps, polyphony, speaker
+root, immutable source pitch, automatic and offset pitch, velocity-derived initial note volume,
+absolute note overrides, global volume, mute/solo inclusion, clamp state, sustain behavior,
+duration caps, polyphony, speaker
 voice, reuse cutoff, and requested audio samples. Compiler and preview call the same preparation,
 and the same versioned settings document feeds the preview manifest and `compile_to_rawmap`.
 
@@ -295,9 +301,11 @@ duration behind native scrollbars, draws synchronized pitch and measure rulers, 
 ticks through the supplied tempo map, moves and auto-follows the single playhead against Web
 Audio's output timestamp rather than its ahead-of-output scheduling clock, and schedules
 decoded buffers with a rolling look-ahead. It applies the manifest's final pitch as
-`detune = pitch_modifier * 100` cents and final loudness as
+`playbackRate = 2 ** (pitch_modifier / 12)` and final loudness as
 `gain = 10 ** (volume_db / 20)`; it does not repeat root, velocity, global-volume, or clamp
-logic. Settings
+logic. Because Wwise voice pitch is resampling rather than independent time stretching, browser
+media offsets and Python's one-shot voice reservations also use the finalized playback rate.
+Settings
 changes cross the bridge and return a rebuilt manifest.
 
 Rendering is split by update frequency. The base canvas holds pitch rows, timing lines, notes,

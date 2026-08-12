@@ -469,6 +469,156 @@ def test_unpitched_sound_profile_includes_the_channel_relative_anchor(monkeypatc
     response = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Grunt", 0)
     assert response["profile"] == profile
     assert response["relative_anchor"] == 60
+    assert response["pitch_plan"] == {
+        "pitch_follow": False,
+        "root_midi": 60,
+        "root_confidence": 0.0,
+        "root_source": "relative",
+        "reason": "natural playback; relative MIDI following is optional",
+    }
+
+
+def test_root_ambiguous_tonal_sound_automatically_uses_channel_center(monkeypatch):
+    from snapmap_midi.audio import library
+
+    profile = {
+        "classification": "ambiguous",
+        "pitchable": False,
+        "root_midi": None,
+        "confidence": 0.0,
+        "relative_recommended": True,
+        "source": "none",
+    }
+    monkeypatch.setattr(library, "pitch_profile", lambda name: dict(profile))
+
+    plan = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Chime", 0)["pitch_plan"]
+    assert plan == {
+        "pitch_follow": True,
+        "root_midi": 60,
+        "root_confidence": 0.0,
+        "root_source": "relative",
+        "reason": "tonal but root-ambiguous; channel-centered reference",
+    }
+
+
+def test_trusted_root_is_octave_fitted_to_the_open_channel(monkeypatch):
+    from snapmap_midi.audio import library
+
+    profile = {
+        "classification": "pitched",
+        "pitchable": True,
+        "root_midi": 83.0,
+        "confidence": 0.9,
+        "source": "detected",
+    }
+    monkeypatch.setattr(library, "pitch_profile", lambda name: dict(profile))
+
+    plan = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Chime", 1)["pitch_plan"]
+    assert plan["pitch_follow"] is True
+    assert plan["root_midi"] == 71.0
+    assert plan["root_source"] == "detected_octave"
+    assert "octave-fitted" in plan["reason"]
+
+
+def test_startup_repairs_an_old_automatic_root_with_current_evidence(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    assert bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": "Play_Custom_Chime",
+                    "pitch_follow": True,
+                    "root_midi": 83.0,
+                    "root_confidence": 0.87,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )["ok"]
+    monkeypatch.setattr(
+        library,
+        "pitch_profile",
+        lambda name: {
+            "classification": "ambiguous",
+            "pitchable": False,
+            "root_midi": None,
+            "confidence": 0.0,
+            "relative_recommended": True,
+            "source": "none",
+        },
+    )
+
+    payload = bridge.startup()
+    entry = payload["settings"]["channels"]["0"]
+    assert payload["pitch_reconciled"] == [0]
+    assert entry["pitch_follow"] is True
+    assert entry["root_midi"] == 60
+    assert entry["root_confidence"] == 0.0
+    assert entry["root_source"] == "relative"
+
+
+def test_old_automatic_root_is_retained_when_current_media_is_unavailable(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": "Play_Custom_Chime",
+                    "pitch_follow": True,
+                    "root_midi": 83.0,
+                    "root_confidence": 0.87,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(
+        library,
+        "pitch_profile",
+        lambda name: {
+            "classification": "unavailable",
+            "pitchable": False,
+            "root_midi": None,
+            "confidence": 0.0,
+            "source": "none",
+        },
+    )
+
+    payload = bridge.startup()
+    assert "pitch_reconciled" not in payload
+    assert payload["settings"]["channels"]["0"]["root_midi"] == 83.0
+
+
+def test_old_detected_reference_disabled_by_the_user_is_not_rewritten(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": "Play_Custom_Chime",
+                    "pitch_follow": False,
+                    "root_midi": 83.0,
+                    "root_confidence": 0.87,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(
+        library,
+        "pitch_profile",
+        lambda name: pytest.fail("disabled user setting was reanalyzed"),
+    )
+
+    payload = bridge.startup()
+    assert "pitch_reconciled" not in payload
+    assert payload["settings"]["channels"]["0"]["root_midi"] == 83.0
 
 
 def test_invalid_root_profile_event_is_refused_before_analysis(monkeypatch):
@@ -750,6 +900,52 @@ def test_reopening_a_song_restores_the_choices_it_was_exported_with(tmp_path):
     assert "sidecar_error" not in payload
     assert payload["settings"]["channels"]["0"]["family"] == "ins_marimba"
     assert payload["settings"]["tuning"]["max_speakers"] == 8
+
+
+def test_loading_a_song_repairs_a_stale_automatic_root_from_its_sidecar(tmp_path, monkeypatch):
+    from snapmap_midi.audio import library
+
+    song = _song(tmp_path)
+    doc = settings_module.merge(
+        settings_module.defaults(song),
+        {
+            "channels": {
+                "0": {
+                    "sound": "Play_Custom_Chime",
+                    "pitch_follow": True,
+                    "root_midi": 83.0,
+                    "root_confidence": 0.87,
+                    "root_source": "detected",
+                }
+            }
+        },
+    )
+    settings_module.save(doc, settings_module.sidecar_path(song))
+    monkeypatch.setattr(
+        library,
+        "pitch_profile",
+        lambda name: {
+            "classification": "ambiguous",
+            "pitchable": False,
+            "root_midi": None,
+            "confidence": 0.0,
+            "relative_recommended": True,
+            "source": "none",
+        },
+    )
+
+    payload = Bridge().load_midi(song)
+    assert payload["pitch_reconciled"] == [0]
+    assert payload["settings"]["channels"]["0"] == {
+        "family": None,
+        "muted": False,
+        "soloed": False,
+        "sound": "Play_Custom_Chime",
+        "pitch_follow": True,
+        "root_midi": 60.0,
+        "root_confidence": 0.0,
+        "root_source": "relative",
+    }
 
 
 def test_the_sidecar_is_applied_after_the_load_and_not_before(tmp_path):

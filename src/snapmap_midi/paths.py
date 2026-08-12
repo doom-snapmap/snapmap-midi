@@ -74,7 +74,7 @@ APP_DIR_NAME = "snapmap-midi"
 SOUND_CACHE_NAME = "sounds"
 
 #: Numeric analysis only; never decoded audio.
-PITCH_PROFILE_NAME = "pitch-profiles-v1.json"
+PITCH_PROFILE_NAME = "pitch-profiles-v2.json"
 
 
 def loader_dir() -> Path | None:

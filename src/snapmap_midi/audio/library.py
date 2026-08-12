@@ -70,7 +70,7 @@ _SOURCE_PATH: Optional[Path] = None
 _SOURCE: Optional[wwise.DoomSounds] = None
 _SOURCE_ERROR: Optional[Exception] = None
 _PROFILE_LOCK = threading.RLock()
-_PROFILE_VERSION = 1
+_PROFILE_VERSION = 2
 _PROFILE_MEMORY: dict[str, dict] = {}
 
 

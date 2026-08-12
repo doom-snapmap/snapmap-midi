@@ -82,6 +82,8 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 #scrubber { flex: 1; min-width: 90px; accent-color: var(--accent); cursor: ew-resize; }
 #scrubber:disabled { opacity: .45; }
 .tool-button { min-height: 27px; padding: 3px 11px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+.icon-tool-button { width: 29px; height: 29px; min-height: 29px; display: grid; place-items: center; padding: 0; }
+.icon-tool-button .ui-icon { width: 15px; height: 15px; }
 .tool-button:hover:not(:disabled) { border-color: var(--accent); }
 .tool-button:disabled { opacity: .45; }
 .tool-button.primary { background: var(--accent); border-color: var(--accent); color: var(--accentText); }
@@ -96,7 +98,7 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .pane-head { height: 31px; flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 0 9px; background: var(--panel2); border-bottom: 1px solid var(--border); font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
 .badge { background: var(--sel); color: var(--selText); border-radius: 10px; padding: 1px 7px; font-size: 10px; }
 .track-list { flex: 1; min-height: 0; overflow-y: auto; }
-.track-row { display: grid; grid-template-columns: 27px minmax(0,1fr); grid-template-rows: 20px 27px; gap: 5px 8px; align-items: center; min-height: 59px; padding: 6px 7px 7px 6px; border-bottom: 1px solid var(--border); cursor: default; transition: background-color .12s ease; }
+.track-row { display: grid; grid-template-columns: 27px minmax(0,1fr); grid-template-rows: 20px 27px; gap: 5px 8px; align-items: center; min-height: 59px; padding: 6px 7px 7px 6px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background-color .12s ease; }
 .track-row:hover, .track-row.selected { background: color-mix(in srgb, var(--panel2) 86%, var(--accent) 4%); }
 .track-row.selected { box-shadow: inset 3px 0 0 var(--track-color); }
 .track-row.soloed-track:not(.selected) { box-shadow: inset 3px 0 0 var(--accent); }
@@ -132,6 +134,7 @@ body.pane-resizing, body.pane-resizing * { cursor: col-resize !important; }
 .roll-viewport { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: var(--border2) var(--panel2); background: var(--field); }
 .roll-extent { position: relative; min-width: 100%; min-height: 100%; }
 #pianoRoll { position: sticky; left: 0; top: 0; display: block; cursor: crosshair; touch-action: none; }
+#pianoRoll.note-hover { cursor: pointer; }
 #pianoRoll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .roll-overlay { position: absolute; z-index: 4; left: 72px; display: block; pointer-events: none; }
 .piano-roll-overlay { top: 31px; }
@@ -250,6 +253,9 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .channel-setting-primary { margin: 0; padding: 2px 0; font-weight: 600; }
 .channel-setting-primary input:disabled { opacity: .72; }
 .channel-pitch-group > .expression-readout { margin-top: 8px; }
+.advanced-settings { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.advanced-settings summary { color: var(--muted); cursor: pointer; font-size: 12px; user-select: none; }
+.advanced-settings[open] summary { margin-bottom: 10px; color: var(--text); }
 .channel-facts { margin: 5px 0 0; }
 .channel-facts > div { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .channel-facts dt { color: var(--muted); }

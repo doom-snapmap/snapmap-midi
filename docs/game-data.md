@@ -65,7 +65,7 @@ analysis examines every available leaf of a selected exact event and rejects lea
 agree on a stable musical pitch.
 
 Normal use creates no audio library on disk. It may create
-`%LOCALAPPDATA%\snapmap-midi\pitch-profiles-v1.json`, a small numeric cache containing event
+`%LOCALAPPDATA%\snapmap-midi\pitch-profiles-v2.json`, a small numeric cache containing event
 identity, media signature, root/confidence, and rejection state. It contains no PCM, Wwise
 payload, event catalog, or other game content, and can be deleted safely; it is rebuilt lazily.
 Nothing is downloaded, packaged, committed, or copied into an export.

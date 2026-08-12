@@ -281,10 +281,13 @@ class Bridge:
         """
         try:
             payload = {"ok": True}
+            reconciled = self._reconcile_detected_pitch_profiles()
             payload.update(self._state())
             payload["catalog"] = self._catalog()
             payload["audio"] = self._audio_status()
             payload["window"] = self._window_state()
+            if reconciled:
+                payload["pitch_reconciled"] = reconciled
             if self._error:
                 payload["error"] = self._error
             return payload
@@ -312,9 +315,12 @@ class Bridge:
             # a dead path for the rest of the session.
             self._error = None
             sidecar_error = self._restore(path)
+            reconciled = self._reconcile_detected_pitch_profiles()
             payload = {"ok": True}
             payload.update(self._state())
             payload["catalog"] = self._catalog()
+            if reconciled:
+                payload["pitch_reconciled"] = reconciled
             if sidecar_error is not None:
                 payload["sidecar_error"] = sidecar_error
             return payload
@@ -350,6 +356,126 @@ class Bridge:
             reason = str(exc)
             return reason if str(sidecar) in reason else "%s: %s" % (sidecar, reason)
         return None
+
+    def _pitch_plan(self, profile: Mapping, channel) -> dict:
+        """Turn acoustic evidence into one channel-safe playback reference.
+
+        A detector answers a question about the media. A playback reference
+        answers a different question about the open MIDI channel. Keeping the
+        conversion here prevents the sound picker and saved-profile repair
+        path from quietly applying different pitch rules to the same event.
+        """
+
+        anchor = self._session.relative_pitch_anchor(channel)
+        plan = {
+            "pitch_follow": False,
+            "root_midi": anchor,
+            "root_confidence": 0.0,
+            "root_source": "relative",
+            "reason": "natural playback; relative MIDI following is optional",
+        }
+        if profile.get("pitchable") and profile.get("root_midi") is not None:
+            from snapmap_midi.audio.pitch import octave_fitted_reference
+
+            info = self._session.channel_info(channel)
+            reference = octave_fitted_reference(profile["root_midi"], info.lowest, info.highest)
+            octave_fitted = abs(reference - float(profile["root_midi"])) > 0.01
+            plan.update(
+                {
+                    "pitch_follow": True,
+                    "root_midi": reference,
+                    "root_confidence": float(profile.get("confidence") or 0.0),
+                    "root_source": (
+                        "detected_octave" if octave_fitted else profile.get("source", "detected")
+                    ),
+                    "reason": (
+                        "detected pitch class; octave-fitted to the channel range"
+                        if octave_fitted
+                        else "trusted acoustic root"
+                    ),
+                }
+            )
+        elif profile.get("relative_recommended"):
+            plan.update(
+                {
+                    "pitch_follow": True,
+                    "reason": "tonal but root-ambiguous; channel-centered reference",
+                }
+            )
+        return plan
+
+    def _reconcile_detected_pitch_profiles(self) -> list[int]:
+        """Repair stale automatic roots without changing user-authored tuning.
+
+        Releases before the conservative v2 analyzer could promote a strong
+        bell or chime partial to an authoritative root. That numeric result is
+        stored in the song sidecar, so invalidating the analysis cache alone is
+        not enough: an upgraded application would otherwise keep compiling the
+        old value forever.
+
+        Only an enabled ``root_source=detected`` profile is eligible. Manual
+        and relative references, curated palette notes, per-note offsets, and
+        a channel on which the user disabled MIDI following are left alone. If
+        the installed media cannot be analyzed, the saved value is also
+        retained rather than being destroyed merely because DOOM is
+        temporarily unavailable.
+        """
+
+        doc = self._session.settings()
+        if not doc.get("midi") or self._session.analysis_dict() is None:
+            return []
+
+        candidates = []
+        for raw_channel, entry in doc.get("channels", {}).items():
+            if (
+                entry.get("sound")
+                and entry.get("root_source") == "detected"
+                and entry.get("root_midi") is not None
+                and entry.get("pitch_follow") is True
+            ):
+                candidates.append((int(raw_channel), entry))
+        if not candidates:
+            return []
+
+        from snapmap_midi.audio import library
+
+        patch = {"channels": {}}
+        changed = []
+        for channel, entry in candidates:
+            try:
+                profile = library.pitch_profile(entry["sound"])
+                if profile.get("classification") == "unavailable":
+                    continue
+                plan = self._pitch_plan(profile, channel)
+            except Exception:
+                # Reconciliation is a compatibility aid, never a reason to
+                # prevent a song from opening with its last-known settings.
+                continue
+
+            replacement = {
+                "pitch_follow": plan["pitch_follow"],
+                "root_midi": plan["root_midi"],
+                "root_confidence": plan["root_confidence"],
+                "root_source": plan["root_source"],
+            }
+            if all(entry.get(key) == value for key, value in replacement.items()):
+                continue
+            patch["channels"][str(channel)] = replacement
+            changed.append(channel)
+
+        if changed:
+            self._session.apply(patch)
+        return changed
+
+    def _reconcile_for_compile(self) -> None:
+        """Best-effort stale-profile repair for non-window compile calls."""
+
+        try:
+            self._reconcile_detected_pitch_profiles()
+        except Exception:
+            # Missing game media or a failed optional analysis must never turn
+            # a previously compilable settings file into a failed export.
+            pass
 
     def catalog(self) -> dict:
         """The grouped automatic-conversion palette and drum metadata."""
@@ -450,8 +576,12 @@ class Bridge:
 
             profile = library.pitch_profile(sound)
             result = {"ok": True, "profile": profile}
-            if channel is not None and not profile.get("pitchable"):
-                result["relative_anchor"] = self._session.relative_pitch_anchor(channel)
+            if channel is not None:
+                anchor = self._session.relative_pitch_anchor(channel)
+                plan = self._pitch_plan(profile, channel)
+                result["pitch_plan"] = plan
+                result["relative_anchor"] = anchor
+
             return result
         except Exception as exc:
             return _fail(exc)
@@ -552,6 +682,7 @@ class Bridge:
     def dry_run(self) -> dict:
         """Compile without writing, and answer with the numbers and the warnings."""
         try:
+            self._reconcile_for_compile()
             return {"ok": True, "stats": self._session.stats()}
         except Exception as exc:
             return _fail(exc)
@@ -573,6 +704,7 @@ class Bridge:
         feature is discovered to have been broken for a month.
         """
         try:
+            self._reconcile_for_compile()
             result = self._session.export()
             result["ok"] = True
             result.update(self._save_sidecar())

@@ -169,7 +169,8 @@ def parse_notes(
                 continue
             override = note_overrides.get(note_id, {})
             pitch_offset = int(override.get("pitch_offset", 0))
-            volume_trim_db = int(override.get("volume_db", 0))
+            note_volume_db = int(override["volume_db"]) if "volume_db" in override else None
+            volume_trim_db = int(override.get("volume_trim_db", 0))
             exact_sound = channel_sounds.get(msg.channel)
             chosen_family = channel_families.get(msg.channel)
             applied_root = None
@@ -236,6 +237,7 @@ def parse_notes(
                     applied_root,
                     pitch_offset=pitch_offset,
                     volume_trim_db=volume_trim_db,
+                    note_volume_db=note_volume_db,
                     master_volume_db=master_volume_db,
                 )
                 metadata = {
@@ -269,6 +271,31 @@ def parse_notes(
             notes.append(annotate(note, expression, **metadata))
 
     audible_notes = [note for note in notes if getattr(note, "audible", True)]
+    pitch_limits = {}
+    for note in audible_notes:
+        if not note.pitch_limited:
+            continue
+        detail = pitch_limits.setdefault(
+            note.chan,
+            {
+                "channel": note.chan,
+                "count": 0,
+                "source_low": note.source_pitch,
+                "source_high": note.source_pitch,
+                "requested_low": note.requested_pitch,
+                "requested_high": note.requested_pitch,
+                "applied_low": note.pitch_modifier,
+                "applied_high": note.pitch_modifier,
+            },
+        )
+        detail["count"] += 1
+        detail["source_low"] = min(detail["source_low"], note.source_pitch)
+        detail["source_high"] = max(detail["source_high"], note.source_pitch)
+        detail["requested_low"] = min(detail["requested_low"], note.requested_pitch)
+        detail["requested_high"] = max(detail["requested_high"], note.requested_pitch)
+        detail["applied_low"] = min(detail["applied_low"], note.pitch_modifier)
+        detail["applied_high"] = max(detail["applied_high"], note.pitch_modifier)
+
     stats = {
         "drums_on": drums_on,
         "dropped": dropped,
@@ -276,6 +303,7 @@ def parse_notes(
         "pitch_adjusted": sum(note.pitch_modifier != 0 for note in audible_notes),
         "volume_adjusted": sum(note.volume_db != 0 for note in audible_notes),
         "pitch_limited": sum(note.pitch_limited for note in audible_notes),
+        "pitch_limit_channels": [pitch_limits[channel] for channel in sorted(pitch_limits)],
         "volume_limited": sum(note.volume_limited for note in audible_notes),
     }
     return notes, stats

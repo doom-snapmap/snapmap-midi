@@ -1,5 +1,9 @@
 # Pitch, Dynamics, and Per-Note Editing Architecture
 
+> Historical plan: the implemented `pitch-model-and-channel-mix-correction` plan supersedes this
+> document's rootless opt-in policy and detune wording. Tonal-but-root-ambiguous exact sounds now
+> use channel-centered following automatically, nonmusical sounds preserve natural playback, and
+> preview reproduces Wwise playback-rate changes plus pitch-adjusted one-shot duration.
 Status: implemented, then corrected by the pitch-model and channel-mix plan
 Date: 2026-08-11
 Scope: snapmap-midi
@@ -55,7 +59,7 @@ Therefore:
 - one SnapMap pitch unit is one semitone;
 - pitch is integral and clamped to -24 through 24;
 - volume is integral dB and clamped to -60 through 20;
-- preview detune is pitchModifier multiplied by 100 cents;
+- preview playback rate is 2 raised to pitchModifier divided by 12;
 - preview gain is 10 raised to volumeModifier divided by 20.
 
 No calibration lookup table is necessary. The editor presents generic integer
@@ -102,7 +106,7 @@ Changing a channel sound, muting and unmuting, or editing the note therefore
 does not change its id.
 
 Runtime note annotations carry source id and pitch, velocity, sound-root evidence, automatic
-shift, playback-only pitch offset, global volume, volume trim, final modifiers, and clamp
+shift, playback-only pitch offset, initial/current note volume, global volume, final modifiers, and clamp
 state.
 They do not alter the existing dataclass field order or rawmap key order.
 
@@ -116,8 +120,9 @@ Settings version 2 added:
 
 Settings version 3 adds `tuning.master_volume_db`, an integral global offset from -60 through
 +20 dB with a neutral zero default. Settings version 4 adds channel soloed state and renames the
-sparse note pitch field to pitch_offset, making its playback-only meaning explicit. Versions 1
-through 3 migrate in memory. Only choices persist; derived modifiers are recalculated.
+sparse note pitch field to pitch_offset, making its playback-only meaning explicit. Settings
+version 5 stores absolute note volume and migrates prior relative trims to a compatibility field.
+Only choices persist; derived modifiers are recalculated.
 
 ### Root-pitch analysis
 
@@ -148,9 +153,9 @@ Use a squared amplitude response:
     amplitude = (velocity / 127) ** 2
     velocity_db = 20 * log10(amplitude)
 
-Round to the nearest integer and clamp to -60 through 0. Add the global volume offset and then
-the per-note volume trim before clamping the final value to -60 through 20. Velocity 127 remains
-0 dB at neutral global and note settings.
+Round to the nearest integer and clamp to -60 through 0. This becomes an unedited note's initial
+volume. A user-set absolute note volume replaces it, then global volume is added before clamping
+the final value to -60 through 20. Velocity 127 remains 0 dB at neutral settings.
 
 ### Piano-roll truth
 
@@ -177,11 +182,11 @@ Clicking a note opens a right-side inspector using the same design tokens,
 dimensions, header, separators, and close behavior as the conversion and
 notification inspectors. Clicking empty roll space continues to seek.
 
-It shows channel, imported note, selected event, MIDI velocity, global volume, resolved pitch basis,
+It shows channel, imported note, selected event, current note volume, global volume, resolved pitch basis,
 automatic calculation, final pitch/volume values, and any clamp. It provides:
 
 - Pitch offset: integer -24 through 24 semitones, affecting playback only;
-- volume trim: integer -60 through 20 dB;
+- note volume: absolute integer -60 through 20 dB, initialized from MIDI velocity;
 - reset note.
 
 Edits go through the normal settings bridge and resume playback if necessary.
@@ -192,7 +197,7 @@ animation.
 ## Preview/export parity
 
 Every preview event carries the compiler's exact expression fields, including the global volume
-used to resolve final dB. Web Audio sets source detune from pitchModifier, multiplies base note
+used to resolve final dB. Web Audio sets source playback rate from pitchModifier, multiplies base note
 gain by the final dB gain, and retains the existing master compressor and release/cut rules.
 JavaScript does not reimplement root selection, velocity mapping, global-volume addition, or
 clamping.
@@ -217,7 +222,7 @@ clamping.
 - global volume defaults to zero, offsets every note, and is shared by preview and export;
 - pitch math is integral, deterministic, and clamped;
 - ids and velocity survive overlapping or retriggered notes;
-- versions 1 through 3 migrate and invalid version 4 overrides fail by name;
+- versions 1 through 4 migrate and invalid future-version overrides fail by name;
 - tone fixtures resolve and silence/noise/unstable/mixed leaves reject;
 - rejected exact sounds preserve natural playback while relative MIDI following remains an
   explicit choice;
@@ -234,15 +239,15 @@ clamping.
 
 Implemented on 2026-08-11. The finished architecture includes:
 
-- a single tested expression model for MIDI velocity, global volume, playback-only Pitch offset,
+- a single tested expression model for MIDI-derived and absolute note volume, global volume, playback-only Pitch offset,
   root-relative pitch, integer rounding, and SnapMap clamps;
-- stable source-note ids plus version 4 settings migration and sparse per-note overrides;
+- stable source-note ids plus version 5 settings migration and sparse per-note overrides;
 - authoritative curated roots, conservative lazy all-leaf analysis, natural playback for
   rootless installed-game events, and optional channel-centered relative references backed by a
   numeric-only acoustic-profile cache;
 - the three scheduling paths described above, with common voice preparation shared
   by map export and browser preview;
-- Web Audio detune and gain driven by the compiler's resolved values;
+- Web Audio playback rate and gain driven by the compiler's resolved values;
 - exact-sound root/reference controls, natural-playback opt-out, clamp diagnostics, and the
   per-note expression inspector in the workstation UI;
 - repository-wide documentation of the runtime model, settings schema, limits,

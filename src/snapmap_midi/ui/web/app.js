@@ -8,6 +8,7 @@
 
   var THEME_KEY = 'snapmap_midi_theme';
   var TRACKS_WIDTH_KEY = 'snapmap_midi_tracks_width';
+  var OCTAVE_LABEL_KEY = 'snapmap_midi_middle_c_octave';
   var TRACKS_DEFAULT_WIDTH = 314;
   var TRACKS_MIN_WIDTH = 220;
   var ROLL_MIN_WIDTH = 420;
@@ -15,6 +16,7 @@
   var SCHEDULE_EVERY_MS = 100;
   var MAX_CANVAS_PIXEL_RATIO = 2;
   var OVERVIEW_CACHE_PIXEL_BUDGET = 16000000;
+  var MIDDLE_C_OCTAVE = 4;
   var CHANNEL_COLORS = [
     '#4a9eff', '#e0a52b', '#43b581', '#d75c76',
     '#a57be8', '#43b9c7', '#ed7d31', '#7aa84f',
@@ -173,7 +175,8 @@
   }
   function noteName(note) {
     note = Number(note);
-    return NOTE_NAMES[((note % 12) + 12) % 12] + (Math.floor(note / 12) - 1);
+    var octave = Math.floor(note / 12) + MIDDLE_C_OCTAVE - 5;
+    return NOTE_NAMES[((note % 12) + 12) % 12] + octave;
   }
   function humanCategory(name) {
     return String(name || '')
@@ -263,6 +266,35 @@
     setTheme(dark ? 'dark' : 'light', false);
     el('menuLight').addEventListener('click', function () { setTheme('light', true); closeMenus(); });
     el('menuDark').addEventListener('click', function () { setTheme('dark', true); closeMenus(); });
+  }
+
+  /* ---------------------------------------------- pitch-name display convention */
+
+  function storedMiddleCOctave() {
+    try { return Number(localStorage.getItem(OCTAVE_LABEL_KEY)); } catch (_error) { return 4; }
+  }
+
+  function setMiddleCOctave(octave, persist, refresh) {
+    MIDDLE_C_OCTAVE = Number(octave) === 3 ? 3 : 4;
+    el('menuMiddleC4').setAttribute('aria-checked', MIDDLE_C_OCTAVE === 4 ? 'true' : 'false');
+    el('menuMiddleC3').setAttribute('aria-checked', MIDDLE_C_OCTAVE === 3 ? 'true' : 'false');
+    if (persist) {
+      try { localStorage.setItem(OCTAVE_LABEL_KEY, String(MIDDLE_C_OCTAVE)); } catch (_error) { /* local only */ }
+    }
+    invalidateRollAll();
+    if (refresh) { render(); }
+  }
+
+  function initPitchNameConvention() {
+    setMiddleCOctave(storedMiddleCOctave(), false, false);
+    el('menuMiddleC4').addEventListener('click', function () {
+      setMiddleCOctave(4, true, true);
+      closeMenus();
+    });
+    el('menuMiddleC3').addEventListener('click', function () {
+      setMiddleCOctave(3, true, true);
+      closeMenus();
+    });
   }
 
   /* ---------------------------------------------------------- desktop menus */
@@ -1154,26 +1186,22 @@
     setBusy(true, "Resolving sound pitch...");
     api().sound_profile(candidate.value, channel).then(function (response) {
       setBusy(false);
-      if (response && response.ok && response.profile) {
-        var profile = response.profile;
-        if (profile.pitchable && isFinite(Number(profile.root_midi))) {
-          body.pitch_follow = true;
-          body.root_midi = Number(profile.root_midi);
-          body.root_confidence = Number(profile.confidence || 0);
-          body.root_source = profile.source || "detected";
-        } else if (isFinite(Number(response.relative_anchor))) {
-          body.root_midi = Number(response.relative_anchor);
-          body.root_confidence = 0;
-          body.root_source = "relative";
+      if (response && response.ok && response.profile && response.pitch_plan) {
+        var plan = response.pitch_plan;
+        body.pitch_follow = !!plan.pitch_follow;
+        body.root_midi = isFinite(Number(plan.root_midi)) ? Number(plan.root_midi) : null;
+        body.root_confidence = Number(plan.root_confidence || 0);
+        body.root_source = plan.root_source || "relative";
+        if (body.pitch_follow && body.root_source === "relative") {
           toast(
-            "No stable musical root was found. This sound will play at its natural pitch. " +
-            "You can enable Follow MIDI note later and use " +
-            noteName(body.root_midi) + " as a relative reference."
+            "This sound is tonal but has no trustworthy single root. " +
+            "MIDI following is centered on " + noteName(body.root_midi) +
+            " so the channel keeps its intervals without hitting SnapMap's pitch limit."
           );
-        } else {
+        } else if (!body.pitch_follow && body.root_midi !== null) {
           toast(
-            "No stable root or channel reference was available; this sound will play at natural pitch",
-            "warn"
+            "This sound is not reliably musical, so natural playback is preserved. " +
+            "Follow MIDI note remains available in Channel settings."
           );
         }
       } else {
@@ -2256,11 +2284,16 @@
 
   function updateNotePointer(event) {
     NOTE_POINTER = { clientX: event.clientX, clientY: event.clientY };
+    el("pianoRoll").classList.toggle(
+      "note-hover",
+      !!hoveredRenderEvent(el("pianoRoll"))
+    );
     queueDraw();
   }
 
   function clearNotePointer() {
     NOTE_POINTER = null;
+    el("pianoRoll").classList.remove("note-hover");
     queueDraw();
   }
 
@@ -2516,12 +2549,13 @@
     var expressionGain = Math.pow(10, Number(event.volume_db || 0) / 20);
     var baseGain = 0.34 * expressionGain;
     gain.gain.value = baseGain;
-    if (source.detune) {
-      source.detune.value = Number(event.pitch_modifier || 0) * 100;
-    }
+    var playbackRate = Number(event.playback_rate || 1);
+    source.playbackRate.value = playbackRate;
     source.connect(gain);
     gain.connect(AUDIO.master);
-    var offset = Math.max(0, (audiblePosition - event.start) / 1000);
+    var wallOffset = Math.max(0, (audiblePosition - event.start) / 1000);
+    var offset = wallOffset * playbackRate;
+    var naturalDuration = buffer.duration / playbackRate;
     var stopAfter;
 
     if (event.sustained) {
@@ -2530,8 +2564,8 @@
         : 0;
       var sounding = Math.max(0, (event.end - event.start) / 1000);
       var total = sounding + release;
-      if (offset >= total) { return; }
-      if (buffer.duration > 0.04 && sounding > buffer.duration) {
+      if (wallOffset >= total) { return; }
+      if (buffer.duration > 0.04 && sounding > naturalDuration) {
         source.loop = true;
         source.loopEnd = buffer.duration;
         offset = offset % buffer.duration;
@@ -2579,7 +2613,7 @@
         ? event.end + (STATE.preview.hard_stop || event.cut ? 0 : Number(STATE.preview.release_s || 0) * 1000)
         : (event.cut
           ? event.end
-          : event.start + (buffer ? buffer.duration * 1000 : 0));
+          : (event.voice_end || (event.start + (buffer ? buffer.duration * 1000 / Number(event.playback_rate || 1) : 0))));
       if (end > position) { scheduleEvent(event, position, AUDIO.context.currentTime + 0.025); }
     }
   }
@@ -2864,9 +2898,6 @@
     var follow = el("channelPitchFollow");
     var referenceFields = el("channelPitchReferenceFields");
     var root = entry.root_midi;
-    var rootSource = String(entry.root_source || "manual");
-    var relativeRoot = rootSource === "relative";
-
     el("channelInspectorSubtitle").textContent =
       "MIDI channel " + (channel.channel + 1) + " - " + channel.program_name;
     el("channelSound").textContent = assignmentLabel(channel);
@@ -2887,34 +2918,13 @@
       return;
     }
 
-    el("channelRootNumberLabel").textContent =
-      relativeRoot ? "Reference MIDI note" : "Root MIDI note";
     el("channelRootNumber").value =
-      root === null || root === undefined ? "" : String(root);
+      root === null || root === undefined ? "" : String(Math.round(Number(root) * 100) / 100);
     el("channelRootName").textContent =
       root === null || root === undefined ? "" : noteName(Math.round(Number(root)));
     el("channelPitchModeHelp").textContent = entry.pitch_follow
-      ? "Every note reuses this exact event and follows the MIDI melody from the " +
-        (relativeRoot ? "reference" : "sound root") + " below."
-      : "Every note reuses this exact event at natural pitch. Enable this only when melodic retuning is wanted.";
-
-    if (root === null || root === undefined) {
-      el("channelRootEvidence").textContent =
-        "No root or relative reference is assigned. Enter one before enabling pitch following.";
-    } else if (relativeRoot) {
-      el("channelRootEvidence").textContent = entry.pitch_follow
-        ? "Unmodified playback is treated as " + noteName(Math.round(Number(root))) +
-          " only for calculating relative offsets; no acoustic root is claimed."
-        : "No stable musical root was found. Natural playback is preserved; " +
-          noteName(Math.round(Number(root))) + " is available as an optional relative reference.";
-    } else {
-      var confidence = entry.root_confidence;
-      el("channelRootEvidence").textContent =
-        "Source: " + rootSource +
-        (confidence === null || confidence === undefined
-          ? ""
-          : "; confidence " + Math.round(Number(confidence) * 100) + "%.");
-    }
+      ? "This sound follows the imported MIDI melody automatically."
+      : "This sound plays at its natural pitch on every note.";
   }
 
   function openChannelInspector(channelNumber) {
@@ -2936,6 +2946,13 @@
     if (hasSong()) { patchTracks(); }
   }
 
+  function closeChannelInspectorAndClearSelection() {
+    SELECTED_CHANNEL = null;
+    closeChannelInspector();
+    invalidateRollSurface();
+    queueDraw();
+  }
+
   function updateSelectedChannelPitch(fields) {
     if (SELECTED_CHANNEL === null) { return; }
     var patch = { channels: {} };
@@ -2944,11 +2961,14 @@
   }
 
   function initChannelInspector() {
-    el("closeChannelInspector").addEventListener("click", closeChannelInspector);
+    el("closeChannelInspector").addEventListener(
+      "click",
+      closeChannelInspectorAndClearSelection
+    );
     el("channelRootNumber").addEventListener("change", function () {
       var value = Number(this.value);
       if (!isFinite(value) || value < 0 || value > 127) {
-        toast("Root or reference MIDI note must be between 0 and 127", "warn");
+        toast("Playback reference must be a MIDI note between 0 and 127", "warn");
         syncChannelInspector();
         return;
       }
@@ -2970,7 +2990,7 @@
       var root = Number(el("channelRootNumber").value);
       if (this.checked && (!isFinite(root) || el("channelRootNumber").value === "")) {
         this.checked = false;
-        toast("Enter a root or reference MIDI note before enabling Follow MIDI note", "warn");
+        toast("Enter a playback reference before enabling Follow MIDI note", "warn");
         return;
       }
       updateSelectedChannelPitch({ pitch_follow: this.checked });
@@ -3018,14 +3038,6 @@
     });
   }
 
-  function rootDisplay(root) {
-    if (root === null || root === undefined || !isFinite(Number(root))) {
-      return "Natural playback";
-    }
-    root = Number(root);
-    return noteName(Math.round(root)) + " (" + root.toFixed(2) + ")";
-  }
-
   function syncNoteInspector() {
     if (!NOTE_INSPECTOR_OPEN) { return; }
     var note = selectedNoteEvent();
@@ -3039,35 +3051,12 @@
       (channel ? " - " + channel.program_name : "");
     el("noteSourcePitch").textContent =
       noteName(note.source_pitch) + " (" + note.source_pitch + ")";
-    el("noteVelocity").textContent = String(note.velocity);
     el("noteSound").textContent = String(note.sound || "");
-    var relativePitch = String(note.root_source || "") === "relative";
-    var followsPitch = note.automatic_pitch !== null && note.automatic_pitch !== undefined;
-    el("notePitchBasisLabel").textContent = followsPitch
-      ? (relativePitch ? "Pitch reference" : "Sound root") : "Playback";
-    el("noteRoot").textContent = followsPitch
-      ? rootDisplay(note.applied_root_pitch)
-      : "Natural pitch";
     syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_offset || 0));
-    syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.volume_trim_db || 0));
-
-    if (note.automatic_pitch === null || note.automatic_pitch === undefined) {
-      el("notePitchReadout").textContent =
-        "Natural playback; offset " + signed(note.pitch_offset) +
-        "; SnapMap " + signed(note.pitch_modifier) + " semitones.";
-    } else {
-      el("notePitchReadout").textContent =
-        "MIDI " + noteName(note.source_pitch) + " - " +
-        (relativePitch ? "reference " : "root ") +
-        noteName(Math.round(Number(note.applied_root_pitch))) + " = " +
-        signed(note.automatic_pitch) + "; offset " + signed(note.pitch_offset) +
-        "; SnapMap " + signed(note.pitch_modifier) + " semitones.";
-    }
+    syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.note_volume_db || 0));
     el("noteVolumeReadout").textContent =
-      "Velocity " + note.velocity + " maps to " + signed(note.velocity_db) +
-      " dB; global " + signed(note.master_volume_db) +
-      " dB; trim " + signed(note.volume_trim_db) +
-      " dB; final " + signed(note.volume_db) + " dB.";
+      "Global " + signed(note.master_volume_db) +
+      " dB; output " + signed(note.volume_db) + " dB.";
 
     var limits = [];
     if (note.pitch_limited) {
@@ -3110,8 +3099,15 @@
     var value = clamp(Math.round(Number(rawValue) || 0), limits[0], limits[1]);
     var next = Object.assign({}, STATE.settings.notes || {});
     var entry = Object.assign({}, next[noteId] || {});
-    if (value === 0) { delete entry[key]; }
-    else { entry[key] = value; }
+    if (key === "volume_db") {
+      // Zero is a meaningful absolute note level, not an empty relative trim.
+      entry[key] = value;
+      delete entry.volume_trim_db;
+    } else if (value === 0) {
+      delete entry[key];
+    } else {
+      entry[key] = value;
+    }
     if (Object.keys(entry).length) { next[noteId] = entry; }
     else { delete next[noteId]; }
     applyPatch({ notes: next }, true);
@@ -3218,6 +3214,9 @@
     render();
     prepareSongAudio();
     if (response.sidecar_error) { toast(response.sidecar_error, 'warn'); }
+    if (response.pitch_reconciled && response.pitch_reconciled.length) {
+      toast('Updated saved automatic pitch settings for this song', 'ok');
+    }
     stamp('Opened ' + baseName(STATE.settings && STATE.settings.midi));
   }
 
@@ -3322,6 +3321,9 @@
       render();
       prepareSongAudio();
       if (response.error) { toast(response.error, 'warn'); }
+      if (response.pitch_reconciled && response.pitch_reconciled.length) {
+        toast('Updated saved automatic pitch settings for this song', 'ok');
+      }
       setTimeout(refreshWindowState, 0);
     }, function (error) { setBusy(false); fail(error); render(); });
   }
@@ -3564,6 +3566,7 @@
   function init() {
     initMenus();
     initTheme();
+    initPitchNameConvention();
     initPaneSplitter();
     initInspector();
     initChannelInspector();

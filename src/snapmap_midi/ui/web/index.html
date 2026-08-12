@@ -25,6 +25,7 @@
   <symbol id="icon-volume-2" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></symbol>
   <symbol id="icon-volume-x" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="m22 9-6 6"></path><path d="m16 9 6 6"></path></symbol>
   <symbol id="icon-headphones" viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v5H5a2 2 0 0 1-2-2v-9a9 9 0 0 1 18 0v9a2 2 0 0 1-2 2h-3v-5a2 2 0 0 1 2-2h3"></path></symbol>
+  <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></symbol>
   <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"></path></symbol>
   <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></symbol>
   <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"></path></symbol>
@@ -75,6 +76,9 @@
         <div class="menu-popup" id="menu-view" role="menu" hidden>
           <button type="button" id="menuLight" role="menuitemradio" aria-checked="true"><span>Light Theme</span></button>
           <button type="button" id="menuDark" role="menuitemradio" aria-checked="false"><span>Dark Theme</span></button>
+          <div class="menu-separator"></div>
+          <button type="button" id="menuMiddleC4" role="menuitemradio" aria-checked="true"><span>Octave labels: middle C = C4</span></button>
+          <button type="button" id="menuMiddleC3" role="menuitemradio" aria-checked="false"><span>Octave labels: middle C = C3</span></button>
         </div>
       </div>
     </div>
@@ -92,7 +96,7 @@
     <span class="transport-time mono" id="currentTime">0:00.0</span>
     <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Song position" disabled>
     <span class="transport-time mono" id="totalTime">0:00.0</span>
-    <button type="button" class="tool-button" id="conversionBtn" title="Conversion settings" aria-controls="conversionInspector" aria-expanded="false">Conversion</button>
+    <button type="button" class="tool-button icon-tool-button" id="conversionBtn" title="Conversion settings" aria-label="Conversion settings" aria-controls="conversionInspector" aria-expanded="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-settings"></use></svg></button>
     <button type="button" class="tool-button primary" id="exportBtn" disabled>Export</button>
   </div>
 
@@ -232,14 +236,15 @@
         <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
         <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
         <div class="expression-readout" id="channelPitchModeHelp"></div>
-        <div id="channelPitchReferenceFields" hidden>
+        <details class="advanced-settings" id="channelPitchReferenceFields" hidden>
+          <summary>Advanced pitch reference</summary>
           <div class="threshold-line">
-            <label for="channelRootNumber" id="channelRootNumberLabel">Reference MIDI note</label>
+            <label for="channelRootNumber" id="channelRootNumberLabel">Natural playback maps to</label>
             <input type="number" id="channelRootNumber" min="0" max="127" step="0.01">
             <span class="mono" id="channelRootName"></span>
           </div>
-          <div class="expression-readout" id="channelRootEvidence"></div>
-        </div>
+          <div class="expression-readout">Change this only when the automatic result sounds musically wrong.</div>
+        </details>
       </div>
 
       <dl class="channel-facts">
@@ -261,26 +266,23 @@
     <div class="inspector-body">
       <dl class="note-facts">
         <div><dt>MIDI note</dt><dd class="mono" id="noteSourcePitch">-</dd></div>
-        <div><dt>Velocity</dt><dd class="mono" id="noteVelocity">-</dd></div>
         <div><dt>Sound</dt><dd class="mono note-sound" id="noteSound">-</dd></div>
-        <div><dt id="notePitchBasisLabel">Sound root</dt><dd class="mono" id="noteRoot">-</dd></div>
       </dl>
 
       <div class="control-group">
         <div class="control-title">
-          <label for="notePitchRange">Pitch offset</label>
+          <label for="notePitchRange">Pitch adjustment</label>
           <span class="hint">semitones</span>
         </div>
         <div class="range-number">
           <input type="range" id="notePitchRange" min="-24" max="24" step="1">
           <input type="number" id="notePitchNumber" min="-24" max="24" step="1">
         </div>
-        <div class="expression-readout" id="notePitchReadout"></div>
       </div>
 
       <div class="control-group">
         <div class="control-title">
-          <label for="noteVolumeRange">Volume trim</label>
+          <label for="noteVolumeRange">Note volume</label>
           <span class="hint">dB</span>
         </div>
         <div class="range-number">

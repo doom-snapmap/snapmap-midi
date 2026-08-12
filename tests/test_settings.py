@@ -229,14 +229,25 @@ def test_a_version_two_document_migrates_with_neutral_master_volume():
     assert migrated["tuning"]["master_volume_db"] == 0
 
 
-def test_a_version_three_document_renames_note_transpose_without_changing_value():
+def test_a_version_three_document_migrates_note_pitch_and_relative_volume():
     old = settings.defaults()
     old["version"] = 3
     old["notes"] = {"0:60:1": {"transpose": -12, "volume_db": 3}}
 
     migrated = settings.validate(old)
     assert migrated["version"] == settings.SETTINGS_VERSION
-    assert migrated["notes"] == {"0:60:1": {"pitch_offset": -12, "volume_db": 3}}
+    assert migrated["notes"] == {"0:60:1": {"pitch_offset": -12, "volume_trim_db": 3}}
+
+
+def test_a_version_four_relative_volume_migrates_without_changing_meaning():
+    old = settings.defaults()
+    old["version"] = 4
+    old["notes"] = {"0:60:1": {"volume_db": -7}}
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["notes"] == {"0:60:1": {"volume_trim_db": -7}}
 
 
 def test_version_three_preserves_an_existing_relative_follow_choice():
@@ -362,7 +373,7 @@ def test_pitch_follow_requires_a_root():
         _patch({"channels": {"0": {"sound": sound, "pitch_follow": True}}})
 
 
-def test_per_note_expression_is_sparse_and_forwarded():
+def test_per_note_expression_preserves_an_explicit_zero_volume_and_is_forwarded():
     doc = _patch(
         {
             "notes": {
@@ -371,7 +382,10 @@ def test_per_note_expression_is_sparse_and_forwarded():
             }
         }
     )
-    assert doc["notes"] == {"0:60:1": {"pitch_offset": -12, "volume_db": 3}}
+    assert doc["notes"] == {
+        "0:60:1": {"pitch_offset": -12, "volume_db": 3},
+        "0:60:2": {"volume_db": 0},
+    }
     kwargs = settings.to_compile_kwargs(doc)
     assert kwargs["note_overrides"] == doc["notes"]
     assert kwargs["note_overrides"] is not doc["notes"]
@@ -391,6 +405,13 @@ def test_note_expression_stays_inside_snapmap_limits():
         _patch({"notes": {"0:60:1": {"pitch_offset": 25}}})
     with pytest.raises(settings.SettingsError, match="volume_db"):
         _patch({"notes": {"0:60:1": {"volume_db": -61}}})
+    with pytest.raises(settings.SettingsError, match="volume_trim_db"):
+        _patch({"notes": {"0:60:1": {"volume_trim_db": 21}}})
+
+
+def test_absolute_and_legacy_note_volume_cannot_be_combined():
+    with pytest.raises(settings.SettingsError, match="cannot both be set"):
+        _patch({"notes": {"0:60:1": {"volume_db": 0, "volume_trim_db": -3}}})
 
 
 def test_a_full_game_play_event_is_valid_without_reading_the_install():

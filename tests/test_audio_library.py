@@ -263,7 +263,7 @@ def test_detected_profile_cache_stores_numbers_and_never_audio(fake_install, mon
     assert not library.cache_dir().exists()
 
     stored = json.loads(paths.pitch_profile_cache().read_text(encoding="utf-8"))
-    assert stored["version"] == 1
+    assert stored["version"] == 2
     assert stored["profiles"]["play_one"]["profile"]["root_midi"] == 57.25
     assert "per_channel" not in paths.pitch_profile_cache().read_text(encoding="utf-8")
 

@@ -28,11 +28,13 @@ class NoteExpression:
     root_pitch: float | None
     pitch_offset: int
     volume_trim_db: int
+    note_volume_db: int
     master_volume_db: int
     automatic_pitch: int | None
     requested_pitch: int
     pitch_modifier: int
     pitch_limited: bool
+    playback_rate: float
     velocity_db: int
     requested_volume_db: int
     volume_db: int
@@ -63,12 +65,31 @@ def db_gain(db: float) -> float:
     return 10.0 ** (float(db) / 20.0)
 
 
+def pitch_playback_rate(semitones: float) -> float:
+    """SnapMap/Wwise voice pitch as a sample-playback speed multiplier.
+
+    Voice pitch is ordinary resampling, not independent time stretching: an
+    octave up plays twice as fast and an octave down takes twice as long. The
+    finalized, clamped SnapMap modifier is the input so preview scheduling and
+    exported voice allocation cannot disagree at the engine limits.
+    """
+
+    return 2.0 ** (float(semitones) / 12.0)
+
+
+def pitched_duration_ms(duration_ms: int, semitones: float) -> int:
+    """Natural one-shot duration after SnapMap applies ``semitones``."""
+
+    return max(1, nearest_int(float(duration_ms) / pitch_playback_rate(semitones)))
+
+
 def expression_for(
     source_pitch: int,
     velocity: int,
     root_pitch: float | None,
     pitch_offset: int = 0,
     volume_trim_db: int = 0,
+    note_volume_db: int | None = None,
     master_volume_db: int = 0,
 ) -> NoteExpression:
     """Resolve one note to the exact integral values SnapMap will receive.
@@ -77,8 +98,13 @@ def expression_for(
     relative reference, the automatic modifier makes the sound follow that
     MIDI note and ``pitch_offset`` is added afterward. Without either basis,
     the sound keeps its natural playback pitch and ``pitch_offset`` is the only
-    modifier. This keeps composition, sound choice, and playback tuning as
-    separate decisions.
+    modifier.
+
+    MIDI velocity supplies the initial note volume. An absolute
+    ``note_volume_db`` replaces that initial value, while master volume is
+    always added afterward. ``volume_trim_db`` exists only to replay migrated
+    settings from builds that stored note edits as relative offsets. This keeps
+    composition, sound choice, and playback tuning as separate decisions.
     """
 
     source_pitch = int(clamp(int(source_pitch), MIDI_MIN, MIDI_MAX))
@@ -94,10 +120,18 @@ def expression_for(
         automatic_pitch = nearest_int(source_pitch - float(root_pitch))
         requested_pitch = automatic_pitch + pitch_offset
     pitch_modifier = int(clamp(requested_pitch, PITCH_MIN, PITCH_MAX))
+    playback_rate = pitch_playback_rate(pitch_modifier)
 
     velocity = int(clamp(int(velocity), 1, MIDI_MAX))
     velocity_db = midi_velocity_db(velocity)
-    requested_volume = velocity_db + master_volume_db + volume_trim_db
+    if note_volume_db is None:
+        # Version-4 sidecars stored a relative trim. Keep its uncapped sum so
+        # global volume produces exactly the same result after migration.
+        note_volume = velocity_db + volume_trim_db
+    else:
+        note_volume = int(clamp(int(note_volume_db), VOLUME_MIN, VOLUME_MAX))
+        volume_trim_db = note_volume - velocity_db
+    requested_volume = note_volume + master_volume_db
     volume_db = int(clamp(requested_volume, VOLUME_MIN, VOLUME_MAX))
 
     return NoteExpression(
@@ -107,11 +141,13 @@ def expression_for(
         root_pitch=None if root_pitch is None else float(root_pitch),
         pitch_offset=pitch_offset,
         volume_trim_db=volume_trim_db,
+        note_volume_db=note_volume,
         master_volume_db=master_volume_db,
         automatic_pitch=automatic_pitch,
         requested_pitch=requested_pitch,
         pitch_modifier=pitch_modifier,
         pitch_limited=pitch_modifier != requested_pitch,
+        playback_rate=playback_rate,
         velocity_db=velocity_db,
         requested_volume_db=requested_volume,
         volume_db=volume_db,

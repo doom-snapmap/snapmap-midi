@@ -233,7 +233,8 @@ def test_retriggered_notes_keep_stable_source_ids_and_independent_expression(tmp
     assert notes[0].shader == notes[1].shader
     assert notes[1].pitch_offset == 2
     assert notes[1].pitch_modifier == 2
-    assert notes[1].volume_trim_db == 4
+    assert notes[1].note_volume_db == 4
+    assert notes[1].volume_db == 4
 
 
 # The gates below this one need real game data and therefore SKIP after the
@@ -335,7 +336,7 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
     assert [event["eventTime"] for event in matched] == [0, 0, 0]
     assert matched[0]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
     assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": 1.0}
-    assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": -3.0}
+    assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": 9.0}
     assert stats["expressive_one_shots"] >= 1
     assert stats["pitch_adjusted"] == 1
 

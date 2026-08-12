@@ -34,6 +34,36 @@ def frequency_to_midi(frequency: float) -> float:
     return 69.0 + 12.0 * math.log2(float(frequency) / 440.0)
 
 
+def octave_fitted_reference(root_midi: float, lowest: int, highest: int) -> float:
+    """Choose the nearest octave-equivalent root that best fits a MIDI range.
+
+    Moving a root by twelve semitones preserves every pitch class while moving
+    the requested SnapMap modifiers into its finite -24..+24 window.  A range
+    wider than four octaves cannot fit completely; in that case this minimizes
+    the worst unavoidable overflow instead of silently flattening one side.
+    """
+
+    root = float(root_midi)
+    low, high = sorted((int(lowest), int(highest)))
+    candidates = [
+        root + 12.0 * octave for octave in range(-11, 12) if 0.0 <= root + 12.0 * octave <= 127.0
+    ]
+    if not candidates:
+        return min(127.0, max(0.0, root))
+
+    def rounded(value: float) -> int:
+        return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+    def score(candidate: float):
+        low_shift = rounded(low - candidate)
+        high_shift = rounded(high - candidate)
+        below = max(0, -24 - low_shift)
+        above = max(0, high_shift - 24)
+        return max(below, above), below + above, abs(candidate - root)
+
+    return min(candidates, key=score)
+
+
 def _downmix(per_channel) -> list[float]:
     channels = [list(channel) for channel in per_channel if channel]
     if not channels:
@@ -121,6 +151,55 @@ def _yin(frame: list[float], rate: float) -> tuple[float, float] | None:
     return rate / refined, confidence
 
 
+def _fft(values: list[float]) -> list[complex]:
+    """A small radix-2 FFT used only as a YIN octave-error guard."""
+
+    size = 1
+    while size < len(values):
+        size *= 2
+    transformed = [complex(value) for value in values] + [0j] * (size - len(values))
+    reverse = 0
+    for index in range(1, size):
+        bit = size >> 1
+        while reverse & bit:
+            reverse ^= bit
+            bit >>= 1
+        reverse ^= bit
+        if index < reverse:
+            transformed[index], transformed[reverse] = (
+                transformed[reverse],
+                transformed[index],
+            )
+
+    width = 2
+    while width <= size:
+        root = complex(math.cos(-2.0 * math.pi / width), math.sin(-2.0 * math.pi / width))
+        half = width // 2
+        for start in range(0, size, width):
+            factor = 1.0 + 0j
+            for offset in range(half):
+                left = transformed[start + offset]
+                right = transformed[start + offset + half] * factor
+                transformed[start + offset] = left + right
+                transformed[start + offset + half] = left - right
+                factor *= root
+        width *= 2
+    return transformed
+
+
+def _dominant_frequency(frame: list[float], rate: float) -> float | None:
+    """Return the strongest audible spectral component in one analysis frame."""
+
+    transformed = _fft(frame)
+    size = len(transformed)
+    low = max(1, math.ceil(_MIN_FREQUENCY * size / rate))
+    high = min(size // 2, math.floor(_MAX_FREQUENCY * size / rate))
+    if high < low:
+        return None
+    peak = max(range(low, high + 1), key=lambda index: abs(transformed[index]) ** 2)
+    return peak * rate / size
+
+
 def analyze_pcm(rate: int, per_channel) -> tuple[PitchEstimate | None, str]:
     """Return a stable root estimate and a reason code for one decoded medium."""
 
@@ -151,7 +230,16 @@ def analyze_pcm(rate: int, per_channel) -> tuple[PitchEstimate | None, str]:
         if found is None:
             continue
         frequency, confidence = found
-        estimates.append((frequency_to_midi(frequency), confidence))
+        dominant = _dominant_frequency(values, analysis_rate)
+        if dominant is None:
+            continue
+        # YIN's first threshold crossing can lock onto a high partial in bells
+        # and chimes.  A candidate above the frame's strongest component is an
+        # octave/inharmonic ambiguity, not trustworthy acoustic-root evidence.
+        if dominant < frequency * 0.75:
+            estimates.append((frequency_to_midi(frequency), confidence, False))
+            continue
+        estimates.append((frequency_to_midi(frequency), confidence, True))
 
     if not estimates:
         return None, "aperiodic"
@@ -160,12 +248,15 @@ def analyze_pcm(rate: int, per_channel) -> tuple[PitchEstimate | None, str]:
     # as a separate cluster instead of being averaged into a fictional root.
     best = []
     best_weight = -1.0
-    for center, _confidence in estimates:
-        cluster = [item for item in estimates if abs(item[0] - center) <= 0.45]
+    for center, _confidence, _spectrally_valid in estimates:
+        cluster = [item for item in estimates if item[2] and abs(item[0] - center) <= 0.45]
         weight = sum(item[1] for item in cluster)
         if weight > best_weight:
             best, best_weight = cluster, weight
 
+    spectrally_valid = sum(item[2] for item in estimates)
+    if not spectrally_valid:
+        return None, "harmonic_ambiguity"
     needed = 1 if len(estimates) == 1 else max(2, math.ceil(len(estimates) * 0.6))
     if len(best) < needed:
         return None, "unstable"
@@ -212,7 +303,10 @@ def analyze_sources(sources) -> dict:
             estimates.append(estimate)
 
     if len(estimates) != len(sources):
-        classification = "variable" if estimates else "unpitched"
+        ambiguous = not estimates and any(
+            reason in {"harmonic_ambiguity", "unstable", "low_confidence"} for reason in reasons
+        )
+        classification = "variable" if estimates else ("ambiguous" if ambiguous else "unpitched")
         return {
             "classification": classification,
             "pitchable": False,
@@ -220,6 +314,7 @@ def analyze_sources(sources) -> dict:
             "confidence": 0.0,
             "cents_spread": None,
             "sources": len(sources),
+            "relative_recommended": ambiguous,
             "reason": (
                 "leaf classifications disagree" if estimates else ", ".join(sorted(set(reasons)))
             ),

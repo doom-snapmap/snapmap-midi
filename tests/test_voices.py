@@ -14,7 +14,7 @@ import random
 import pytest
 
 from snapmap_midi.music.midi import Note
-from snapmap_midi.music.voices import allocate_voices, thin_polyphony
+from snapmap_midi.music.voices import allocate_voices, prepare_voice_layers, thin_polyphony
 from snapmap_midi.sound.palette import shader_pitch
 
 
@@ -132,3 +132,28 @@ def test_decaying_voice_reservation_controls_allocation_and_thinning():
     notes = [first, second]
     assert allocate_voices(notes, max_speakers=8) == 2
     assert thin_polyphony(notes, max_poly=1) == [first]
+
+
+@pytest.mark.parametrize(("pitch_modifier", "voice_end"), [(12, 500), (-12, 2000)])
+def test_decaying_voice_reservation_tracks_pitch_changed_playback_speed(pitch_modifier, voice_end):
+    note = Note(0, 100, "play_noise_one", False, 0, "exact")
+    note.pitch_modifier = pitch_modifier
+    note.volume_db = 0
+
+    shared, expressive, layers = prepare_voice_layers(
+        [note],
+        [],
+        duration_lookup=lambda _sound: 1000,
+    )
+
+    assert shared == []
+    assert expressive == [note]
+    assert layers == {0: [note]}
+    assert note.voice_end == voice_end
+
+
+def test_neutral_decaying_note_stays_on_the_shared_timeline():
+    note = Note(0, 100, "play_noise_one", False, 0, "exact")
+    note.pitch_modifier = note.volume_db = 0
+    shared, expressive, layers = prepare_voice_layers([note], [])
+    assert (shared, expressive, layers) == ([note], [], {})

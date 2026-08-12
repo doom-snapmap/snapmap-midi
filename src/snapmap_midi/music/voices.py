@@ -15,6 +15,7 @@ from __future__ import annotations
 import heapq
 from collections.abc import Callable
 
+from snapmap_midi.music.expression import pitched_duration_ms
 from snapmap_midi.sound.palette import shader_pitch
 
 
@@ -60,7 +61,11 @@ def prepare_voice_layers(
         duration = durations[note.shader]
         if duration is None:
             duration = 750 if note.fam == "drums" else 1000
-        note.voice_end = note.start + max(1, int(duration))
+        # Wwise voice pitch changes playback speed. Reserving the unpitched
+        # duration makes low notes steal speakers too early while high notes
+        # reserve a silent tail.
+        duration = pitched_duration_ms(duration, note.pitch_modifier)
+        note.voice_end = note.start + duration
 
     layers = {}
     for note in sustained + expressive:

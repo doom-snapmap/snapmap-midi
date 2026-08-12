@@ -253,6 +253,7 @@ def test_the_interface_ships_only_its_curated_lucide_icon_subset():
         "pause",
         "play",
         "search",
+        "settings",
         "square",
         "triangle-alert",
         "volume-2",
@@ -265,6 +266,11 @@ def test_the_interface_ships_only_its_curated_lucide_icon_subset():
         assert re.search(r'id="%s"[^>]*>.*?class="ui-icon"' % control, _HTML)
     assert "setIcon(el('winMax'), maximized ? 'copy' : 'square')" in _JS
     assert "setIcon(el('playGlyph'), AUDIO.playing ? 'pause' : 'play')" in _JS
+    assert re.search(
+        r'id="conversionBtn"[^>]*aria-label="Conversion settings"[^>]*>'
+        r'.*?<use href="#icon-settings"></use>',
+        _HTML,
+    )
     license_text = (_WEB / "LUCIDE_LICENSE.txt").read_text(encoding="utf-8")
     assert "ISC License" in license_text
     assert "Lucide Icons and Contributors" in license_text
@@ -510,11 +516,8 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
         "noteInspector",
         "closeNoteInspector",
         "noteSourcePitch",
-        "noteVelocity",
         "noteSound",
-        "noteRoot",
         "notePitchRange",
-        "notePitchBasisLabel",
         "notePitchNumber",
         "noteVolumeRange",
         "noteVolumeNumber",
@@ -532,6 +535,15 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
     assert "setPosition(positionFromCanvas(event), false)" in _JS
     assert "applyPatch({ notes: next }, true)" in _JS
     assert "delete next[SELECTED_NOTE_ID]" in _JS
+    assert ">Pitch adjustment</label>" in _HTML
+    assert 'id="notePitchReadout"' not in _HTML
+    assert 'MIDI " + noteName(note.source_pitch) + " - "' not in _JS
+    assert ">Note volume</label>" in _HTML
+    assert "Number(note.note_volume_db || 0)" in _JS
+    assert "entry[key] = value;" in _JS
+    assert "delete entry.volume_trim_db;" in _JS
+    assert "noteVelocity" not in _HTML
+    assert "Velocity " not in _JS
     assert "context.strokeStyle = palette.accent" in _JS
 
 
@@ -549,6 +561,7 @@ def test_channel_strip_separates_focus_from_multi_solo_and_mute():
     assert "record.muted || record.soloExcluded || !record.audible || !record.converted" in _JS
     assert ".track-row.muted-track .track-channel" in _CSS
     assert ".track-mute-toggle.active" in _CSS
+    assert re.search(r"\.track-row\s*\{[^}]*cursor:\s*pointer", _CSS)
 
 
 def test_channel_settings_owns_channel_wide_pitch_following():
@@ -561,7 +574,6 @@ def test_channel_settings_owns_channel_wide_pitch_following():
         "channelPitchReferenceFields",
         "channelRootNumber",
         "channelRootName",
-        "channelRootEvidence",
         "channelSound",
         "channelMidiRange",
         "channelNoteCount",
@@ -578,26 +590,57 @@ def test_channel_settings_owns_channel_wide_pitch_following():
     assert "Automatic percussion selects a dedicated sound for each MIDI key" in _JS
     assert 'id="notePitchFollow"' not in _HTML
     assert 'id="noteRootNumber"' not in _HTML
+    assert "Advanced pitch reference" in _HTML
+    assert "Stable pitch detected for natural playback" not in _JS
+    assert "function closeChannelInspectorAndClearSelection()" in _JS
+    assert re.search(
+        r"function closeChannelInspectorAndClearSelection\(\)\s*\{\s*"
+        r"SELECTED_CHANNEL = null;\s*closeChannelInspector\(\);",
+        _JS,
+    )
+    assert re.search(
+        r'el\("closeChannelInspector"\)\.addEventListener\(\s*"click",\s*'
+        r"closeChannelInspectorAndClearSelection\s*\)",
+        _JS,
+    )
+
+
+def test_notes_advertise_clickability_only_when_pointer_hit_testing_finds_one():
+    assert re.search(r"#pianoRoll\.note-hover\s*\{[^}]*cursor:\s*pointer", _CSS)
+    assert '"note-hover",\n      !!hoveredRenderEvent(el("pianoRoll"))' in _JS
+    assert 'el("pianoRoll").classList.remove("note-hover")' in _JS
 
 
 def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_them():
-    assert "source.detune.value = Number(event.pitch_modifier || 0) * 100" in _JS
+    assert "source.playbackRate.value = playbackRate" in _JS
+    assert "var playbackRate = Number(event.playback_rate || 1)" in _JS
+    assert "var offset = wallOffset * playbackRate" in _JS
+    assert "var naturalDuration = buffer.duration / playbackRate" in _JS
+    assert "if (wallOffset >= total) { return; }" in _JS
     assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
     assert "api().sound_profile(candidate.value, channel)" in _JS
-    assert "body.root_midi = Number(profile.root_midi)" in _JS
-    assert "body.pitch_follow = true" in _JS
-    assert "body.root_midi = Number(response.relative_anchor)" in _JS
-    assert 'body.root_source = "relative"' in _JS
-    relative_branch = _JS.split("} else if (isFinite(Number(response.relative_anchor))) {", 1)[
-        1
-    ].split("} else {", 1)[0]
-    assert "body.pitch_follow = true" not in relative_branch
-    assert "body.pitch_follow = false" in _JS
-    assert "This sound will play at its natural pitch." in _JS
-    assert 'relativePitch ? "Pitch reference" : "Sound root"' in _JS
+    assert (
+        "body.root_midi = isFinite(Number(plan.root_midi)) ? Number(plan.root_midi) : null" in _JS
+    )
+    assert "body.pitch_follow = !!plan.pitch_follow" in _JS
+    assert 'body.root_source = plan.root_source || "relative"' in _JS
+    assert "response.pitch_plan" in _JS
+    assert "natural playback is preserved" in _JS
     assert "Number(note.pitch_offset || 0)" in _JS
-    assert '"Natural playback; offset " + signed(note.pitch_offset)' in _JS
     assert 'updateNoteOverride(noteId, "pitch_offset", value)' in _JS
+
+
+def test_octave_labels_are_a_display_only_view_preference():
+    assert 'id="menuMiddleC4" role="menuitemradio"' in _HTML
+    assert 'id="menuMiddleC3" role="menuitemradio"' in _HTML
+    assert "var OCTAVE_LABEL_KEY = 'snapmap_midi_middle_c_octave'" in _JS
+    assert "var octave = Math.floor(note / 12) + MIDDLE_C_OCTAVE - 5" in _JS
+    assert "setMiddleCOctave(4, true, true)" in _JS
+    assert "setMiddleCOctave(3, true, true)" in _JS
+    expression_source = (_ROOT / "src" / "snapmap_midi" / "music" / "expression.py").read_text(
+        encoding="utf-8"
+    )
+    assert "MIDDLE_C_OCTAVE" not in expression_source
 
 
 def test_bottom_control_plane_exposes_the_persisted_master_volume():
@@ -611,7 +654,8 @@ def test_bottom_control_plane_exposes_the_persisted_master_volume():
     assert "applyPatch({ tuning: { master_volume_db: value } }, true)" in _JS
     assert "paintMasterVolume(tuning().master_volume_db)" in _JS
     assert "el('masterVolume').disabled = !song" in _JS
-    assert '" dB; global " + signed(note.master_volume_db)' in _JS
+    assert '"Global " + signed(note.master_volume_db)' in _JS
+    assert '" dB; output " + signed(note.volume_db)' in _JS
 
 
 def test_the_playhead_and_hover_use_lightweight_overlay_canvases():

@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 4
+SETTINGS_VERSION = 5
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -76,8 +76,8 @@ _CHANNEL_KEYS = frozenset(
         "root_source",
     }
 )
-_NOTE_KEYS = frozenset({"pitch_offset", "volume_db"})
-_ROOT_SOURCES = frozenset({"palette_name", "detected", "manual", "relative"})
+_NOTE_KEYS = frozenset({"pitch_offset", "volume_db", "volume_trim_db"})
+_ROOT_SOURCES = frozenset({"palette_name", "detected", "detected_octave", "manual", "relative"})
 
 #: Stock event names measured from soundbanksinfo.events use this complete
 #: alphabet and are at most 64 characters. Accepting the identifier rather than
@@ -339,11 +339,14 @@ def _note_id(value) -> str:
 
 
 def _notes(section) -> dict:
-    """Validate sparse per-note playback-pitch and volume offsets.
+    """Validate sparse per-note playback-pitch and volume choices.
 
     The key is generated from source MIDI identity, not conversion output, so
     changing an instrument or root profile cannot move an edit to another note.
-    Empty/default records are dropped to keep sidecars compact.
+    volume_db is the absolute note level before global volume and therefore
+    preserves an explicit zero. volume_trim_db is retained only so migrated
+    version-4 sidecars keep their exact sound until that note is edited.
+    Empty/default records are otherwise dropped to keep sidecars compact.
     """
     section = _mapping(section, "notes")
     out = {}
@@ -356,17 +359,30 @@ def _notes(section) -> dict:
         pitch_offset = _whole(
             entry.get("pitch_offset", 0), "note %s: pitch_offset" % note_id, -24, 24
         )
-        volume_db = _whole(
-            entry.get("volume_db", 0),
-            "note %s: volume_db" % note_id,
-            _MIN_VOLUME_DB,
-            _MAX_VOLUME_DB,
-        )
+        if "volume_db" in entry and "volume_trim_db" in entry:
+            raise SettingsError(
+                "note %s: volume_db and legacy volume_trim_db cannot both be set" % note_id
+            )
         normalized = {}
         if pitch_offset:
             normalized["pitch_offset"] = pitch_offset
-        if volume_db:
+        if "volume_db" in entry:
+            volume_db = _whole(
+                entry["volume_db"],
+                "note %s: volume_db" % note_id,
+                _MIN_VOLUME_DB,
+                _MAX_VOLUME_DB,
+            )
             normalized["volume_db"] = volume_db
+        if "volume_trim_db" in entry:
+            volume_trim_db = _whole(
+                entry["volume_trim_db"],
+                "note %s: volume_trim_db" % note_id,
+                _MIN_VOLUME_DB,
+                _MAX_VOLUME_DB,
+            )
+            if volume_trim_db:
+                normalized["volume_trim_db"] = volume_trim_db
         if normalized:
             out[note_id] = normalized
     return out
@@ -469,6 +485,12 @@ def _release(value) -> float:
 def _migrate(doc: dict) -> dict:
     """Upgrade older sidecars while preserving their stored user choices.
 
+    Version 5 makes a note's volume_db its absolute pre-master level.
+    Versions 1 through 4 used the same name for a relative velocity trim, so
+    migration gives that value an explicit legacy name. The expression engine
+    continues to honor it exactly, and the UI replaces it with an absolute
+    value when the user next edits that note.
+
     Version 4 separates the written MIDI note from a playback-only pitch
     offset. Versions 2 and 3 called the same integer ``transpose``. Renaming
     that sparse user value preserves its intent while allowing
@@ -477,7 +499,7 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (1, 2, 3):
+    if isinstance(version, bool) or version not in (1, 2, 3, 4):
         return doc
 
     migrated = copy.deepcopy(doc)
@@ -495,6 +517,12 @@ def _migrate(doc: dict) -> dict:
                             "note %s has conflicting transpose and pitch_offset values" % note_id
                         )
                     entry["pitch_offset"] = entry.pop("transpose")
+                if "volume_db" in entry:
+                    if "volume_trim_db" in entry:
+                        raise SettingsError(
+                            "note %s has conflicting volume_db and volume_trim_db values" % note_id
+                        )
+                    entry["volume_trim_db"] = entry.pop("volume_db")
                 rewritten[note_id] = entry
             else:
                 rewritten[note_id] = raw_entry

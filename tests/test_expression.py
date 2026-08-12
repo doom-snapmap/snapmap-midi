@@ -9,12 +9,21 @@ from snapmap_midi.music.expression import (
     expression_for,
     midi_velocity_db,
     nearest_int,
+    pitch_playback_rate,
+    pitched_duration_ms,
 )
 
 
 def test_rounding_is_symmetric_at_half_steps():
     assert nearest_int(2.5) == 3
     assert nearest_int(-2.5) == -3
+
+
+def test_snapmap_pitch_uses_resampling_speed_and_changes_one_shot_duration():
+    assert pitch_playback_rate(12) == pytest.approx(2.0)
+    assert pitch_playback_rate(-12) == pytest.approx(0.5)
+    assert pitched_duration_ms(1000, 12) == 500
+    assert pitched_duration_ms(1000, -12) == 2000
 
 
 def test_midi_velocity_is_monotonic_and_full_velocity_is_unity():
@@ -55,26 +64,47 @@ def test_pitch_offset_never_moves_the_imported_note_and_engine_pitch_clamps():
     assert expression.pitch_limited is True
 
 
-def test_velocity_and_note_trim_share_the_engine_db_limits():
+def test_a_legacy_note_trim_keeps_its_original_uncapped_sum():
     quiet = expression_for(60, 1, 60, volume_trim_db=-60)
     assert quiet.velocity_db == -60
+    assert quiet.note_volume_db == -120
     assert quiet.requested_volume_db == -120
     assert quiet.volume_db == -60
     assert quiet.volume_limited is True
 
     loud = expression_for(60, 127, 60, volume_trim_db=20)
+    assert loud.note_volume_db == 20
     assert loud.volume_db == 20
     assert loud.volume_limited is False
 
 
-def test_master_volume_offsets_every_note_before_the_engine_clamp():
-    expression = expression_for(60, 64, 60, volume_trim_db=3, master_volume_db=8)
+def test_absolute_note_volume_replaces_velocity_as_the_editable_starting_level():
+    expression = expression_for(60, 64, 60, note_volume_db=0, master_volume_db=8)
 
     assert expression.velocity_db == -12
+    assert expression.note_volume_db == 0
     assert expression.master_volume_db == 8
-    assert expression.volume_trim_db == 3
-    assert expression.requested_volume_db == -1
-    assert expression.volume_db == -1
+    assert expression.volume_trim_db == 12
+    assert expression.requested_volume_db == 8
+    assert expression.volume_db == 8
+
+
+def test_an_unedited_note_uses_its_midi_derived_level():
+    expression = expression_for(60, 64, 60, master_volume_db=3)
+
+    assert expression.velocity_db == -12
+    assert expression.note_volume_db == -12
+    assert expression.requested_volume_db == -9
+    assert expression.volume_db == -9
+
+
+def test_absolute_note_volume_can_raise_the_quietest_velocity_to_the_maximum():
+    expression = expression_for(60, 1, 60, note_volume_db=20)
+
+    assert expression.velocity_db == -60
+    assert expression.note_volume_db == 20
+    assert expression.volume_trim_db == 80
+    assert expression.volume_db == 20
 
 
 @pytest.mark.parametrize(

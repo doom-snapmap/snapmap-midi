@@ -271,7 +271,7 @@ Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
 
 - [x] Place a persisted -60 through +20 dB Volume slider beside Notifications in the bottom
   control plane, with neutral 0 dB as the default.
-- [x] Resolve `velocity dB + global dB + note trim dB` once in Python and send the same clamped
+- [x] Resolve `current note dB + global dB` once in Python and send the same clamped
   value to browser preview and rawmap export.
 - [x] Advance the sidecar to settings version 3 and migrate version 1 and 2 files losslessly.
 - [x] Add expression, settings, compile, preview-manifest, and UI asset-contract coverage.

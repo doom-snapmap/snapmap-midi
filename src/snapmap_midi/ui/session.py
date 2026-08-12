@@ -222,6 +222,28 @@ class Session:
         with self._lock:
             return None if self._analysis is None else analysis.as_dict(self._analysis)
 
+    def channel_info(self, channel):
+        """The analyzed channel record after validating its public number."""
+
+        if isinstance(channel, bool):
+            raise ValueError("a MIDI channel from 0 to 15 is required")
+        try:
+            number = int(channel)
+            valid = float(channel) == number and 0 <= number <= 15
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise ValueError("a MIDI channel from 0 to 15 is required")
+        if self._analysis is None:
+            raise ValueError("no song is open -- open a MIDI file first")
+        info = next(
+            (item for item in self._analysis.channels if item.channel == number),
+            None,
+        )
+        if info is None or info.lowest is None or info.highest is None:
+            raise ValueError("channel %d has no notes to anchor" % number)
+        return info
+
     def relative_pitch_anchor(self, channel) -> int:
         """The stable natural-playback reference for an exact channel sound.
 
@@ -237,25 +259,7 @@ class Session:
         silently retuning the entire channel.
         """
         with self._lock:
-            if isinstance(channel, bool):
-                raise ValueError("a MIDI channel from 0 to 15 is required")
-            try:
-                number = int(channel)
-            except (TypeError, ValueError):
-                raise ValueError("a MIDI channel from 0 to 15 is required") from None
-            try:
-                if float(channel) != number or not 0 <= number <= 15:
-                    raise ValueError
-            except (TypeError, ValueError):
-                raise ValueError("a MIDI channel from 0 to 15 is required") from None
-            if self._analysis is None:
-                raise ValueError("no song is open -- open a MIDI file first")
-            info = next(
-                (item for item in self._analysis.channels if item.channel == number),
-                None,
-            )
-            if info is None or info.lowest is None or info.highest is None:
-                raise ValueError("channel %d has no notes to anchor" % number)
+            info = self.channel_info(channel)
             # On an exact half-step, choose the upper note deterministically.
             return (int(info.lowest) + int(info.highest) + 1) // 2
 
@@ -445,8 +449,10 @@ class Session:
                     "requested_pitch": note.requested_pitch,
                     "pitch_modifier": note.pitch_modifier,
                     "pitch_limited": note.pitch_limited,
+                    "playback_rate": note.playback_rate,
                     "velocity_db": note.velocity_db,
                     "volume_trim_db": note.volume_trim_db,
+                    "note_volume_db": note.note_volume_db,
                     "master_volume_db": note.master_volume_db,
                     "requested_volume_db": note.requested_volume_db,
                     "volume_db": note.volume_db,
@@ -667,6 +673,44 @@ class Session:
             )
         return sorted(keys)
 
+    @staticmethod
+    def _note_name(note: int) -> str:
+        names = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        note = int(note)
+        return "%s%d" % (names[note % 12], note // 12 - 1)
+
+    def _pitch_limit_warnings(self, stats) -> list[str]:
+        details = stats.get("pitch_limit_channels") or []
+        if not details:
+            return [
+                "%d notes need more than SnapMap's -24 to +24 semitone range. "
+                "Their pitch is clamped at the nearest engine limit." % stats["pitch_limited"]
+            ]
+        warnings = []
+        for detail in details:
+            low = self._note_name(detail["source_low"])
+            high = self._note_name(detail["source_high"])
+            notes = low if low == high else "%s-%s" % (low, high)
+            requested = (
+                str(detail["requested_low"])
+                if detail["requested_low"] == detail["requested_high"]
+                else "%+d to %+d" % (detail["requested_low"], detail["requested_high"])
+            )
+            warnings.append(
+                "%s: %d note%s (%s) request%s %s semitones, outside SnapMap's -24 to +24 "
+                "semitone range, so playback and export clamp at the nearest limit. Change the "
+                "channel pitch reference or the affected note offsets."
+                % (
+                    self._who(detail["channel"]),
+                    detail["count"],
+                    "" if detail["count"] == 1 else "s",
+                    notes,
+                    "s" if detail["count"] == 1 else "",
+                    requested,
+                )
+            )
+        return warnings
+
     def _warnings(self, stats) -> list:
         """Plain-language problems, each with the number that decides whether to
         care and the lever that changes it.
@@ -713,14 +757,11 @@ class Session:
             warnings.append(text)
 
         if stats.get("pitch_limited"):
-            warnings.append(
-                "%d notes need more than SnapMap's -24 to +24 semitone range. "
-                "Their pitch is clamped at the nearest engine limit." % stats["pitch_limited"]
-            )
+            warnings.extend(self._pitch_limit_warnings(stats))
         if stats.get("volume_limited"):
             warnings.append(
-                "%d notes exceed SnapMap's -60 to +20 dB range after velocity, global volume, "
-                "and per-note trim. Their loudness is clamped." % stats["volume_limited"]
+                "%d notes exceed SnapMap's -60 to +20 dB output range after note and global "
+                "volume. Their loudness is clamped." % stats["volume_limited"]
             )
 
         if stats["long_sustains"]:

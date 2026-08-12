@@ -114,7 +114,8 @@ The workstation is one persistent surface: a unified channel list, a full-range 
 one global Play/Pause transport, a draggable sweeping playhead, and mutually exclusive
 Conversion, Notifications, Channel settings, and Note expression inspectors. Source composition stays read-only:
 notes cannot be created, deleted, moved, or resized. Clicking a note instead edits playback-only
-Pitch offset and Volume trim for that imported note. Its MIDI row, channel, id, and curated sample
+Pitch adjustment and its absolute Note volume. Note volume begins at the level derived from imported
+velocity and may be set directly to any -60 through 20 dB value. Its MIDI row, channel, id, and curated sample
 stay fixed. Clicking empty space seeks.
 
 The roll has synchronized pitch/time axes, native two-dimensional scrolling,
@@ -152,9 +153,9 @@ entries remain selectable for export and are clearly marked.
 The reference retail installation contains 7,589 Play events, of which 7,353 support local
 preview; those counts can vary with localization and edition. Exact assignment repeats the
 chosen event string for every note. On selection, a conservative all-leaf analysis accepts a
-root only for stable pitched media. Accepted events follow MIDI from that root; rejected events
-keep natural playback. The channel midpoint is stored only as an optional relative reference;
-Follow MIDI note remains off until the user deliberately enables it. Infinite and Mixed Wwise
+root only for stable pitched media. Accepted pitch classes are octave-fitted to the channel.
+Tonal but root-ambiguous events follow MIDI from a centered reference; nonmusical events keep
+natural playback and offer that reference as an opt-in. Infinite and Mixed Wwise
 events use the sustained
 path and receive a stop. One-shots with non-zero pitch or gain use duration-reserved speaker
 voices; neutral one-shots retain the shared fire-and-forget path. The full catalog remains a
@@ -165,26 +166,30 @@ manual layer and does not widen General MIDI automatic mapping.
 Channel settings owns the pitch basis shared by every note on a channel. Automatic mappings and
 pitched instrument sets always follow MIDI through their curated samples; automatic percussion
 uses dedicated per-key sounds and has no channel-wide pitch mode. Exact events expose
-**Follow MIDI note** plus a detected root or optional relative reference. A rejected exact SFX
-defaults to natural playback with following off. The root/reference accepts MIDI 0 through 127
-and is intentionally channel-wide because changing the basis for one note would detune the
-interval pattern; per-note exceptions use Pitch offset instead.
+**Follow MIDI note**; the internal playback reference is collapsed under **Advanced pitch
+reference**. Tonal ambiguity is centered automatically; clearly nonmusical exact SFX default to
+natural playback. The reference accepts MIDI 0 through 127 and is intentionally channel-wide
+because changing the basis for one note would detune the interval pattern; per-note exceptions
+use Pitch adjustment instead.
 
 ### Per-note pitch and dynamics
 
 Clicking a rendered note pauses transport and opens the Note expression inspector. It shows the
-immutable MIDI note, channel, velocity, exact event, natural/root/reference state, automatic
-shift, global volume, user offsets, final SnapMap values, and any clamp.
+immutable MIDI note, channel, exact event, Pitch adjustment, current note volume, and any clamp.
+Automatic pitch detection, reference choice, and subtraction stay internal.
 
-- **Pitch offset** is an integer -24 through 24 semitones and affects playback only. With a
+- **Pitch adjustment** is an integer -24 through 24 semitones and affects playback only. With a
   trusted root or enabled relative reference, it is added after automatic MIDI-following pitch.
   Without either, it is the only SnapMap pitch modifier and zero preserves natural playback.
   It never moves the MIDI block or changes which curated sample was selected.
 - **Global volume** is an integer -60 through 20 dB, defaults to 0, and offsets every note.
-  Its slider sits beside Notifications in the bottom control plane.
-- **Volume trim** is an integer -60 through 20 dB. MIDI velocity first maps through
-  `40 * log10(velocity / 127)`; global volume and then the note trim are added afterward.
-- **Reset note** removes only that note's sparse override.
+  Its slider sits beside Notifications in the bottom control plane and never rewrites note
+  values.
+- **Note volume** is an integer -60 through 20 dB. MIDI velocity first maps through
+  `40 * log10(velocity / 127)` to provide the initial value; a user edit replaces that value
+  directly. Global volume is added afterward.
+- **Reset note** removes only that note's sparse override, restoring its imported
+  velocity-derived level.
 
 Final pitch is clamped to SnapMap's -24 through 24 semitone range and final volume to -60
 through 20 dB. The notification/inspector readouts expose a requested value that was limited.
@@ -217,8 +222,8 @@ fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 The workstation can play the entire converted arrangement directly from an installed game's
 retail soundbanks, with a valid 890-sound offline cache as fallback. The same direct source
 auditions full-catalog events in the browser. Preview receives the compiler's resolved sound,
-automatic root-relative pitch or natural-playback state, playback-only note pitch offset,
-velocity-derived dB, global volume, note volume trim, duration, and voice-cut facts. Web Audio
+automatic root-relative pitch or natural-playback state, playback-only note pitch adjustment,
+current note volume, global volume, duration, and voice-cut facts. Web Audio
 applies the final semitones and dB without recalculating them. It decodes only samples the
 current song uses. See
 [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
@@ -253,7 +258,7 @@ remain library-only arguments to `compile_to_rawmap`.
 | `channel_families` | — | dict | override the family for a whole MIDI channel |
 | `channel_sounds` | — | dict | trigger one exact DOOM Play event for every note on a MIDI channel |
 | `channel_pitch_profiles` | — | dict | enable exact-sound pitch following from detected roots or relative references |
-| `note_overrides` | — | dict | sparse playback-only pitch offsets and dB trims keyed by stable source-note id |
+| `note_overrides` | — | dict | sparse playback-only pitch adjustments and absolute note volumes keyed by stable source-note id |
 | `channel_mutes` | — | set | silence whole channels; the notes are not counted as dropped |
 | `channel_solos` | — | set | standard multi-solo; when non-empty, only unmuted members are audible |
 | `drop_shaders` | — | set | one specific sound is wrong; exclude it |
@@ -271,11 +276,10 @@ The bottom control plane exposes `master_volume_db`. The Conversion inspector ex
 `max_speakers`, `release_s`, `hard_stop`, `max_poly`, `cap_sustain_ms`, `bass_pitch`,
 `bass_cap_ms`, `decaying_families`, and `family_caps`. Channel rows expose family/sound
 selection, mute, multi-solo, and click-to-focus inspection. Selecting an exact sound records a
-detected root and follows MIDI automatically only when the evidence is trustworthy. Otherwise,
-the sound keeps natural playback and stores the channel midpoint only as an optional relative
-reference. Clicking a note exposes sparse playback-only `note_overrides` and the exact channel's
-pitch-basis controls; the imported note, curated sample choice, and piano-roll row remain
-unchanged.
+trusted pitch or safe channel reference when appropriate. Clearly nonmusical sounds keep natural
+playback. Clicking a note exposes sparse playback-only `note_overrides`; channel-wide pitch mode
+stays in Channel settings, and its technical reference is under Advanced pitch reference. The
+imported note, curated sample choice, and piano-roll row remain unchanged.
 
 Automatic percussion still obeys `drums` and `drum_key_overrides` restored from a sidecar,
 but percussion is not a separate UI mode. The rest stay sidecar or library controls.

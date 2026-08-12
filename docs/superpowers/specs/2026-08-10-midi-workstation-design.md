@@ -130,7 +130,7 @@ Playback requirements:
 The browser engine schedules current-song PCM samples with Web Audio. Python
 provides the resolved converted-note manifest and only the samples it uses.
 The page uses a look-ahead scheduler so a long song does not create thousands of
-The manifest carries final dB after MIDI velocity, global volume, per-note trim, and the engine
+The manifest carries final dB after velocity-derived or user-set note volume, global volume, and the engine
 clamp. JavaScript applies that resolved value and does not maintain a second loudness model.
 
 live audio nodes at once.

@@ -350,6 +350,25 @@ def test_opening_a_settings_file_and_a_song_together_keeps_both(tmp_path):
     assert session.settings()["channels"]["1"]["family"] == "ins_sine"
 
 
+def test_a_version_four_note_trim_keeps_its_exact_volume_after_migration(tmp_path):
+    song = _midi(tmp_path, _hits(0, 60, program=0, velocity=64), name="legacy-volume.mid")
+    old = settings_module.defaults(song)
+    old["version"] = 4
+    old["notes"] = {"0:60:1": {"volume_db": 3}}
+    old["tuning"]["master_volume_db"] = 8
+    path = tmp_path / "legacy-volume.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    session = Session(settings_path=path)
+    event = session.preview_manifest()["events"][0]
+
+    assert session.settings()["notes"] == {"0:60:1": {"volume_trim_db": 3}}
+    assert event["velocity_db"] == -12
+    assert event["note_volume_db"] == -9
+    assert event["requested_volume_db"] == -1
+    assert event["volume_db"] == -1
+
+
 def test_a_broken_settings_file_says_what_is_wrong_with_it(tmp_path):
     path = tmp_path / "broken.json"
     path.write_text(json.dumps({"version": 1, "tuning": {"max_speakers": 0}}), encoding="utf-8")
@@ -644,10 +663,9 @@ def test_pitch_beyond_the_engine_range_is_clamped_and_warned(tmp_path):
     assert event["requested_pitch"] == -36
     assert event["pitch_modifier"] == -24
     assert event["pitch_limited"] is True
-    assert _warnings(session) == [
-        "1 notes need more than SnapMap's -24 to +24 semitone range. "
-        "Their pitch is clamped at the nearest engine limit."
-    ]
+    warning = _warnings(session)[0]
+    assert warning.startswith("Channel 0 (Acoustic Grand Piano): 1 note (C-1) requests -36")
+    assert "playback and export clamp at the nearest limit" in warning
 
 
 def test_muting_a_clamped_channel_removes_its_expression_warning(tmp_path):
@@ -660,7 +678,7 @@ def test_muting_a_clamped_channel_removes_its_expression_warning(tmp_path):
     assert any("semitone range" in warning for warning in _warnings(session))
 
 
-def test_velocity_and_trim_volume_clamp_is_reported(tmp_path):
+def test_note_and_global_volume_clamp_is_reported(tmp_path):
     song = _midi(
         tmp_path,
         [
@@ -672,9 +690,11 @@ def test_velocity_and_trim_volume_clamp_is_reported(tmp_path):
     )
     session = Session(midi=song)
     session.apply({"notes": {"0:60:1": {"volume_db": -60}}})
+    session.apply({"tuning": {"master_volume_db": -60}})
 
     event = session.preview_manifest()["events"][0]
     assert event["velocity_db"] == -60
+    assert event["note_volume_db"] == -60
     assert event["requested_volume_db"] == -120
     assert event["volume_db"] == -60
     assert event["volume_limited"] is True
@@ -688,6 +708,7 @@ def test_master_volume_offsets_every_note_in_the_preview_manifest(tmp_path):
 
     event = session.preview_manifest()["events"][0]
     assert event["velocity_db"] == -12
+    assert event["note_volume_db"] == -12
     assert event["master_volume_db"] == 8
     assert event["volume_trim_db"] == 0
     assert event["requested_volume_db"] == -4
@@ -711,7 +732,45 @@ def test_per_note_offset_changes_playback_without_moving_the_midi_note(tmp_path)
     assert events[1]["pitch"] == 60
     assert events[1]["pitch_offset"] == 1
     assert events[1]["pitch_modifier"] == 1
-    assert events[1]["volume_trim_db"] == 5
+    assert events[1]["note_volume_db"] == 5
+    assert events[1]["volume_db"] == 5
+
+
+def test_note_volume_can_explicitly_replace_imported_velocity_with_zero(tmp_path):
+    song = _midi(tmp_path, _hits(0, 60, program=0, velocity=64), name="note-volume.mid")
+    session = Session(midi=song)
+
+    before = session.preview_manifest()["events"][0]
+    assert before["note_volume_db"] == -12
+
+    session.apply({"notes": {"0:60:1": {"volume_db": 0}}})
+
+    event = session.preview_manifest()["events"][0]
+    assert session.settings()["notes"]["0:60:1"]["volume_db"] == 0
+    assert event["note_volume_db"] == 0
+    assert event["volume_db"] == 0
+
+
+def test_global_clamping_never_rewrites_the_absolute_note_volume(tmp_path):
+    song = _midi(tmp_path, _hits(0, 60, program=0, velocity=64), name="volume-restore.mid")
+    session = Session(midi=song)
+    session.apply({"notes": {"0:60:1": {"volume_db": 2}}})
+    session.apply({"tuning": {"master_volume_db": 20}})
+
+    limited = session.preview_manifest()["events"][0]
+    assert limited["note_volume_db"] == 2
+    assert limited["requested_volume_db"] == 22
+    assert limited["volume_db"] == 20
+    assert limited["volume_limited"] is True
+
+    session.apply({"tuning": {"master_volume_db": 0}})
+
+    restored = session.preview_manifest()["events"][0]
+    assert session.settings()["notes"]["0:60:1"]["volume_db"] == 2
+    assert restored["note_volume_db"] == 2
+    assert restored["requested_volume_db"] == 2
+    assert restored["volume_db"] == 2
+    assert restored["volume_limited"] is False
 
 
 def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp_path):
