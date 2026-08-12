@@ -250,7 +250,70 @@ def test_a_version_four_relative_volume_migrates_without_changing_meaning():
     assert migrated["notes"] == {"0:60:1": {"volume_trim_db": -7}}
 
 
-def test_version_three_preserves_an_existing_relative_follow_choice():
+def test_a_version_five_relative_anchor_stops_claiming_absolute_pitch():
+    old = settings.defaults()
+    old["version"] = 5
+    sound = palette.sounds_in_category("amb_air")[0]
+    old["channels"] = {
+        "0": {
+            "sound": sound,
+            "pitch_follow": True,
+            # Older builds derived this from the MIDI channel range. In one
+            # field report that midpoint happened to be 78; it is not a
+            # property of the selected sound and must not survive migration.
+            "root_midi": 78,
+            "root_confidence": 0,
+            "root_source": "relative",
+        }
+    }
+
+    migrated = settings.validate(old)
+    assert migrated["channels"]["0"]["pitch_follow"] is False
+    assert "root_midi" not in migrated["channels"]["0"]
+    assert "root_source" not in migrated["channels"]["0"]
+
+
+def test_a_version_five_octave_fitted_root_is_disabled_until_reanalyzed():
+    old = settings.defaults()
+    old["version"] = 5
+    sound = palette.sounds_in_category("amb_air")[0]
+    old["channels"] = {
+        "0": {
+            "sound": sound,
+            "pitch_follow": True,
+            "root_midi": 59,
+            "root_confidence": 0.9,
+            "root_source": "detected_octave",
+        }
+    }
+
+    migrated = settings.validate(old)
+    assert migrated["channels"]["0"]["pitch_follow"] is False
+    assert migrated["channels"]["0"]["root_source"] == "detected_octave_pending"
+
+
+def test_a_disabled_version_five_octave_fitted_root_stays_disabled():
+    old = settings.defaults()
+    old["version"] = 5
+    sound = palette.sounds_in_category("amb_air")[0]
+    old["channels"] = {
+        "0": {
+            "sound": sound,
+            "pitch_follow": False,
+            "root_midi": 59,
+            "root_confidence": 0.9,
+            "root_source": "detected_octave",
+        }
+    }
+
+    migrated = settings.validate(old)
+    channel = migrated["channels"]["0"]
+    assert channel["pitch_follow"] is False
+    assert "root_midi" not in channel
+    assert "root_source" not in channel
+
+
+def test_version_three_relative_follow_choice_migrates_to_natural_playback():
     old = settings.defaults()
     old["version"] = 3
     sound = palette.sounds_in_category("amb_air")[0]
@@ -266,8 +329,9 @@ def test_version_three_preserves_an_existing_relative_follow_choice():
 
     migrated = settings.validate(old)
     channel = migrated["channels"]["0"]
-    assert channel["pitch_follow"] is True
-    assert channel["root_source"] == "relative"
+    assert channel["pitch_follow"] is False
+    assert "root_midi" not in channel
+    assert "root_source" not in channel
     assert channel["soloed"] is False
 
 
@@ -348,23 +412,22 @@ def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
     }
 
 
-def test_relative_reference_is_not_mislabeled_as_an_acoustic_root():
+def test_legacy_relative_reference_is_not_valid_in_a_current_document():
     sound = palette.sounds_in_category("amb_air")[0]
-    doc = _patch(
-        {
-            "channels": {
-                "0": {
-                    "sound": sound,
-                    "pitch_follow": True,
-                    "root_midi": 66,
-                    "root_confidence": 0,
-                    "root_source": "relative",
+    with pytest.raises(settings.SettingsError, match="root_source"):
+        _patch(
+            {
+                "channels": {
+                    "0": {
+                        "sound": sound,
+                        "pitch_follow": True,
+                        "root_midi": 66,
+                        "root_confidence": 0,
+                        "root_source": "relative",
+                    }
                 }
             }
-        }
-    )
-    assert doc["channels"]["0"]["root_source"] == "relative"
-    assert doc["channels"]["0"]["root_confidence"] == 0.0
+        )
 
 
 def test_pitch_follow_requires_a_root():

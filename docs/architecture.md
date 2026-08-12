@@ -153,6 +153,14 @@ smear into the next phrase. Those two constraints define the split.
 neutral and expressive one-shots, reserves expressive tails, and builds per-channel layers.
 Allocation is per channel, not global, so one instrument cannot steal another channel's voice.
 
+MIDI composition duration is independent of those voice tails. `_timing_manifest` retains the
+exact source End-of-Track tick/time and derives a workstation boundary at the end of the current
+final measure. The latter gives the piano roll its trailing rest without modifying a `Note.end`.
+On natural transport completion, JavaScript stops its scheduling clock but does not call
+`stop()` on already-started Web Audio sources. Finite one-shots and sustained release ramps
+therefore finish exactly as their SnapMap counterparts do. Explicit pause, seek, replay, or state
+changes still stop the old sources immediately.
+
 Thinning drops notes when too many would be live at once. It is the mechanism behind
 `max_poly` and the family caps; see [`limits.md`](limits.md) for why a dense arrangement
 needs it.
@@ -207,8 +215,8 @@ the UI itself offers the Play events declared by the installed retail catalog.
 
 Settings version 2 added optional `pitch_follow`, `root_midi`, `root_confidence`, and
 `root_source` fields to exact channel choices, plus a sparse top-level `notes` mapping.
-`root_source: "relative"` means `root_midi` is a natural-playback reference, not a detected
-root; zero confidence is intentional for that mode.
+Version 6 requires `root_midi` to identify the sound's actual natural note. Legacy relative and
+octave-fitted references are disabled during migration because they could transpose absolute pitch.
 A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute,
 solo, and root changes. Each entry may hold integral `pitch_offset` (-24 through 24) and
 `volume_db` (-60 through 20), the absolute pre-master note level. Explicit zero is retained.
@@ -216,7 +224,8 @@ solo, and root changes. Each entry may hold integral `pitch_offset` (-24 through
 Settings version 3 adds integral `tuning.master_volume_db` (-60 through 20). Version 4 adds
 `soloed` and renames legacy note `transpose` to `pitch_offset`. Version 5 makes note
 `volume_db` absolute; version 1 through 4 relative values migrate to a compatibility-only
-`volume_trim_db` field and retain their prior playback until edited. Derived values and
+`volume_trim_db` field and retain their prior playback until edited. Version 6 removes silent
+octave fitting from exact-sound pitch references. Derived values and
 decoded audio never persist.
 
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
@@ -248,11 +257,10 @@ containers whose leaves disagree, and candidates contradicted by lower dominant 
 are rejected rather than assigned a guessed root.
 
 An ambiguous periodic result says the event is tonal but its fundamental cannot be trusted.
-Python centers such an event on the midpoint of the channel's lowest and highest source notes,
-rounding a half-step upward, and enables following without calling that reference a root. Clearly
-nonmusical rejection keeps natural playback while retaining the midpoint as an optional
-reference. A span of no more than 48 semitones fits inside SnapMap's -24 through 24 range; wider
-channels expose ordinary clamp diagnostics. A trusted root is octave-fitted to the same channel.
+Python leaves such an event at natural playback, and the normal UI exposes no raw calibration
+control. Advanced settings/library callers may still supply an actual natural note. A trusted root
+keeps the measured octave. Notes outside SnapMap's -24 through 24 range expose ordinary clamp
+diagnostics instead of silently transposing the channel to reduce overflow.
 
 Accepted and rejected profiles are cached as small numeric JSON records keyed by install,
 event, complete media signature, and analysis version. The cache contains root, confidence,
@@ -305,6 +313,8 @@ decoded buffers with a rolling look-ahead. It applies the manifest's final pitch
 `gain = 10 ** (volume_db / 20)`; it does not repeat root, velocity, global-volume, or clamp
 logic. Because Wwise voice pitch is resampling rather than independent time stretching, browser
 media offsets and Python's one-shot voice reservations also use the finalized playback rate.
+The manifest supplies both the exact source boundary and a final-measure workstation boundary;
+neither is compiled as a fake note or no-op Timeline event because silence requires no event.
 Settings
 changes cross the bridge and return a rebuilt manifest.
 
@@ -317,10 +327,11 @@ Note expression inspector for a note, while empty surface input keeps the existi
 Selection uses an outline and does not become a playback animation.
 
 Channel-row selection opens a separate Channel settings inspector while retaining the existing
-display-only focus filter. That inspector owns exact-sound `pitch_follow`, root, and relative
-reference edits because they affect every event on the channel. Note expression consumes the
-resolved basis as read-only context and writes only sparse per-note pitch/volume overrides. The
-two inspectors are mutually exclusive, so control scope is also visible in the surface hierarchy.
+display-only focus filter. That inspector exposes only the useful exact-sound `pitch_follow`
+outcome; detector roots, confidence, and manual calibration stay out of the normal UI. Note
+expression consumes the resolved basis as read-only context and writes only sparse per-note
+pitch/volume overrides. The two inspectors are mutually exclusive, so control scope is also
+visible in the surface hierarchy.
 
 The manifest's `events` list schedules audible converted audio. Its `display_events` list
 retains mapped notes excluded by mute, solo, or polyphony so the roll can remain truthful.

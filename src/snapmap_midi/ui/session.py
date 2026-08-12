@@ -25,6 +25,8 @@ browser engine present.
 from __future__ import annotations
 
 import copy
+import math
+from fractions import Fraction
 from pathlib import Path
 from threading import RLock
 
@@ -100,9 +102,44 @@ def _timing_manifest(mid_path) -> dict:
                 },
             )
 
+    source_duration_ticks = tick
+    signature = signatures[-1]
+    ticks_per_bar = Fraction(
+        ticks_per_beat * 4 * int(signature["numerator"]),
+        int(signature["denominator"]),
+    )
+    ticks_since_signature = max(0, source_duration_ticks - int(signature["tick"]))
+    completed_bars = math.ceil(Fraction(ticks_since_signature, 1) / ticks_per_bar)
+    grid_duration_ticks = int(
+        math.ceil(Fraction(int(signature["tick"]), 1) + completed_bars * ticks_per_bar)
+    )
+
+    def time_at_tick(target_tick):
+        marker = tempos[0]
+        for candidate in tempos[1:]:
+            if int(candidate["tick"]) > target_tick:
+                break
+            marker = candidate
+        return round(
+            float(marker["time_ms"])
+            + (target_tick - int(marker["tick"]))
+            * int(marker["tempo"])
+            / 1000
+            / ticks_per_beat,
+            6,
+        )
+
     return {
         "ticks_per_beat": ticks_per_beat,
-        "duration_ticks": tick,
+        # Keep the file boundary and the workstation boundary separate. Some
+        # DAWs write End-of-Track at the final note even when their clip still
+        # has an empty remainder. The source value remains available for exact
+        # MIDI accounting; the padded value gives the read-only piano roll a
+        # complete final measure without inventing another note or stop event.
+        "duration_ticks": source_duration_ticks,
+        "source_duration_ms": time_at_tick(source_duration_ticks),
+        "grid_duration_ticks": grid_duration_ticks,
+        "grid_duration_ms": time_at_tick(grid_duration_ticks),
         "tempo_changes": tempos,
         "time_signatures": signatures,
     }
@@ -243,25 +280,6 @@ class Session:
         if info is None or info.lowest is None or info.highest is None:
             raise ValueError("channel %d has no notes to anchor" % number)
         return info
-
-    def relative_pitch_anchor(self, channel) -> int:
-        """The stable natural-playback reference for an exact channel sound.
-
-        Effects, voices, impacts, and random containers often have no honest
-        acoustic root, but SnapMap can still transpose them. The midpoint of
-        the imported channel's source range minimizes the largest requested
-        shift, so every note fits inside the engine's +/-24 semitone window
-        whenever the channel spans no more than four octaves.
-
-        This is chosen from source notes rather than current note overrides and
-        is persisted with the sound selection. Moving one note later therefore
-        changes that note relative to the established reference instead of
-        silently retuning the entire channel.
-        """
-        with self._lock:
-            info = self.channel_info(channel)
-            # On an exact half-step, choose the upper note deterministically.
-            return (int(info.lowest) + int(info.highest) + 1) // 2
 
     # ---- the document ----
 
@@ -470,17 +488,19 @@ class Session:
                 _event_payload(note, converted=id(note) in prepared_ids)
                 for note in sorted(notes, key=_event_order)
             ]
-            duration_ms = int(round((self._analysis.duration_s if self._analysis else 0) * 1000))
+            timing = _timing_manifest(self._doc["midi"])
+            duration_ms = int(round(timing["grid_duration_ms"]))
             if events:
                 duration_ms = max(duration_ms, max(event["end"] for event in events))
             return {
                 "duration_ms": duration_ms,
+                "source_duration_ms": int(round(timing["source_duration_ms"])),
                 "events": events,
                 "sounds": sorted({event["sound"] for event in events}),
                 "display_events": display_events,
                 "release_s": levers["release_s"],
                 "hard_stop": levers["hard_stop"],
-                "timing": _timing_manifest(self._doc["midi"]),
+                "timing": timing,
             }
 
     def _report(self, stats) -> dict:

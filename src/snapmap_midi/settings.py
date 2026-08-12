@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 5
+SETTINGS_VERSION = 6
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -77,7 +77,14 @@ _CHANNEL_KEYS = frozenset(
     }
 )
 _NOTE_KEYS = frozenset({"pitch_offset", "volume_db", "volume_trim_db"})
-_ROOT_SOURCES = frozenset({"palette_name", "detected", "detected_octave", "manual", "relative"})
+_ROOT_SOURCES = frozenset(
+    {
+        "palette_name",
+        "detected",
+        "detected_octave_pending",
+        "manual",
+    }
+)
 
 #: Stock event names measured from soundbanksinfo.events use this complete
 #: alphabet and are at most 64 characters. Accepting the identifier rather than
@@ -316,6 +323,11 @@ def _channels(section, families, sounds) -> dict:
                             "channel %s: root_source is %r; it has to be one of %s"
                             % (channel, root_source, ", ".join(sorted(_ROOT_SOURCES)))
                         )
+                    if pitch_follow and root_source == "detected_octave_pending":
+                        raise SettingsError(
+                            "channel %s: an old octave-fitted root must be re-analyzed "
+                            "before pitch_follow can be enabled" % channel
+                        )
                     normalized["root_source"] = root_source
         out[channel] = normalized
     return out
@@ -485,6 +497,12 @@ def _release(value) -> float:
 def _migrate(doc: dict) -> dict:
     """Upgrade older sidecars while preserving their stored user choices.
 
+    Version 6 removes two pitch references that could preserve intervals while
+    shifting absolute playback by an octave. A legacy channel-centered
+    relative reference returns to natural playback. An enabled octave-fitted
+    detection is disabled and marked for acoustic re-analysis by the UI; this
+    also makes direct command-line compilation safe when game media is absent.
+
     Version 5 makes a note's volume_db its absolute pre-master level.
     Versions 1 through 4 used the same name for a relative velocity trim, so
     migration gives that value an explicit legacy name. The expression engine
@@ -499,34 +517,66 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (1, 2, 3, 4):
+    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5):
         return doc
 
     migrated = copy.deepcopy(doc)
-    notes = migrated.get("notes")
-    if notes is None and version == 1:
-        migrated["notes"] = {}
-    elif isinstance(notes, Mapping):
-        rewritten = {}
-        for note_id, raw_entry in notes.items():
+    if version <= 4:
+        notes = migrated.get("notes")
+        if notes is None and version == 1:
+            migrated["notes"] = {}
+        elif isinstance(notes, Mapping):
+            rewritten = {}
+            for note_id, raw_entry in notes.items():
+                if isinstance(raw_entry, Mapping):
+                    entry = dict(raw_entry)
+                    if "transpose" in entry:
+                        if "pitch_offset" in entry and entry["pitch_offset"] != entry["transpose"]:
+                            raise SettingsError(
+                                "note %s has conflicting transpose and pitch_offset values"
+                                % note_id
+                            )
+                        entry["pitch_offset"] = entry.pop("transpose")
+                    if "volume_db" in entry:
+                        if "volume_trim_db" in entry:
+                            raise SettingsError(
+                                "note %s has conflicting volume_db and volume_trim_db values"
+                                % note_id
+                            )
+                        entry["volume_trim_db"] = entry.pop("volume_db")
+                    rewritten[note_id] = entry
+                else:
+                    rewritten[note_id] = raw_entry
+            migrated["notes"] = rewritten
+
+    channels = migrated.get("channels")
+    if isinstance(channels, Mapping):
+        rewritten_channels = {}
+        for channel, raw_entry in channels.items():
             if isinstance(raw_entry, Mapping):
                 entry = dict(raw_entry)
-                if "transpose" in entry:
-                    if "pitch_offset" in entry and entry["pitch_offset"] != entry["transpose"]:
-                        raise SettingsError(
-                            "note %s has conflicting transpose and pitch_offset values" % note_id
-                        )
-                    entry["pitch_offset"] = entry.pop("transpose")
-                if "volume_db" in entry:
-                    if "volume_trim_db" in entry:
-                        raise SettingsError(
-                            "note %s has conflicting volume_db and volume_trim_db values" % note_id
-                        )
-                    entry["volume_trim_db"] = entry.pop("volume_db")
-                rewritten[note_id] = entry
+                source = entry.get("root_source")
+                if source == "relative":
+                    entry["pitch_follow"] = False
+                    entry.pop("root_midi", None)
+                    entry.pop("root_confidence", None)
+                    entry.pop("root_source", None)
+                elif source == "detected_octave":
+                    if entry.get("pitch_follow") is True:
+                        entry["pitch_follow"] = False
+                        entry["root_source"] = "detected_octave_pending"
+                    else:
+                        # A disabled automatic profile is a user choice, so do
+                        # not silently re-enable it during startup repair. Its
+                        # fitted value was never an absolute acoustic root and
+                        # is therefore discarded instead of relabelled.
+                        entry.pop("root_midi", None)
+                        entry.pop("root_confidence", None)
+                        entry.pop("root_source", None)
+                rewritten_channels[channel] = entry
             else:
-                rewritten[note_id] = raw_entry
-        migrated["notes"] = rewritten
+                rewritten_channels[channel] = raw_entry
+        migrated["channels"] = rewritten_channels
     migrated["version"] = SETTINGS_VERSION
     return migrated
 

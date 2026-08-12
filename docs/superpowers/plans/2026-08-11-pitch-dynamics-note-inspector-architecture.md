@@ -1,8 +1,8 @@
 # Pitch, Dynamics, and Per-Note Editing Architecture
 
 > Historical plan: the implemented `pitch-model-and-channel-mix-correction` plan supersedes this
-> document's rootless opt-in policy and detune wording. Tonal-but-root-ambiguous exact sounds now
-> use channel-centered following automatically, nonmusical sounds preserve natural playback, and
+> document's rootless opt-in policy and detune wording. Tonal-but-root-ambiguous and nonmusical
+> exact sounds preserve natural playback without a calibration prompt, and
 > preview reproduces Wwise playback-rate changes plus pitch-adjusted one-shot duration.
 Status: implemented, then corrected by the pitch-model and channel-mix plan
 Date: 2026-08-11
@@ -22,8 +22,8 @@ Make the converted arrangement describe what the listener will actually hear:
 - expose the exact pitch and volume values used by SnapMap;
 - keep browser preview and exported Timeline output on one expression model;
 - let a user click any rendered note and adjust its pitch and volume;
-- preserve natural playback when an exact sound has no root, with relative MIDI following as
-  an explicit opt-in.
+- preserve natural playback when an exact sound has no root, without inventing or exposing a
+  synthetic pitch reference.
 
 This is an expression-layer refactor, not a source-MIDI editor. The imported
 MIDI file is never rewritten.
@@ -122,7 +122,8 @@ Settings version 3 adds `tuning.master_volume_db`, an integral global offset fro
 +20 dB with a neutral zero default. Settings version 4 adds channel soloed state and renames the
 sparse note pitch field to pitch_offset, making its playback-only meaning explicit. Settings
 version 5 stores absolute note volume and migrates prior relative trims to a compatibility field.
-Only choices persist; derived modifiers are recalculated.
+Settings version 6 removes relative and octave-fitted pitch references. Only safe choices persist;
+derived modifiers are recalculated.
 
 ### Root-pitch analysis
 
@@ -138,13 +139,12 @@ Random containers whose leaves disagree are variable, not pitched. Noise, impact
 ambience, and unsupported media are rejected as roots. A failed classifier must never invent
 acoustic evidence.
 
-For a rejected selection, Python offers the midpoint of the imported channel's lowest and
-highest source notes as an optional relative natural-playback reference. The UI never calls it
-a root. Natural playback is the default; MIDI intervals follow that reference only after the
-user explicitly enables Follow MIDI note.
+For a rejected selection, natural playback is the default. The normal UI leaves MIDI following
+unavailable; the midpoint of a song cannot establish an acoustic reference and raw manual
+calibration is not useful enough to expose there.
 
 Small numeric profiles are cached by install, event, leaf media ids, and analysis version. No
-game audio is copied; relative references come from MIDI and do not enter the analysis cache.
+game audio is copied.
 
 ### MIDI velocity
 
@@ -163,18 +163,17 @@ The roll always displays the imported MIDI pitch. Automatic root-relative tuning
 per-note Pitch offset change playback without moving the block, changing its channel, or
 selecting another curated sample.
 
-When no root exists, a newly selected exact sound keeps natural playback. Python may persist an
-optional relative reference, but Follow MIDI note remains off until the user enables it. The
-Channel settings distinguishes natural playback, a trusted sound root, and an explicit relative
-reference.
+When no root exists, a newly selected exact sound keeps natural playback and Follow MIDI note
+remains unavailable. Channel settings reports the outcome without showing calibration metadata.
 
 ## Channel inspector
 
 Clicking a channel opens a right-side inspector with Follow MIDI note as its first setting.
 Automatic and curated musical mappings show following as built in; automatic percussion shows
-it as inapplicable because each key has its own event. Exact sounds make the setting editable and
-expose the channel's detected root or optional relative reference. These controls are
-channel-wide and are therefore not rendered in the per-note inspector.
+it as inapplicable because each key has its own event. Exact sounds make the setting editable only
+when trustworthy pitch evidence exists. Rootless sounds show natural playback without an Unknown
+value, MIDI number, or calibration prompt. This control is channel-wide and is therefore not
+rendered in the per-note inspector.
 
 ## Per-note inspector
 
@@ -224,8 +223,7 @@ clamping.
 - ids and velocity survive overlapping or retriggered notes;
 - versions 1 through 4 migrate and invalid future-version overrides fail by name;
 - tone fixtures resolve and silence/noise/unstable/mixed leaves reject;
-- rejected exact sounds preserve natural playback while relative MIDI following remains an
-  explicit choice;
+- rejected exact sounds preserve natural playback without exposing raw calibration controls;
 - fadePitch raw event shape and equal-time event order are pinned;
 - expressive decaying notes use isolated voices and preserve tails;
 - neutral decaying notes keep shared layering;
@@ -241,10 +239,10 @@ Implemented on 2026-08-11. The finished architecture includes:
 
 - a single tested expression model for MIDI-derived and absolute note volume, global volume, playback-only Pitch offset,
   root-relative pitch, integer rounding, and SnapMap clamps;
-- stable source-note ids plus version 5 settings migration and sparse per-note overrides;
+- stable source-note ids plus version 6 settings migration and sparse per-note overrides;
 - authoritative curated roots, conservative lazy all-leaf analysis, natural playback for
-  rootless installed-game events, and optional channel-centered relative references backed by a
-  numeric-only acoustic-profile cache;
+  rootless installed-game events, and manual natural-note calibration backed by a numeric-only
+  acoustic-profile cache;
 - the three scheduling paths described above, with common voice preparation shared
   by map export and browser preview;
 - Web Audio playback rate and gain driven by the compiler's resolved values;

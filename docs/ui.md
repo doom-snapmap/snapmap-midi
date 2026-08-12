@@ -169,12 +169,11 @@ Selecting an exact event analyzes its local media root before committing the cho
 palette names use their authoritative nominal pitch. Other direct-media events are decoded in
 bounded memory, and every available leaf must agree before the event is marked pitchable. A
 pitchable exact event keeps the same Play string on every note but receives a root-relative
-SnapMap semitone modifier. Its detected pitch class may move by octaves to use the channel's
-finite range. Tonal media whose fundamental is ambiguous follows MIDI from a channel-centered
-reference instead of accepting a false upper partial as a root. Speech, noise, impacts, and
-variable containers play naturally by default and retain the midpoint only as an optional
-reference. The application never pretends that a grunt, impact, or spoken line has an acoustic
-root. Channel settings labels detected pitches and references separately.
+SnapMap semitone modifier. Its detected natural note retains the measured octave so its audible
+result matches the piano roll. Tonal media whose fundamental is ambiguous plays naturally rather
+than accepting a false upper partial as a root. Speech, noise, impacts, and variable containers
+also play naturally by default. The application never pretends that a grunt, impact, or spoken
+line has an acoustic root, and the normal UI does not ask users to calibrate one.
 
 Installed Wwise duration metadata independently determines whether the event decays or needs a
 paired stop. Mixed events are treated as looping so an infinite branch cannot leak a speaker
@@ -191,11 +190,12 @@ Click a channel row to focus its notes and open **Channel settings**. The first 
 channel-wide **Follow MIDI note** checkbox. Automatic mappings and pitched instrument sets show
 it checked and disabled because melodic pitch following is intrinsic to those mappings. Automatic
 percussion shows it off and disabled because each MIDI key selects a dedicated drum sound instead.
-An exact event makes it editable and keeps its internal playback reference under a collapsed
-**Advanced pitch reference** disclosure. The normal channel surface shows only whether the sound
-follows the MIDI melody or plays naturally; it does not expose detector confidence or pitch math.
-The advanced reference belongs to the channel because every note reuses the same exact event;
-per-note exceptions stay in Note expression.
+An exact event with trustworthy pitch evidence makes the checkbox editable. An exact event
+without that evidence shows the checkbox disabled and plays unchanged. Channel settings exposes
+only this useful outcome; it does not show a natural-note number, an Unknown state, detector
+confidence, pitch math, or a manual calibration prompt. It never substitutes the channel's lowest
+note, highest note, midpoint, median, or any other property of the imported song. Per-note
+exceptions stay in Note expression.
 
 Other channels dim and stop accepting note clicks until focus is cleared, which makes dense
 arrangements readable without changing what plays or exports. Click the focused row again to
@@ -235,6 +235,14 @@ room. Note blocks use the same 4 px corner language as Snapmap Plus controls. La
 at up to 2x display density with high-quality smoothing, geometric text rendering, normal
 kerning, and full-contrast Segoe UI text rather than faded canvas glyphs. Capping the backing
 canvas at 2x retains crisp text without spending 4x or 9x the pixels on unusually dense displays.
+
+The source MIDI End-of-Track time and the workstation's visible end are separate. If a DAW writes
+End-of-Track partway through the final measure, the ruler completes that measure so its remaining
+rests are visible. Note blocks still end at their actual note-off; the application never repairs a
+short last note by stretching it. A naturally completed transport also leaves already-started
+finite one-shots and release fades alone instead of hard-stopping them at the file boundary.
+Starting again, pausing, seeking, changing the conversion, or opening another song intentionally
+stops the old preview sources.
 
 The control-plane Zoom slider uses a musical, exponential range from a 100% whole-song
 overview to 6400% horizontal inspection. Increasing it makes pitch rows and note blocks
@@ -302,11 +310,10 @@ The inspector presents the musical controls and resolved output without exposing
 -60 through 20 dB. An unedited note starts at its MIDI-velocity-derived level; editing the
 control replaces that level directly, so 0 dB is a meaningful saved choice. Global volume is
 added afterward and does not modify it. The pitch adjustment changes playback only: it never moves the note, changes its
-channel, or causes a different curated sample to be selected. With a detected/manual root or an
-enabled relative reference, it is added after the automatic MIDI-following shift. With natural
-playback, it is the complete SnapMap pitch modifier. The subtraction formula and detector
-confidence are intentionally not shown; changing the channel-wide basis belongs under Channel
-settings' collapsed Advanced pitch reference. **Reset note** removes only the selected note's
+channel, or causes a different curated sample to be selected. With a detected or manually
+calibrated root, it is added after the automatic MIDI-following shift. With natural
+playback, it is the complete SnapMap pitch modifier. The subtraction formula, detector confidence,
+and calibration basis are intentionally not shown. **Reset note** removes only the selected note's
 sparse pitch adjustment and volume override, returning volume to the imported
 velocity-derived level.
 
@@ -417,7 +424,7 @@ versioned with a project or edited by hand. A typical file is:
 
 ```json
 {
-  "version": 5,
+  "version": 6,
   "midi": "D:/music/song.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
@@ -439,10 +446,7 @@ versioned with a project or edited by hand. A typical file is:
       "sound": "play_noise_crash",
       "muted": false,
       "soloed": true,
-      "pitch_follow": false,
-      "root_midi": 66,
-      "root_confidence": 0.0,
-      "root_source": "relative"
+      "pitch_follow": false
     },
     "9": {"family": null, "muted": false, "soloed": false}
   },
@@ -471,12 +475,12 @@ versioned with a project or edited by hand. A typical file is:
 Within a channel, `family` and `sound` are mutually exclusive. `family: null` with no
 `sound` means Automatic. `muted` and `soloed` default to false. Exact sounds may also carry
 `pitch_follow`, `root_midi` (0 through 127), `root_confidence` (0 through 1), and
-`root_source` (`palette_name`, `detected`, `detected_octave`, `manual`, or `relative`). A
-`detected_octave` reference preserves detected pitch class while selecting the octave-equivalent
-position that best fits the channel. For `relative`, `root_midi` assigns natural playback to the
-channel-centered reference and confidence is zero because no acoustic claim is made. Tonal
-ambiguity may follow that reference automatically; clearly nonmusical sounds preserve natural
-playback until the user enables following.
+`root_source` (`palette_name`, `detected`, or `manual`). The value always identifies the sound's
+actual natural note in MIDI-number space. `manual` is a settings-file/library integration option,
+not a control in the normal UI. Tonal ambiguity and clearly nonmusical sounds preserve natural
+playback. Legacy `detected_octave` and `relative`
+references migrate to a safe disabled state because they could preserve intervals while shifting
+absolute playback by an octave.
 
 The `notes` object is sparse. Its key is `channel:source-pitch:occurrence`, assigned from
 the imported MIDI before mute or sound mapping so the edit survives retimbre. `pitch_offset` is
@@ -492,10 +496,10 @@ migrate in memory with `master_volume_db` set to the neutral 0 dB default. Versi
 rename legacy note `transpose` values to playback-only `pitch_offset`, and version 4 adds
 `soloed`. Version 5 changes user-facing `volume_db` from a relative trim to the absolute note
 level. Older relative values migrate to an internal `volume_trim_db` compatibility field so
-they sound identical; editing that note replaces it with the absolute form. Existing exact-sound
-manual roots, relative references, and stored disabled `pitch_follow` choices are preserved.
-Enabled legacy `root_source: "detected"` profiles are revalidated against the current analyzer
-when the song opens; a stale automatic result is repaired in memory and saved on the next export.
+they sound identical; editing that note replaces it with the absolute form. Version 6 disables
+legacy relative and octave-fitted pitch references before compilation. Automatic roots are
+revalidated against current acoustic evidence when the song opens; a stale result is repaired in
+memory and saved on the next export. Manual roots and stored disabled choices are preserved.
 
 `master_volume_db` is an integer -60 through 20 dB and defaults to zero. `null` disables
 optional duration and polyphony limits. `decaying_families` and

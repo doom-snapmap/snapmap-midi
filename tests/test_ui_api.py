@@ -454,7 +454,7 @@ def test_root_pitch_profile_crosses_the_bridge_as_numeric_evidence(monkeypatch):
     }
 
 
-def test_unpitched_sound_profile_includes_the_channel_relative_anchor(monkeypatch):
+def test_unpitched_sound_profile_preserves_natural_playback_without_a_fake_root(monkeypatch):
     from snapmap_midi.audio import library
 
     profile = {
@@ -466,19 +466,28 @@ def test_unpitched_sound_profile_includes_the_channel_relative_anchor(monkeypatc
     }
     monkeypatch.setattr(library, "pitch_profile", lambda name: dict(profile))
 
-    response = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Grunt", 0)
-    assert response["profile"] == profile
-    assert response["relative_anchor"] == 60
-    assert response["pitch_plan"] == {
+    bridge = Bridge(midi=TINY_MIDI)
+    expected = {
         "pitch_follow": False,
-        "root_midi": 60,
+        "root_midi": None,
         "root_confidence": 0.0,
-        "root_source": "relative",
-        "reason": "natural playback; relative MIDI following is optional",
+        "root_source": None,
+        "reason": "natural playback; no trustworthy musical pitch",
     }
 
+    # Channel ranges differ, but neither range is acoustic evidence about the
+    # sound. In particular, no channel midpoint (such as the reported 78)
+    # becomes a synthetic natural note.
+    first = bridge.sound_profile("Play_Custom_Grunt", 0)
+    second = bridge.sound_profile("Play_Custom_Grunt", 1)
+    assert first["profile"] == profile
+    assert first["pitch_plan"] == expected
+    assert second["pitch_plan"] == expected
+    assert "relative_anchor" not in first
+    assert "relative_anchor" not in second
 
-def test_root_ambiguous_tonal_sound_automatically_uses_channel_center(monkeypatch):
+
+def test_root_ambiguous_tonal_sound_preserves_natural_playback(monkeypatch):
     from snapmap_midi.audio import library
 
     profile = {
@@ -493,15 +502,15 @@ def test_root_ambiguous_tonal_sound_automatically_uses_channel_center(monkeypatc
 
     plan = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Chime", 0)["pitch_plan"]
     assert plan == {
-        "pitch_follow": True,
-        "root_midi": 60,
+        "pitch_follow": False,
+        "root_midi": None,
         "root_confidence": 0.0,
-        "root_source": "relative",
-        "reason": "tonal but root-ambiguous; channel-centered reference",
+        "root_source": None,
+        "reason": "tonal but root-ambiguous; natural playback preserved",
     }
 
 
-def test_trusted_root_is_octave_fitted_to_the_open_channel(monkeypatch):
+def test_trusted_root_keeps_its_measured_octave(monkeypatch):
     from snapmap_midi.audio import library
 
     profile = {
@@ -515,9 +524,46 @@ def test_trusted_root_is_octave_fitted_to_the_open_channel(monkeypatch):
 
     plan = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Chime", 1)["pitch_plan"]
     assert plan["pitch_follow"] is True
-    assert plan["root_midi"] == 71.0
-    assert plan["root_source"] == "detected_octave"
-    assert "octave-fitted" in plan["reason"]
+    assert plan["root_midi"] == 83.0
+    assert plan["root_source"] == "detected"
+    assert plan["reason"] == "trusted acoustic root"
+
+
+def test_startup_repairs_a_legacy_octave_fitted_root(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    bridge.apply_settings(
+        {
+            "channels": {
+                "1": {
+                    "sound": "Play_Custom_Tone",
+                    "pitch_follow": False,
+                    "root_midi": 71.0,
+                    "root_confidence": 0.9,
+                    "root_source": "detected_octave_pending",
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(
+        library,
+        "pitch_profile",
+        lambda name: {
+            "classification": "pitched",
+            "pitchable": True,
+            "root_midi": 83.0,
+            "confidence": 0.9,
+            "source": "detected",
+        },
+    )
+
+    payload = bridge.startup()
+    entry = payload["settings"]["channels"]["1"]
+    assert payload["pitch_reconciled"] == [1]
+    assert entry["pitch_follow"] is True
+    assert entry["root_midi"] == 83.0
+    assert entry["root_source"] == "detected"
 
 
 def test_startup_repairs_an_old_automatic_root_with_current_evidence(monkeypatch):
@@ -553,10 +599,10 @@ def test_startup_repairs_an_old_automatic_root_with_current_evidence(monkeypatch
     payload = bridge.startup()
     entry = payload["settings"]["channels"]["0"]
     assert payload["pitch_reconciled"] == [0]
-    assert entry["pitch_follow"] is True
-    assert entry["root_midi"] == 60
-    assert entry["root_confidence"] == 0.0
-    assert entry["root_source"] == "relative"
+    assert entry["pitch_follow"] is False
+    assert "root_midi" not in entry
+    assert "root_confidence" not in entry
+    assert "root_source" not in entry
 
 
 def test_old_automatic_root_is_retained_when_current_media_is_unavailable(monkeypatch):
@@ -941,10 +987,7 @@ def test_loading_a_song_repairs_a_stale_automatic_root_from_its_sidecar(tmp_path
         "muted": False,
         "soloed": False,
         "sound": "Play_Custom_Chime",
-        "pitch_follow": True,
-        "root_midi": 60.0,
-        "root_confidence": 0.0,
-        "root_source": "relative",
+        "pitch_follow": False,
     }
 
 

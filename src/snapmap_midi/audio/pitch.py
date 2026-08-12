@@ -3,8 +3,8 @@
 The classifier intentionally prefers "unknown" to a plausible wrong octave.
 Arbitrary game events include impacts, voices, ambience, random containers, and
 interactive graphs; only stable periodic media whose leaves agree may claim an
-acoustic root. A higher layer can still assign rejected media an explicit
-relative natural-playback reference without mislabeling it as detected pitch.
+acoustic root. Rejected media stays at natural playback until a user supplies
+its actual natural note; a song-relative anchor cannot establish absolute pitch.
 """
 
 from __future__ import annotations
@@ -32,36 +32,6 @@ class PitchEstimate:
 
 def frequency_to_midi(frequency: float) -> float:
     return 69.0 + 12.0 * math.log2(float(frequency) / 440.0)
-
-
-def octave_fitted_reference(root_midi: float, lowest: int, highest: int) -> float:
-    """Choose the nearest octave-equivalent root that best fits a MIDI range.
-
-    Moving a root by twelve semitones preserves every pitch class while moving
-    the requested SnapMap modifiers into its finite -24..+24 window.  A range
-    wider than four octaves cannot fit completely; in that case this minimizes
-    the worst unavoidable overflow instead of silently flattening one side.
-    """
-
-    root = float(root_midi)
-    low, high = sorted((int(lowest), int(highest)))
-    candidates = [
-        root + 12.0 * octave for octave in range(-11, 12) if 0.0 <= root + 12.0 * octave <= 127.0
-    ]
-    if not candidates:
-        return min(127.0, max(0.0, root))
-
-    def rounded(value: float) -> int:
-        return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
-
-    def score(candidate: float):
-        low_shift = rounded(low - candidate)
-        high_shift = rounded(high - candidate)
-        below = max(0, -24 - low_shift)
-        above = max(0, high_shift - 24)
-        return max(below, above), below + above, abs(candidate - root)
-
-    return min(candidates, key=score)
 
 
 def _downmix(per_channel) -> list[float]:

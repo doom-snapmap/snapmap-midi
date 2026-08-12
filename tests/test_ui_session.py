@@ -126,17 +126,6 @@ def test_loading_a_song_keeps_its_analysis():
     assert session.settings()["midi"] == TINY_MIDI
 
 
-def test_relative_pitch_anchor_centers_the_source_range_and_stays_stable(tmp_path):
-    midi = _midi(tmp_path, _hits(0, 48, program=0) + _hits(0, 73), name="wide.mid")
-    session = Session(midi=midi)
-    assert session.relative_pitch_anchor(0) == 61
-
-    session.apply({"notes": {"0:48:1": {"pitch_offset": 12}}})
-    assert session.relative_pitch_anchor(0) == 61
-    with pytest.raises(ValueError, match="no notes"):
-        session.relative_pitch_anchor(1)
-
-
 def test_a_song_that_is_not_there_is_a_plain_missing_file(tmp_path):
     """Named by `load`, so it raises. The remembered path in a settings file is
     the case that must not, and it is pinned separately below."""
@@ -228,6 +217,72 @@ def test_preview_manifest_carries_source_tempo_and_meter_changes(tmp_path):
     }
 
 
+def test_preview_manifest_preserves_source_end_and_completes_the_final_measure(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.MetaMessage("end_of_track", time=720),
+        ],
+        name="trailing-rest.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 1200
+    assert manifest["timing"]["source_duration_ms"] == 1250.0
+    assert manifest["timing"]["grid_duration_ticks"] == 1920
+    assert manifest["timing"]["grid_duration_ms"] == 2000.0
+    assert manifest["source_duration_ms"] == 1250
+    assert manifest["duration_ms"] == 2000
+    assert manifest["events"][0]["end"] == 500
+
+
+def test_complete_final_measure_does_not_add_another_measure(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=3, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1440),
+        ],
+        name="complete-measure.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 1440
+    assert manifest["timing"]["grid_duration_ticks"] == 1440
+    assert manifest["duration_ms"] == 1500
+
+
+def test_short_final_note_gets_grid_room_without_changing_its_duration(tmp_path):
+    # Regression for cutoff_example.mid, scaled from its 96 PPQ to this helper's
+    # 480 PPQ: the final note begins at 3.5 s, ends at 3.625 s, and End-of-Track
+    # is also there. The comparison file extends that note to the 4 s bar line.
+    # The workstation should complete the visible measure without pretending
+    # the short note itself was longer.
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=72, velocity=127, time=3360),
+            mido.Message("note_off", channel=0, note=72, velocity=64, time=120),
+        ],
+        name="cutoff-example-shape.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 3480
+    assert manifest["timing"]["grid_duration_ticks"] == 3840
+    assert manifest["source_duration_ms"] == 3625
+    assert manifest["duration_ms"] == 4000
+    assert [(event["start"], event["end"]) for event in manifest["events"]] == [(3500, 3625)]
+
+
 def test_preview_manifest_uses_an_exact_channel_sound_without_losing_note_positions():
     session = Session(midi=TINY_MIDI)
     sound = palette.sounds_in_category("amb_air")[0]
@@ -239,7 +294,7 @@ def test_preview_manifest_uses_an_exact_channel_sound_without_losing_note_positi
     assert all(event["sustained"] for event in events)
 
 
-def test_relative_exact_sound_follows_the_channel_without_claiming_a_root(tmp_path):
+def test_manually_calibrated_exact_sound_follows_the_channel(tmp_path):
     midi = _midi(
         tmp_path,
         _hits(0, 60, program=0, velocity=127) + _hits(0, 72, velocity=127),
@@ -254,8 +309,8 @@ def test_relative_exact_sound_follows_the_channel_without_claiming_a_root(tmp_pa
                     "sound": sound,
                     "pitch_follow": True,
                     "root_midi": 66,
-                    "root_confidence": 0,
-                    "root_source": "relative",
+                    "root_confidence": 1,
+                    "root_source": "manual",
                 }
             }
         }
@@ -266,8 +321,37 @@ def test_relative_exact_sound_follows_the_channel_without_claiming_a_root(tmp_pa
     )
 
     assert [event["pitch_modifier"] for event in events] == [-6, 6]
-    assert {event["root_source"] for event in events} == {"relative"}
+    assert {event["root_source"] for event in events} == {"manual"}
     assert all(event["pitch_follow"] for event in events)
+
+
+def test_trusted_exact_sound_preserves_absolute_midi_pitch(tmp_path):
+    midi = _midi(
+        tmp_path,
+        _hits(0, 60, program=0, velocity=127),
+        name="absolute-pitch.mid",
+    )
+    session = Session(midi=midi)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 72,
+                    "root_confidence": 1,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )
+
+    event = session.preview_manifest()["events"][0]
+    assert event["source_pitch"] == 60
+    assert event["root_pitch"] == 72
+    assert event["pitch_modifier"] == -12
+    assert event["playback_rate"] == pytest.approx(0.5)
 
 
 def test_rootless_exact_sound_preserves_natural_playback_until_follow_is_enabled(tmp_path):
@@ -280,9 +364,6 @@ def test_rootless_exact_sound_preserves_natural_playback_until_follow_is_enabled
                 "0": {
                     "sound": sound,
                     "pitch_follow": False,
-                    "root_midi": 66,
-                    "root_confidence": 0,
-                    "root_source": "relative",
                 }
             }
         }

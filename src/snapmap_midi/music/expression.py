@@ -94,9 +94,9 @@ def expression_for(
 ) -> NoteExpression:
     """Resolve one note to the exact integral values SnapMap will receive.
 
-    The source MIDI pitch never moves. With a trusted root or an explicit
-    relative reference, the automatic modifier makes the sound follow that
-    MIDI note and ``pitch_offset`` is added afterward. Without either basis,
+    The source MIDI pitch never moves. With a trusted or manually calibrated
+    root, the automatic modifier makes the sound follow that MIDI note and
+    ``pitch_offset`` is added afterward. Without that basis,
     the sound keeps its natural playback pitch and ``pitch_offset`` is the only
     modifier.
 

@@ -305,6 +305,34 @@ def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
     assert '"float":-60.0' not in text
 
 
+def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
+    def compile_shape(final_note_ticks):
+        mid = mido.MidiFile(ticks_per_beat=96)
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.extend(
+            [
+                mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+                mido.Message("note_on", channel=0, note=72, velocity=127, time=672),
+                mido.Message(
+                    "note_off", channel=0, note=72, velocity=64, time=final_note_ticks
+                ),
+            ]
+        )
+        path = tmp_path / ("shape-%d.mid" % final_note_ticks)
+        mid.save(path)
+        return compile_to_rawmap(path, note_index=_SYNTHETIC_INDEX)
+
+    short_raw, short_stats = compile_shape(24)
+    bar_raw, bar_stats = compile_shape(96)
+
+    # One-shot piano events decay naturally in SnapMap. Neither their MIDI
+    # note-off nor empty time before the bar line becomes a stop/no-op event.
+    assert short_raw == bar_raw
+    assert short_stats["events"] == bar_stats["events"] == 1
+    assert b"stopSound" not in short_raw
+
+
 def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timeline_map):
     raw, stats = compile_to_rawmap(
         TINY_MIDI,
@@ -339,6 +367,44 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
     assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": 9.0}
     assert stats["expressive_one_shots"] >= 1
     assert stats["pitch_adjusted"] == 1
+
+
+def test_export_uses_the_sound_root_octave_without_silent_transposition(
+    tmp_path, minimal_timeline_map
+):
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("program_change", channel=0, program=0, time=0))
+    track.append(mido.Message("note_on", channel=0, note=60, velocity=127, time=0))
+    track.append(mido.Message("note_off", channel=0, note=60, velocity=0, time=120))
+    path = tmp_path / "absolute-pitch.mid"
+    mid.save(str(path))
+
+    raw, _ = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_custom_tone"},
+        channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 72}},
+        button_name="absolute-pitch-test",
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    pitch_values = []
+    for group_index in range(groups["num"]):
+        block = groups["item[%d]" % group_index]["events"]
+        for event_index in range(block["num"]):
+            event = block["item[%d]" % event_index]
+            if event["eventCall"]["\neventHandle_t eventDef"] == "fadePitch":
+                pitch_values.append(event["eventCall"]["args"]["item[1]"]["float"])
+
+    assert pitch_values == [-12.0]
 
 
 def test_neutral_one_shot_keeps_the_shared_timeline_fast_path(tmp_path, minimal_timeline_map):

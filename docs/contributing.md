@@ -145,17 +145,23 @@ state, effective start/end, sustain behavior, speaker-reuse cutoffs, and audible
 flags. `events` is the audible conversion; `display_events` retains inaudible notes for the
 piano roll. Compiler and preview share `prepare_voice_layers`.
 JavaScript may choose the display list and convert Python's facts to canvas coordinates, Web
-Audio time, cents, and linear gain. It must not calculate a root or relative reference, resolve
+Audio time, cents, and linear gain. It must not calculate a root or playback reference, resolve
 a family or curated sample, repeat velocity/global volume math, reapply a clamp/engine limit,
 move a note to another pitch row, or invent conversion events.
 
+Timing manifests keep `duration_ticks`/`source_duration_ms` as the exact MIDI End-of-Track and
+derive `grid_duration_ticks`/`grid_duration_ms` only for completing the workstation's final
+measure. Never extend a note to manufacture that rest and never add a Timeline event for silence.
+Natural transport completion may stop the scheduling clock, but it must not hard-stop finite
+sources already decaying; explicit pause, seek, replay, and conversion changes still may.
+
 The same rule bans hard-coded sound families or game events from markup. The startup catalog
 derives automatic and pitched-family choices from the shipped 24-category, 890-identifier
-palette. The complete installed catalog, lazy numeric root profile, and Python-calculated
-optional channel reference arrive through bridge calls when a sound is browsed and selected.
-A trustworthy musical pitch may enable following automatically after octave-fitting. Tonal but
-root-ambiguous material uses a channel-centered reference; clearly nonmusical material keeps
-natural playback until the user explicitly enables relative following.
+palette. The complete installed catalog and lazy numeric root profile arrive through bridge calls
+when a sound is browsed and selected.
+A trustworthy musical pitch may enable following automatically without changing its detected
+octave. Tonal but root-ambiguous and clearly nonmusical material keeps natural playback. Manual
+roots remain a settings/library contract and are not exposed as a normal UI control.
 Preserve folder indexing, global search, bounded pagination, and the rule that root analysis
 never blocks export; rendering every installed event as a live select option or DOM row is a
 

@@ -357,51 +357,43 @@ class Bridge:
             return reason if str(sidecar) in reason else "%s: %s" % (sidecar, reason)
         return None
 
-    def _pitch_plan(self, profile: Mapping, channel) -> dict:
-        """Turn acoustic evidence into one channel-safe playback reference.
+    def _pitch_plan(self, profile: Mapping) -> dict:
+        """Turn acoustic evidence into an honest playback reference.
 
         A detector answers a question about the media. A playback reference
         answers a different question about the open MIDI channel. Keeping the
         conversion here prevents the sound picker and saved-profile repair
         path from quietly applying different pitch rules to the same event.
+
+        A trusted acoustic root is kept in its measured octave. Substituting an
+        octave-equivalent value may reduce SnapMap range overflow, but it also
+        transposes every audible result by that octave while the piano roll
+        stays put. Notes beyond the engine's finite range must clamp and warn;
+        they must not silently retune the whole channel.
         """
 
-        anchor = self._session.relative_pitch_anchor(channel)
         plan = {
             "pitch_follow": False,
-            "root_midi": anchor,
+            "root_midi": None,
             "root_confidence": 0.0,
-            "root_source": "relative",
-            "reason": "natural playback; relative MIDI following is optional",
+            "root_source": None,
+            "reason": "natural playback; no trustworthy musical pitch",
         }
         if profile.get("pitchable") and profile.get("root_midi") is not None:
-            from snapmap_midi.audio.pitch import octave_fitted_reference
-
-            info = self._session.channel_info(channel)
-            reference = octave_fitted_reference(profile["root_midi"], info.lowest, info.highest)
-            octave_fitted = abs(reference - float(profile["root_midi"])) > 0.01
+            source = profile.get("source")
+            if source not in {"palette_name", "detected"}:
+                source = "detected"
             plan.update(
                 {
                     "pitch_follow": True,
-                    "root_midi": reference,
+                    "root_midi": float(profile["root_midi"]),
                     "root_confidence": float(profile.get("confidence") or 0.0),
-                    "root_source": (
-                        "detected_octave" if octave_fitted else profile.get("source", "detected")
-                    ),
-                    "reason": (
-                        "detected pitch class; octave-fitted to the channel range"
-                        if octave_fitted
-                        else "trusted acoustic root"
-                    ),
+                    "root_source": source,
+                    "reason": "trusted acoustic root",
                 }
             )
         elif profile.get("relative_recommended"):
-            plan.update(
-                {
-                    "pitch_follow": True,
-                    "reason": "tonal but root-ambiguous; channel-centered reference",
-                }
-            )
+            plan["reason"] = "tonal but root-ambiguous; natural playback preserved"
         return plan
 
     def _reconcile_detected_pitch_profiles(self) -> list[int]:
@@ -413,12 +405,13 @@ class Bridge:
         not enough: an upgraded application would otherwise keep compiling the
         old value forever.
 
-        Only an enabled ``root_source=detected`` profile is eligible. Manual
-        and relative references, curated palette notes, per-note offsets, and
-        a channel on which the user disabled MIDI following are left alone. If
-        the installed media cannot be analyzed, the saved value is also
-        retained rather than being destroyed merely because DOOM is
-        temporarily unavailable.
+        Enabled automatic ``detected`` profiles are eligible. A version-6
+        ``detected_octave_pending`` profile is also eligible while disabled so
+        the real root can safely replace it. Manual references, curated palette
+        notes, per-note offsets, and a channel on which the user disabled MIDI
+        following are left alone. If the installed media cannot be analyzed,
+        the saved value is also retained rather than being destroyed merely
+        because DOOM is temporarily unavailable.
         """
 
         doc = self._session.settings()
@@ -427,12 +420,11 @@ class Bridge:
 
         candidates = []
         for raw_channel, entry in doc.get("channels", {}).items():
-            if (
-                entry.get("sound")
-                and entry.get("root_source") == "detected"
-                and entry.get("root_midi") is not None
-                and entry.get("pitch_follow") is True
-            ):
+            source = entry.get("root_source")
+            automatic = (
+                source == "detected" and entry.get("pitch_follow") is True
+            ) or source == "detected_octave_pending"
+            if entry.get("sound") and entry.get("root_midi") is not None and automatic:
                 candidates.append((int(raw_channel), entry))
         if not candidates:
             return []
@@ -446,7 +438,7 @@ class Bridge:
                 profile = library.pitch_profile(entry["sound"])
                 if profile.get("classification") == "unavailable":
                     continue
-                plan = self._pitch_plan(profile, channel)
+                plan = self._pitch_plan(profile)
             except Exception:
                 # Reconciliation is a compatibility aid, never a reason to
                 # prevent a song from opening with its last-known settings.
@@ -561,12 +553,7 @@ class Bridge:
             return _fail(exc)
 
     def sound_profile(self, sound, channel=None) -> dict:
-        """Return acoustic evidence and the channel's relative fallback.
-
-        Root analysis describes the sound alone. The optional reference anchor
-        describes the open song, so it is calculated separately and never
-        presented as detected acoustic evidence.
-        """
+        """Return acoustic evidence and an absolute-pitch playback plan."""
         try:
             if not isinstance(sound, str) or not sound:
                 raise ValueError("a sound name is required")
@@ -577,10 +564,11 @@ class Bridge:
             profile = library.pitch_profile(sound)
             result = {"ok": True, "profile": profile}
             if channel is not None:
-                anchor = self._session.relative_pitch_anchor(channel)
-                plan = self._pitch_plan(profile, channel)
-                result["pitch_plan"] = plan
-                result["relative_anchor"] = anchor
+                # Validate that the supplied channel belongs to the open song,
+                # even though absolute root planning no longer depends on its
+                # note range.
+                self._session.channel_info(channel)
+                result["pitch_plan"] = self._pitch_plan(profile)
 
             return result
         except Exception as exc:

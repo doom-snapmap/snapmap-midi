@@ -564,16 +564,13 @@ def test_channel_strip_separates_focus_from_multi_solo_and_mute():
     assert re.search(r"\.track-row\s*\{[^}]*cursor:\s*pointer", _CSS)
 
 
-def test_channel_settings_owns_channel_wide_pitch_following():
+def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     for control in (
         "channelInspector",
         "closeChannelInspector",
         "channelInspectorSubtitle",
         "channelPitchFollow",
         "channelPitchModeHelp",
-        "channelPitchReferenceFields",
-        "channelRootNumber",
-        "channelRootName",
         "channelSound",
         "channelMidiRange",
         "channelNoteCount",
@@ -583,14 +580,23 @@ def test_channel_settings_owns_channel_wide_pitch_following():
     assert 'aria-label="Channel settings"' in _HTML
     assert "function syncChannelInspector()" in _JS
     assert "function openChannelInspector(channelNumber)" in _JS
-    assert "function updateSelectedChannelPitch(fields)" in _JS
-    assert "updateSelectedChannelPitch({ pitch_follow: this.checked })" in _JS
-    assert "follow.disabled = !exact" in _JS
+    assert "function updateSelectedChannelPitchFollow(enabled)" in _JS
+    assert "updateSelectedChannelPitchFollow(this.checked)" in _JS
+    assert "follow.disabled = !exact || !canFollow" in _JS
     assert "follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums" in _JS
     assert "Automatic percussion selects a dedicated sound for each MIDI key" in _JS
     assert 'id="notePitchFollow"' not in _HTML
     assert 'id="noteRootNumber"' not in _HTML
-    assert "Advanced pitch reference" in _HTML
+    assert "Advanced sound calibration" not in _HTML
+    assert "Sound's natural note" not in _HTML
+    assert 'id="channelPitchReferenceFields"' not in _HTML
+    assert 'id="channelRootNumber"' not in _HTML
+    assert 'id="channelRootName"' not in _HTML
+    assert 'root_source: "manual"' not in _JS
+    assert '"Unknown"' not in _JS
+    assert "Set its natural note" not in _JS
+    assert "This sound will play unchanged at its natural pitch." in _JS
+    assert "relative_anchor" not in _JS
     assert "Stable pitch detected for natural playback" not in _JS
     assert "function closeChannelInspectorAndClearSelection()" in _JS
     assert re.search(
@@ -619,15 +625,32 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
     assert "if (wallOffset >= total) { return; }" in _JS
     assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
     assert "api().sound_profile(candidate.value, channel)" in _JS
-    assert (
-        "body.root_midi = isFinite(Number(plan.root_midi)) ? Number(plan.root_midi) : null" in _JS
-    )
+    assert "body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined" in _JS
     assert "body.pitch_follow = !!plan.pitch_follow" in _JS
-    assert 'body.root_source = plan.root_source || "relative"' in _JS
+    assert "body.root_source = plan.root_source || null" in _JS
     assert "response.pitch_plan" in _JS
-    assert "natural playback is preserved" in _JS
+    assert "This sound will play unchanged at its natural pitch." in _JS
     assert "Number(note.pitch_offset || 0)" in _JS
     assert 'updateNoteOverride(noteId, "pitch_offset", value)' in _JS
+
+
+def test_natural_song_completion_does_not_hard_stop_finite_audio_tails():
+    assert "function stopPlaybackClock()" in _JS
+    assert re.search(
+        r"function animationTick\(\).*?if \(position >= duration\) \{\s*"
+        r"finishPlayback\(\);",
+        _JS,
+        re.DOTALL,
+    )
+    finish = re.search(
+        r"function finishPlayback\(\) \{(?P<body>.*?)\n  \}",
+        _JS,
+        re.DOTALL,
+    )
+    assert finish
+    assert "stopPlaybackClock();" in finish.group("body")
+    assert "stopSources();" not in finish.group("body")
+    assert "stopSources();\n      AUDIO.playing = true;" in _JS
 
 
 def test_octave_labels_are_a_display_only_view_preference():

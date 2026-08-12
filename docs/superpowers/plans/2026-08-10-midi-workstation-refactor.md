@@ -256,11 +256,11 @@ Release target: `v0.3.4`, created only after the pushed `main` commit passes CI.
 ## 19. Add pitch, dynamics, and note expression
 
 - [x] Preserve stable source-note identity and MIDI velocity through parsing.
-- [x] Resolve pitched families and arbitrary exact events from a trusted root or explicit
-  relative natural-playback reference.
+- [x] Resolve pitched families and arbitrary exact events from a trusted natural note; preserve
+  natural playback when no honest root exists, without exposing raw calibration in the normal UI.
 - [x] Use one integer pitch/dB expression model for preview and Timeline export.
 - [x] Add sparse per-note pitch/volume overrides and the Note expression inspector.
-- [x] Move channel-wide pitch following and root/reference controls into a dedicated
+- [x] Move the useful channel-wide pitch-following outcome into a dedicated
   Channel settings inspector opened from the channel row.
 - [x] Isolate decaying notes that need pitch or gain while retaining the neutral shared path.
 - [x] Complete the separate

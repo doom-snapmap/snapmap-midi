@@ -97,9 +97,9 @@ the darkened backdrop cancels the modal.
 
 An exact choice retains one Play event string across the channel. Curated or conservatively
 detected roots enable MIDI-following semitone modifiers. Rejected events preserve natural
-playback; the channel midpoint is retained only as an optional relative reference, and Follow
-MIDI note is an explicit opt-in. Infinite and Mixed events receive paired stops so an infinite
-branch cannot leak a speaker emitter.
+playback, and the normal UI exposes no manual calibration prompt. Follow MIDI note remains
+unavailable without trustworthy absolute pitch evidence. Infinite and Mixed events receive paired stops so
+an infinite branch cannot leak a speaker emitter.
 Expressive one-shots use duration-reserved
 isolated voices while neutral one-shots retain shared layering.
 

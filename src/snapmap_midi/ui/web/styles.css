@@ -253,9 +253,6 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .channel-setting-primary { margin: 0; padding: 2px 0; font-weight: 600; }
 .channel-setting-primary input:disabled { opacity: .72; }
 .channel-pitch-group > .expression-readout { margin-top: 8px; }
-.advanced-settings { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
-.advanced-settings summary { color: var(--muted); cursor: pointer; font-size: 12px; user-select: none; }
-.advanced-settings[open] summary { margin-bottom: 10px; color: var(--text); }
 .channel-facts { margin: 5px 0 0; }
 .channel-facts > div { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .channel-facts dt { color: var(--muted); }

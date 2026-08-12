@@ -1,6 +1,6 @@
 # Pitch Model and Channel Mix Correction
 
-Status: implemented and reconciled with full-range/chime field tests 2026-08-11.
+Status: implemented and reconciled with full-range/chime field tests 2026-08-12.
 
 This plan supersedes the target-note movement and automatic relative-reference defaults in
 2026-08-11-pitch-dynamics-note-inspector-architecture.md. It preserves that plan's verified
@@ -94,9 +94,11 @@ For a trusted root:
     requested = automatic + Pitch adjustment
     SnapMap pitch = clamp(requested, -24, +24)
 
-The root may be fractional; it is a pitch estimate in MIDI-note space. Its pitch class is
-preserved while an octave-equivalent reference is chosen to minimize range overflow. The UI
-shows this as detected pitch/reference evidence rather than asking ordinary users to audit math.
+The root may be fractional; it is a pitch estimate in MIDI-note space. Its measured octave is
+preserved. Replacing it with an octave-equivalent reference would reduce range overflow by
+silently transposing the audible result relative to the piano roll, so the implementation never
+does that. The normal UI presents only whether MIDI following is available rather than asking
+ordinary users to audit or edit pitch evidence.
 
 ### Exact sounds without a stable root
 
@@ -110,9 +112,9 @@ no claim about the grunt, impact, or ambience's acoustic pitch. This is the safe
 best-sounding behavior.
 
 A tonal event whose periodic candidate is contradicted by lower dominant spectral energy is
-root-ambiguous rather than unpitched. It automatically follows MIDI from the channel midpoint,
-stored with zero confidence and never called a detected root. Clearly nonmusical media retains
-that midpoint only as an optional reference and keeps natural playback until the user opts in.
+root-ambiguous rather than unpitched. It keeps natural playback. A channel midpoint is not acoustic
+evidence and is never used as a pitch reference, and the normal UI does not replace it with a raw
+manual calibration field. Clearly nonmusical media follows the same safe policy.
 
 The compiler does not silently fold out-of-range notes into another octave. That would change
 the composition. It clamps the engine modifier and reports the limit so the user can choose a
@@ -120,22 +122,22 @@ different family, root, or arrangement.
 
 ### Exact-sound planning and the four-octave limit
 
-Detection supplies evidence, not a final playback octave. For a trusted detected pitch, the
-planner considers octave-equivalent references and chooses the one that minimizes overflow for
-the imported channel while preserving pitch class. For example, a B5 estimate on a C2-B5 test
-range uses B3 as the playback reference, yielding -23 through +24 instead of flattening the
-lower half of the song at -24.
+Detection supplies the event's absolute natural note, including its octave. For example, a B5
+estimate remains B5 on a C2-B5 test range. Notes more than 24 semitones below it clamp at -24 and
+produce a warning. Substituting B3 would keep more modifiers in range but would make every
+unclamped note sound two octaves too high relative to the piano roll.
 
 A bell or chime may be dominated by upper partials. If the periodic candidate sits above a
 stronger lower spectral component, it is classified as tonal-but-root-ambiguous rather than
-accepted as a root. Those sounds automatically follow the MIDI contour from the channel midpoint.
-Clearly nonmusical material continues to use natural playback by default.
+accepted as a root. Those sounds, and clearly nonmusical material, continue to use natural
+playback until calibrated by the user.
 
 The old numeric profile cache is invalidated by `pitch-profiles-v2.json`. Because an old automatic
 result may also be embedded in a song sidecar, enabled `root_source: detected` entries are
-revalidated when that song opens. Manual/relative references and disabled pitch following are
-never rewritten, and unavailable game media leaves the saved value intact. Pitch-limit warnings
-are grouped by channel and report the affected MIDI span, requested
+revalidated when that song opens. Settings version 6 disables legacy relative and octave-fitted
+references before compilation; the UI reanalyzes enabled legacy automatic profiles when media is
+available. Manual roots and user-disabled choices are never rewritten. Pitch-limit warnings are
+grouped by channel and report the affected MIDI span, requested
 modifier range, and that both preview and export use the same clamp.
 
 ### Pitch changes playback speed
@@ -172,19 +174,20 @@ Users importing an ordinary song should not tune roots or octaves. Automatic and
 instrument choices resolve sample and pitch without more controls. A stable exact-sound root
 also follows MIDI automatically.
 
-Tonal root ambiguity is handled automatically with a channel-centered reference. Clearly
-nonmusical analysis preserves natural playback and offers Follow MIDI note in Channel settings.
-The UI does not add more tuning sliders or imply that an arbitrary SFX has a real root.
+Tonal root ambiguity and clearly nonmusical analysis preserve natural playback. Channel settings
+shows that MIDI pitch matching is unavailable without exposing an Unknown value or a raw
+natural-note field. The UI does not add more tuning sliders or imply that an arbitrary SFX has a
+root.
 
 ### Channel inspector
 
 Clicking a channel row opens one focused side inspector. Its first setting is Follow MIDI note.
 Automatic and curated musical mappings show the setting checked and disabled because following
 is intrinsic to their pitch model. Automatic percussion shows it off and disabled because pitch
-is encoded by per-key sound selection. Exact sounds make it editable. The normal surface says
-only whether the sound follows MIDI or plays naturally; a collapsed Advanced pitch reference is
-available for expert correction without exposing detector confidence or formula text. This keeps
-a channel-wide choice out of per-note editing.
+is encoded by per-key sound selection. Exact sounds make it editable only when trustworthy pitch
+evidence exists. The normal surface says only whether the sound follows MIDI or plays naturally;
+it exposes no calibration field, detector confidence, formula text, or Unknown state. This keeps
+a channel-wide outcome out of per-note editing without burdening users with backend evidence.
 
 ### Per-note inspector
 
@@ -222,6 +225,10 @@ in memory, with relative volume edits retained in a compatibility field until ed
 legacy notes entry keeps its playback result. Sidecars remain keyed by
 channel:source-pitch:occurrence, so edits survive retimbre, mute, solo, and root changes.
 
+Settings version 6 removes song-relative and octave-fitted pitch references. A legacy relative
+reference returns to natural playback. An enabled legacy octave-fitted detection is disabled for
+safe command-line export and reanalyzed by the UI when installed media is available.
+
 Source choices and user choices persist. Current detected references are retained as cached
 evidence, while legacy automatic detections are revalidated on open. Automatic shifts, final
 clamps, audio buffers, and display-only channel focus do not persist.
@@ -245,13 +252,14 @@ a sample, detects a root, recalculates velocity, or changes mixer inclusion.
   sample choice.
 - Curated families use their available multi-sample palette and residual tuning.
 - A trusted exact-sound root follows MIDI automatically.
-- Tonal root ambiguity follows a centered relative reference; nonmusical sounds keep natural playback.
+- Tonal root ambiguity and nonmusical sounds keep natural playback until calibrated.
 - Final pitch and volume clamp at the verified SnapMap limits and report the request.
 - Preview and exported Timeline events use the same final modifiers.
 - Multiple soloed channels play together; mute overrides solo.
 - Muted and solo-excluded notes remain visible but never preview or export.
 - Channel focus limits note hit-testing without changing conversion state.
-- Versions 1 through 4 load as version 5 and legacy note choices retain their playback.
+- Versions 1 through 5 load as version 6; legacy note volume choices retain their playback and
+  unsafe pitch references fail safe.
 - The full automated test suite and JavaScript syntax gate pass.
 
 ## Validation

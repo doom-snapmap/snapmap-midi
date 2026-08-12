@@ -160,14 +160,14 @@ There is one Play/Pause control for the whole converted song. Its playhead sweep
 entire note surface and can be dragged to seek, as can the transport scrubber. The note under the
 pointer brightens whether playback is running or paused; playback itself does not change note
 colors. Clicking a note pauses playback and opens the Note expression inspector. It shows the
-immutable MIDI note, selected event, pitch adjustment, and current note volume. Automatic
-root/reference arithmetic stays internal. Pitch adjustment changes playback without moving the block, changing its
+immutable MIDI note, selected event, pitch adjustment, and current note volume. Automatic pitch
+calibration stays internal. Pitch adjustment changes playback without moving the block, changing its
 channel, or selecting another sample. Note volume starts at the level derived from the imported
 MIDI velocity and can be set directly, including back to 0 dB. The bottom-panel Volume control
 offsets the whole arrangement without rewriting any note level. Exact sounds with a stable root
-follow MIDI automatically. Rootless effects keep natural playback. Their channel-level **Follow MIDI note**
-control and optional relative reference live in Channel settings for users who deliberately want
-melodic retuning; the Note expression inspector remains strictly per-note. Clicking or dragging
+follow MIDI automatically. Rootless effects play unchanged, with no calibration prompt or guessed
+reference. Channel settings shows the resulting pitch mode, while the Note expression inspector
+remains strictly per-note. Clicking or dragging
 empty roll space continues to seek.
 
 The piano roll defaults to scientific pitch notation (middle C = C4). **View > Octave labels**
@@ -192,13 +192,18 @@ changes preview and export; the remaining controls do not change the source note
 limits open in a nonblocking inspector instead of an import wizard or a
 separate tab.
 
+The workstation preserves the MIDI file's exact End-of-Track boundary and completes an
+incomplete final measure on the ruler. That extra empty space is silence, not a longer note: note
+blocks keep their real note-off times. Reaching the end naturally no longer kills a finite
+one-shot or release tail, so local preview follows the same decay behavior as the exported map.
+
 If DOOM is installed, preview indexes its retail soundbanks and generated event hierarchy in
 place, including one installed localization, and prepares only the sounds selected by the
 current song. There is no audio setup step; conversion and export continue to work when preview
 audio is unavailable.
 
 Exporting writes the map and, beside the song, a settings file holding every choice that
-produced it: channel sounds, mute/solo state, detected roots or optional relative references,
+produced it: channel sounds, mute/solo state, pitch mode,
 conversion limits, global
 volume, and sparse per-note pitch/volume choices. Open that song again and the choices are already
 there;
@@ -244,14 +249,11 @@ curated sounds with known pitch coverage.
 
 A manually chosen full-game event still triggers that exact event string for every note on its
 channel. When its media has a stable musical root, snapmap-midi detects and caches that numeric
-profile, preserves its pitch class, and chooses an octave-equivalent reference that fits the
-channel into SnapMap's -24 through +24 range where possible. Tonal media whose fundamental is
-ambiguous, such as a bell dominated by upper partials, follows MIDI from the channel midpoint
-instead of accepting a false detected root. Clearly nonmusical effects play naturally by
-default; their midpoint is retained as an optional relative reference. Enabling Follow MIDI
-note preserves intervals without claiming that an effect, voice, or impact has an acoustic note.
-Because that choice affects every note
-using the channel sound, it is edited in Channel settings rather than Note expression.
+profile and preserves the measured octave. Tonal media whose fundamental is ambiguous, such as a
+bell dominated by upper partials, plays naturally instead of accepting a false detected root.
+Clearly nonmusical effects also play naturally by default. The normal UI does not ask users to
+calibrate arbitrary effects or guess a note for them. Notes beyond SnapMap's -24 through +24 range
+clamp with a warning rather than silently shifting the whole channel by an octave.
 
 MIDI velocity becomes each note's initial integral dB level. A per-note edit replaces that
 starting level directly; the global volume offset is then added without changing the stored note
@@ -270,7 +272,9 @@ export aligned. The arrangement then uses three scheduling paths:
   end.
 
 Voice pools are allocated per MIDI channel, so one instrument cannot steal another channel's
-voice. Preview and export share this same preparation and expression model.
+voice. Preview and export share this same preparation and expression model. Empty time after the
+last note needs no map event: the Timeline is already silent. The workstation may complete the
+last visual measure, but export neither stretches the last note nor adds a synthetic sound event.
 
 ### The map is built from nothing
 
