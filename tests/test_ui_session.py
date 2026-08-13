@@ -450,14 +450,33 @@ def test_rootless_exact_sound_can_follow_midi_from_the_neutral_reference(tmp_pat
     assert all(event["pitch_follow"] for event in events)
 
 
-def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
+def test_a_note_that_cannot_get_a_speaker_is_dropped_not_zeroed(tmp_path):
+    """One speaker plays one note, the way one synth voice does.
+
+    This used to hand every note of the chord the same speaker and let each one
+    truncate the last -- to ZERO length, since they start together. Those notes
+    were silent but still counted as converted and drawn as shortened rather
+    than dropped, so a three-note chord on one speaker played once and drew
+    three blocks. "What I hear does not match what I see" was the whole
+    complaint.
+
+    Now the layer is thinned to what its speakers can actually sound: the top
+    note plays IN FULL and the rest are dropped, and nothing is zero-length.
+    """
     session = Session(midi=_dense(tmp_path))
     session.apply({"tuning": {"max_speakers": 1}})
-    events = [event for event in session.preview_manifest()["events"] if event["channel"] == 3]
-    cut = [event for event in events if event["cut"]]
-    assert len(events) == 3
-    assert len(cut) == 2
-    assert all(event["end"] == event["start"] for event in cut)
+    manifest = session.preview_manifest()
+
+    played = [e for e in manifest["events"] if e["channel"] == 3]
+    assert len(played) == 1, "one speaker has to mean one note"
+    assert played[0]["pitch"] == 67, "the top note is the one a listener keeps"
+    assert played[0]["end"] == played[0]["midi_end"], "the note that plays keeps its tail"
+
+    drawn = [e for e in manifest["display_events"] if e["channel"] == 3]
+    assert len(drawn) == 3, "the roll still draws every written note"
+    dropped = [e for e in drawn if not e["converted"]]
+    assert sorted(e["pitch"] for e in dropped) == [60, 64]
+    assert not any(e["end"] == e["start"] for e in drawn), "a silent note must read as dropped"
 
 
 def _two_parts_one_channel(tmp_path) -> str:
@@ -718,22 +737,24 @@ def test_declaring_percussion_reaches_the_exported_map(tmp_path):
     assert b"play_piano" not in raw
 
 
-def test_a_cut_note_keeps_its_written_length_for_the_roll(tmp_path):
-    """A tuning lever shades a note; it must not redraw the composition.
+def test_a_dropped_note_keeps_its_written_length_for_the_roll(tmp_path):
+    """A tuning lever decides what SOUNDS; it must not redraw the composition.
 
-    `end` is where the sound stops, so playback still honours the stolen
-    speaker. `midi_end` is what the file wrote, and it is the same number at
-    every speaker setting -- otherwise moving the slider looks exactly like
-    losing notes, which is the complaint this answers.
+    A note the speakers cannot sound is marked unconverted, and the roll dims
+    it. What it must not do is move: `midi_end` is what the file wrote and it
+    reads the same at every speaker setting, or lowering the slider would look
+    like the tool had edited the MIDI.
     """
     session = Session(midi=_dense(tmp_path))
     session.apply({"tuning": {"max_speakers": 1}})
-    events = [e for e in session.preview_manifest()["events"] if e["channel"] == 3]
-    cut = [e for e in events if e["cut"]]
+    drawn = [e for e in session.preview_manifest()["display_events"] if e["channel"] == 3]
 
-    assert len(cut) == 2
-    assert all(event["end"] == event["start"] for event in cut)
-    assert all(event["midi_end"] == 500 for event in events)
+    assert len(drawn) == 3
+    assert sum(1 for e in drawn if not e["converted"]) == 2
+    # Written length is untouched, dropped or not.
+    assert all(event["midi_end"] == 500 for event in drawn)
+    # And a dropped note is drawn at full length rather than collapsed.
+    assert all(event["end"] > event["start"] for event in drawn)
 
 
 def test_written_note_length_is_the_same_at_every_speaker_setting(tmp_path):

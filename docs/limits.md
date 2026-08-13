@@ -35,7 +35,23 @@ Decay behavior no longer tells the whole allocation story:
   emitter. It holds no dedicated speaker and is effectively immune to this voice-pool limit.
 - A decaying note with pitch or gain expression needs isolation. It reserves a speaker through
   installed-event duration, or 750 ms for drums and 1000 ms for other sounds when metadata is
-  unavailable. Under pressure, a new attack can steal and shorten that tail.
+  unavailable.
+
+**`max_speakers` is a voice count, and it drops notes rather than shortening them.** A layer is
+thinned to what its speakers can actually sound before any speaker is handed out, keeping the
+highest notes, which is what a hardware synth does when it runs out of voices. A note either
+gets a speaker and rings its full tail, or it does not play and the roll dims it.
+
+It did not always work that way. A note that could not get a speaker used to be handed one
+anyway and truncated by the next note on it — to *zero length* when they started together. It
+was silent, but it was reported as a shortened note rather than a dropped one, so a five-note
+chord on two speakers played two notes and drew five blocks. Which two survived was decided by
+the order the exporter happened to write the events in, so two exports of one arrangement
+sounded different. Both are fixed; see `tests/test_voices.py`.
+
+Note that this reads as "shorter notes" on a single melody line too, and that is not a
+contradiction: **your notes do not overlap, but their sounds do.** A 124 ms note can trigger a
+4-second sample, so notes a beat apart are still both sounding and still both need a speaker.
 - A sustained note reserves a speaker until its capped note end and receives a stop or release.
 
 For an exact full-game assignment, installed Wwise metadata still decides decay behavior.

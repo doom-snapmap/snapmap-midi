@@ -173,6 +173,12 @@ def compile_to_rawmap(
         layer = layers[part_key]
         if max_poly:
             layer = thin_polyphony(layer, max_poly)
+        # The speaker count is a voice count, so it thins first. A note that
+        # cannot get a speaker at its onset used to be handed one and cut to
+        # nothing by the next note -- silent, but drawn as a shortened note
+        # instead of a dropped one. Dropping it says the same thing honestly,
+        # and the notes that DO play keep their full tail.
+        layer = thin_polyphony(layer, max_speakers)
         count = allocate_voices(layer, max_speakers)
         voices_used += count
         # Voices are allocated per layer against max_speakers, so the running
