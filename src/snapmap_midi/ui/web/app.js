@@ -3311,18 +3311,20 @@
     var mode = percussionMode(channel);
     el("channelPercussion").value = mode;
     var help = el("channelPercussionHelp");
+    // Short, and true of the part in front of you. An earlier draft explained
+    // the General MIDI channel-10 convention on every row, which is a fact
+    // about one channel out of sixteen -- so fifteen rows out of sixteen were
+    // reading a sentence that did not describe them.
     if (mode === "kit") {
-      help.textContent = "Played as a drum kit: each MIDI key is one percussion "
-        + "sound, whatever channel the part is on.";
+      help.textContent = "Plays this part as a drum kit \u2014 each MIDI key is "
+        + "one drum sound.";
     } else if (mode === "melodic") {
-      help.textContent = "Played as an instrument, even though General MIDI "
-        + "reserves this channel for percussion.";
+      help.textContent = "Plays this part as an instrument.";
     } else if (channel.is_drums) {
-      help.textContent = "Automatic: MIDI channel 10 is the General MIDI "
-        + "percussion channel, so this part is read as a drum kit.";
+      help.textContent = "Automatic: channel 10, so this plays as a drum kit.";
     } else {
-      help.textContent = "Automatic: read as a melodic instrument. Choose "
-        + "Drum kit if this part is really percussion.";
+      help.textContent = "Automatic: plays as an instrument. Choose Drum kit if "
+        + "this part is really percussion.";
     }
   }
 
