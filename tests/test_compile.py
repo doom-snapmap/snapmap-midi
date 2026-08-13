@@ -367,6 +367,37 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
     assert stats["pitch_adjusted"] == 1
 
 
+def test_absolute_note_pitch_is_the_value_written_to_the_timeline(minimal_timeline_map):
+    raw, stats = compile_to_rawmap(
+        TINY_MIDI,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_pianoc4"},
+        channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 60}},
+        note_overrides={"0:60:1": {"follow_pitch_semitones": -3}},
+        button_name="absolute-note-pitch-test",
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    matched = None
+    for group_index in range(groups["num"]):
+        block = groups["item[%d]" % group_index]["events"]
+        events = [block["item[%d]" % index] for index in range(block["num"])]
+        definitions = [event["eventCall"]["\neventHandle_t eventDef"] for event in events]
+        if definitions[:2] == ["startSoundShader", "fadePitch"]:
+            matched = events[:2]
+            break
+
+    assert matched is not None
+    assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": -3.0}
+    assert stats["pitch_adjusted"] == 1
+
+
 def test_export_uses_the_sound_root_octave_without_silent_transposition(
     tmp_path, minimal_timeline_map
 ):

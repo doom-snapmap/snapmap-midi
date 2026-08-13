@@ -114,8 +114,8 @@ The workstation is one persistent surface: a unified channel list, a full-range 
 one global Play/Pause transport, a draggable sweeping playhead, and mutually exclusive
 Conversion, Notifications, Channel settings, and Note expression inspectors. Source composition stays read-only:
 notes cannot be created, deleted, moved, or resized. Clicking a note instead edits playback-only
-Pitch adjustment and its absolute Note volume. Note volume begins at the level derived from imported
-velocity and may be set directly to any -60 through 20 dB value. Its MIDI row, channel, id, and curated sample
+Pitch and its absolute Note volume. Note volume begins at the level derived from imported velocity
+and may be set directly to any -60 through 20 dB value. Its MIDI row, channel, id, and curated sample
 stay fixed. Clicking empty space seeks.
 
 The roll has synchronized pitch/time axes, native two-dimensional scrolling,
@@ -157,10 +157,11 @@ The reference retail installation contains 7,589 Play events, of which 7,353 sup
 preview; those counts can vary with localization and edition. Exact assignment repeats the
 chosen event string for every note. On selection, a conservative all-leaf analysis accepts a
 root only for stable pitched media. Accepted roots keep their measured octave so MIDI pitch remains
-absolute. Tonal but root-ambiguous and nonmusical events keep natural playback; the normal UI does
-not expose manual acoustic calibration. Infinite and Mixed Wwise
-events use the sustained
-path and receive a stop. One-shots with non-zero pitch or gain use duration-reserved speaker
+absolute. Tonal but root-ambiguous and nonmusical events keep natural playback by default. Users may
+explicitly enable Follow MIDI note for those events; the fallback is a fixed neutral C4 operational
+reference, not a claimed acoustic root or a value inferred from channel notes. The normal UI does not
+expose manual acoustic calibration. Infinite and Mixed Wwise events use the sustained path and
+receive a stop. One-shots with non-zero pitch or gain use duration-reserved speaker
 voices; neutral one-shots retain the shared fire-and-forget path. The full catalog remains a
 manual layer and does not widen General MIDI automatic mapping.
 
@@ -169,35 +170,41 @@ manual layer and does not widen General MIDI automatic mapping.
 Channel settings owns the pitch basis shared by every note on a channel. Automatic mappings and
 pitched instrument sets always follow MIDI through their curated samples; automatic percussion
 uses dedicated per-key sounds and has no channel-wide pitch mode. Exact events expose
-**Follow MIDI note** only when the application has trustworthy musical pitch evidence. Automatic
-root selection and calibration remain internal; there is no raw reference-number control in the
-normal UI. Tonal but root-ambiguous and clearly nonmusical exact SFX default to natural playback.
-Per-note exceptions use Pitch adjustment instead.
+**Follow MIDI note** for every exact sound. A trusted acoustic root enables it automatically;
+otherwise the sound stays at natural playback until the user opts in, at which point a stable neutral
+C4 reference supplies predictable relative semitones. Automatic root selection remains internal;
+there is no raw reference-number control in the normal UI and no first-note, midpoint, or median
+fallback.
 
 ### Per-note pitch and dynamics
 
 Clicking a rendered note pauses transport and opens the Note expression inspector. It shows the
-immutable MIDI note, channel, exact event, Pitch adjustment, current note volume, and any clamp.
+immutable MIDI note, channel, exact event, Pitch, current note volume, and any clamp.
 Automatic pitch detection, reference choice, and subtraction stay internal.
 
-- **Pitch adjustment** is an integer -24 through 24 semitones and affects playback only. With a
-  trusted or manually calibrated root, it is added after automatic MIDI-following pitch.
-  Without either, it is the only SnapMap pitch modifier and zero preserves natural playback.
-  It never moves the MIDI block or changes which curated sample was selected.
+- **Pitch** is an integer -24 through 24 semitones and affects playback only. The control displays
+  the active mode's exact modifier: automatic pitch (or its separate user adjustment) while Follow
+  MIDI note is enabled, and the note's preserved manual value while it is disabled. Editing saves
+  only the active mode. Toggling Follow MIDI never rewrites the other value, so disabling it restores
+  prior manual work rather than resetting notes to zero. Pitch never moves the MIDI block or changes
+  which curated sample was selected.
 - **Global volume** is an integer -60 through 20 dB, defaults to 0, and offsets every note.
   Its slider sits beside Notifications in the bottom control plane and never rewrites note
   values.
 - **Note volume** is an integer -60 through 20 dB. MIDI velocity first maps through
   `40 * log10(velocity / 127)` to provide the initial value; a user edit replaces that value
   directly. Global volume is added afterward.
-- **Reset note** removes only that note's sparse override, restoring its imported
-  velocity-derived level.
+- **Reset note** removes both pitch-mode values and the note-volume override, restoring automatic
+  pitch, a zero manual pitch, and the imported velocity-derived level.
 
 Final pitch is clamped to SnapMap's -24 through 24 semitone range and final volume to -60
 through 20 dB. The notification/inspector readouts expose a requested value that was limited.
 Edits are keyed by `channel:source-pitch:occurrence`; they survive sound changes but never
 modify the source MIDI, change note verticality, change channel identity, or participate in
-curated sample selection.
+curated sample selection. Changing the sound also preserves mute, solo, and an explicit channel-wide
+Follow MIDI note preference. Only the selected sound's acoustic root evidence is recalculated.
+Sparse note writes and sound assignments run in order, so rapid edits cannot replace one another
+with stale full-document snapshots.
 
 ### The palette's categories
 
@@ -224,8 +231,8 @@ fired as a one-shot is never told to stop — see [`limits.md`](limits.md).
 The workstation can play the entire converted arrangement directly from an installed game's
 retail soundbanks, with a valid 890-sound offline cache as fallback. The same direct source
 auditions full-catalog events in the browser. Preview receives the compiler's resolved sound,
-automatic root-relative pitch or natural-playback state, playback-only note pitch adjustment,
-current note volume, global volume, duration, and voice-cut facts. Web Audio
+automatic root-relative pitch or natural-playback state, the exact per-note SnapMap pitch, current
+note volume, global volume, duration, and voice-cut facts. Web Audio
 applies the final semitones and dB without recalculating them. It decodes only samples the
 current song uses. See
 [`ui.md`](ui.md#previewing-the-song) for transport and source behavior.
@@ -259,8 +266,8 @@ remain library-only arguments to `compile_to_rawmap`.
 | `decaying_families` | — | set | classify a family as naturally decaying; expression can still require an isolated voice |
 | `channel_families` | — | dict | override the family for a whole MIDI channel |
 | `channel_sounds` | — | dict | trigger one exact DOOM Play event for every note on a MIDI channel |
-| `channel_pitch_profiles` | — | dict | enable exact-sound pitch following from detected or manually calibrated natural notes |
-| `note_overrides` | — | dict | sparse playback-only pitch adjustments and absolute note volumes keyed by stable source-note id |
+| `channel_pitch_profiles` | — | dict | enable exact-sound pitch following from acoustic roots or the explicit neutral reference |
+| `note_overrides` | — | dict | sparse absolute playback pitch and note-volume values keyed by stable source-note id |
 | `channel_mutes` | — | set | silence whole channels; the notes are not counted as dropped |
 | `channel_solos` | — | set | standard multi-solo; when non-empty, only unmuted members are audible |
 | `drop_shaders` | — | set | one specific sound is wrong; exclude it |
@@ -278,10 +285,11 @@ The bottom control plane exposes `master_volume_db`. The Conversion inspector ex
 `max_speakers`, `release_s`, `hard_stop`, `max_poly`, `cap_sustain_ms`, `bass_pitch`,
 `bass_cap_ms`, `decaying_families`, and `family_caps`. Channel rows expose family/sound
 selection, mute, multi-solo, and click-to-focus inspection. Selecting an exact sound records a
-trusted pitch when available. Clearly nonmusical sounds keep natural playback. Clicking a note
-exposes sparse playback-only `note_overrides`; Channel settings shows only the resulting pitch
-mode and never exposes raw calibration data. The imported note, curated sample choice, and
-piano-roll row remain unchanged.
+trusted pitch when available. Root-ambiguous and clearly nonmusical sounds keep natural playback
+unless Follow MIDI note is explicitly enabled from the neutral C4 reference. Clicking a note exposes
+sparse playback-only `note_overrides`; Channel settings shows only the useful pitch mode and never
+exposes raw calibration data. The imported note, curated sample choice, and piano-roll row remain
+unchanged.
 
 Automatic percussion still obeys `drums` and `drum_key_overrides` restored from a sidecar,
 but percussion is not a separate UI mode. The rest stay sidecar or library controls.

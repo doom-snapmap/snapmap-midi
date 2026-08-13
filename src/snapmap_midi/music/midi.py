@@ -190,6 +190,14 @@ def parse_notes(
                 continue
             override = note_overrides.get(note_id, {})
             pitch_offset = int(override.get("pitch_offset", 0))
+            manual_pitch_semitones = (
+                int(override["pitch_semitones"]) if "pitch_semitones" in override else None
+            )
+            follow_pitch_semitones = (
+                int(override["follow_pitch_semitones"])
+                if "follow_pitch_semitones" in override
+                else None
+            )
             note_volume_db = int(override["volume_db"]) if "volume_db" in override else None
             volume_trim_db = int(override.get("volume_trim_db", 0))
             exact_sound = channel_sounds.get(msg.channel)
@@ -252,11 +260,15 @@ def parse_notes(
                         root_confidence = 1.0
                         root_source = "palette_name"
                         pitch_follow = True
+                active_pitch_semitones = (
+                    follow_pitch_semitones if pitch_follow else manual_pitch_semitones
+                )
                 expression = expression_for(
                     msg.note,
                     msg.velocity,
                     applied_root,
                     pitch_offset=pitch_offset,
+                    pitch_semitones=active_pitch_semitones,
                     volume_trim_db=volume_trim_db,
                     note_volume_db=note_volume_db,
                     master_volume_db=master_volume_db,
@@ -267,6 +279,8 @@ def parse_notes(
                     "root_confidence": root_confidence,
                     "root_source": root_source,
                     "pitch_follow": pitch_follow,
+                    "manual_pitch_semitones": manual_pitch_semitones,
+                    "follow_pitch_semitones": follow_pitch_semitones,
                     "audible": audible,
                     "muted": muted,
                     "solo_excluded": solo_excluded,

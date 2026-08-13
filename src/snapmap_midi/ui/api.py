@@ -370,14 +370,20 @@ class Bridge:
         transposes every audible result by that octave while the piano roll
         stays put. Notes beyond the engine's finite range must clamp and warn;
         they must not silently retune the whole channel.
+
+        A rootless event still defaults to natural playback. If the user
+        explicitly enables MIDI following, a stable neutral C4 reference gives
+        every MIDI note a predictable semitone value without pretending that
+        C4 was acoustically detected. It never depends on the first note or the
+        midpoint of a channel.
         """
 
         plan = {
             "pitch_follow": False,
-            "root_midi": None,
+            "root_midi": settings_module.NEUTRAL_PITCH_REFERENCE,
             "root_confidence": 0.0,
-            "root_source": None,
-            "reason": "natural playback; no trustworthy musical pitch",
+            "root_source": "neutral",
+            "reason": "natural playback; MIDI following can use a neutral C4 reference",
         }
         if profile.get("pitchable") and profile.get("root_midi") is not None:
             source = profile.get("source")
@@ -393,7 +399,7 @@ class Bridge:
                 }
             )
         elif profile.get("relative_recommended"):
-            plan["reason"] = "tonal but root-ambiguous; natural playback preserved"
+            plan["reason"] = "tonal but root-ambiguous; optional neutral C4 reference"
         return plan
 
     def _reconcile_detected_pitch_profiles(self) -> list[int]:
@@ -444,8 +450,12 @@ class Bridge:
                 # prevent a song from opening with its last-known settings.
                 continue
 
+            preferred_follow = entry.get("pitch_follow_preference")
+            effective_follow = (
+                plan["pitch_follow"] if preferred_follow is None else bool(preferred_follow)
+            )
             replacement = {
-                "pitch_follow": plan["pitch_follow"],
+                "pitch_follow": effective_follow,
                 "root_midi": plan["root_midi"],
                 "root_confidence": plan["root_confidence"],
                 "root_source": plan["root_source"],
