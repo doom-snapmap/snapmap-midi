@@ -631,7 +631,7 @@
       row.className = "track-row";
       row.dataset.part = channel.key;
       row.style.setProperty("--track-color", partColor(channel));
-      row.title = "Click to focus this part and open its settings; click again to show all parts";
+      row.title = "Click to focus this track and open its settings; click again to show all tracks";
 
       var number = document.createElement("div");
       number.className = "track-channel";
@@ -647,8 +647,8 @@
       // The file's real track index is not lost, just not shouted: it stays in
       // the title for anyone debugging against the source file.
       number.textContent = String(position + 1);
-      number.title = "Part " + (position + 1) +
-        " \u00b7 track " + channel.track +
+      number.title = "Track " + (position + 1) +
+        " \u00b7 MIDI track " + channel.track +
         " \u00b7 MIDI channel " + (channel.channel + 1);
       row.appendChild(number);
 
@@ -753,9 +753,9 @@
       var solo = row.querySelector(".track-solo-toggle");
       mute.classList.toggle("active", !!entry.muted);
       mute.setAttribute("aria-pressed", entry.muted ? "true" : "false");
-      var who = channel ? partLabel(channel) : "this part";
+      var who = channel ? partLabel(channel) : "this track";
       mute.setAttribute("aria-label", (entry.muted ? "Unmute " : "Mute ") + who);
-      mute.title = entry.muted ? "Unmute this part" : "Mute this part";
+      mute.title = entry.muted ? "Unmute this track" : "Mute this track";
       setIcon(mute, entry.muted ? "volume-x" : "volume-2");
       solo.classList.toggle("active", !!entry.soloed);
       solo.setAttribute("aria-pressed", entry.soloed ? "true" : "false");
@@ -763,8 +763,8 @@
         ? "Remove " + who + " from the solo mix"
         : "Solo " + who);
       solo.title = entry.soloed
-        ? "Remove this part from the solo mix"
-        : "Solo this part; other soloed parts remain audible";
+        ? "Remove this track from the solo mix"
+        : "Solo this track; other soloed tracks remain audible";
     }
   }
 
@@ -3366,20 +3366,20 @@
     var mode = percussionMode(channel);
     el("channelPercussion").value = mode;
     var help = el("channelPercussionHelp");
-    // Short, and true of the part in front of you. An earlier draft explained
+    // Short, and true of the track in front of you. An earlier draft explained
     // the General MIDI channel-10 convention on every row, which is a fact
     // about one channel out of sixteen -- so fifteen rows out of sixteen were
     // reading a sentence that did not describe them.
     if (mode === "kit") {
-      help.textContent = "Plays this part as a drum kit \u2014 each MIDI key is "
+      help.textContent = "Plays this track as a drum kit \u2014 each MIDI key is "
         + "one drum sound.";
     } else if (mode === "melodic") {
-      help.textContent = "Plays this part as an instrument.";
+      help.textContent = "Plays this track as an instrument.";
     } else if (channel.is_drums) {
       help.textContent = "Automatic: channel 10, so this plays as a drum kit.";
     } else {
       help.textContent = "Automatic: plays as an instrument. Choose Drum kit if "
-        + "this part is really percussion.";
+        + "this track is really percussion.";
     }
   }
 

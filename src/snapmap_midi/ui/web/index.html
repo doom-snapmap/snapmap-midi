@@ -109,14 +109,14 @@
   </div>
 
   <main class="workspace" id="workspace" hidden>
-    <section class="tracks-pane" id="tracksPane" aria-label="Song parts">
-      <div class="pane-head"><span>Parts</span><span class="badge" id="trackCount">0</span></div>
+    <section class="tracks-pane" id="tracksPane" aria-label="Song tracks">
+      <div class="pane-head"><span>Tracks</span><span class="badge" id="trackCount">0</span></div>
       <div class="track-list" id="trackList"></div>
     </section>
     <div class="pane-splitter" id="paneSplitter" role="separator" tabindex="0"
-         aria-label="Resize parts and piano roll" aria-orientation="vertical"
+         aria-label="Resize tracks and piano roll" aria-orientation="vertical"
          aria-valuemin="220" aria-valuemax="720" aria-valuenow="314"
-         title="Drag to resize parts; double-click to reset"></div>
+         title="Drag to resize tracks; double-click to reset"></div>
     <section class="roll-pane" aria-label="Converted song piano roll">
       <div class="roll-corner" aria-hidden="true"></div>
       <canvas class="time-ruler" id="timeRuler" aria-hidden="true"></canvas>
@@ -223,18 +223,18 @@
     </div>
   </aside>
 
-  <aside class="inspector channel-inspector" id="channelInspector" aria-label="Part settings" hidden>
+  <aside class="inspector channel-inspector" id="channelInspector" aria-label="Track settings" hidden>
     <div class="inspector-head">
       <div>
-        <strong>Part settings</strong>
-        <div class="muted" id="channelInspectorSubtitle">No part selected</div>
+        <strong>Track settings</strong>
+        <div class="muted" id="channelInspectorSubtitle">No track selected</div>
       </div>
-      <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close part settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
+      <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close track settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body" id="channelInspectorBody">
       <div class="control-group channel-percussion-group">
-        <div class="control-title"><span>Part type</span><span class="hint">part</span></div>
-        <select id="channelPercussion" aria-label="How this part is played">
+        <div class="control-title"><span>Track type</span><span class="hint">track</span></div>
+        <select id="channelPercussion" aria-label="How this track is played">
           <option value="auto">Automatic</option>
           <option value="kit">Drum kit</option>
           <option value="melodic">Melodic instrument</option>
