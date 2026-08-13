@@ -54,6 +54,15 @@ from snapmap_midi.sound import palette
 #: with it.
 _AXIS = (0, 127)
 
+#: How much of a bar past the last bar line is read as padding rather than as
+#: music. Editors routinely write End-of-Track a handful of ticks past the final
+#: bar, and a bare ceiling turns one stray tick into a whole empty measure on the
+#: ruler -- 2,000 ms of dead timeline bought with 1/1920th of a bar. A 32nd note
+#: is the smallest division the roll draws, so content shorter than that is not
+#: content. A genuinely incomplete final measure is far larger than this and
+#: still earns its bar.
+_GRID_PADDING_BARS = Fraction(1, 32)
+
 
 def _timing_manifest(mid_path) -> dict:
     """Return the source MIDI clock as absolute tick/time change points.
@@ -109,9 +118,15 @@ def _timing_manifest(mid_path) -> dict:
         int(signature["denominator"]),
     )
     ticks_since_signature = max(0, source_duration_ticks - int(signature["tick"]))
-    completed_bars = math.ceil(Fraction(ticks_since_signature, 1) / ticks_per_bar)
-    grid_duration_ticks = int(
-        math.ceil(Fraction(int(signature["tick"]), 1) + completed_bars * ticks_per_bar)
+    raw_bars = Fraction(ticks_since_signature, 1) / ticks_per_bar
+    completed_bars = math.ceil(raw_bars - _GRID_PADDING_BARS) if raw_bars else 0
+    # Absorbing the padding must never absorb the music with it: any content at
+    # all occupies at least the measure it started in.
+    if ticks_since_signature and completed_bars < 1:
+        completed_bars = 1
+    grid_duration_ticks = max(
+        source_duration_ticks,
+        int(math.ceil(Fraction(int(signature["tick"]), 1) + completed_bars * ticks_per_bar)),
     )
 
     def time_at_tick(target_tick):
@@ -438,10 +453,16 @@ class Session:
                 return {
                     "id": note.id,
                     "start": note.start,
+                    # `end` is when the note stops being heard, after caps and
+                    # speaker stealing -- the preview transport schedules from
+                    # it. `midi_end` is what the file wrote, which is what the
+                    # roll draws, so moving a tuning lever changes the shading
+                    # on a block rather than the block.
                     "end": max(
                         note.start,
                         getattr(note, "preview_end", note.end),
                     ),
+                    "midi_end": max(note.start, getattr(note, "midi_end", note.end)),
                     "sound": note.shader,
                     "channel": note.chan,
                     "source_pitch": note.source_pitch,
@@ -487,6 +508,10 @@ class Session:
             ]
             timing = _timing_manifest(self._doc["midi"])
             duration_ms = int(round(timing["grid_duration_ms"]))
+            # Both boundaries, so the surface never shrinks under a tuning lever:
+            # `midi_end` is what the roll draws, `end` is what playback reaches.
+            if display_events:
+                duration_ms = max(duration_ms, max(e["midi_end"] for e in display_events))
             if events:
                 duration_ms = max(duration_ms, max(event["end"] for event in events))
             return {

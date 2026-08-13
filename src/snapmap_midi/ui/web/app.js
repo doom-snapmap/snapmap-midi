@@ -1362,7 +1362,17 @@
         source: event,
         pitch: eventPitch,
         start: eventStart,
-        end: Math.max(eventStart, Number(event.end) || eventStart),
+        // The block is the MIDI note. `playedEnd` is where the conversion
+        // actually stops it -- a capped sustain or a stolen speaker -- and is
+        // drawn as shading on the tail, never as a shorter block. Falls back to
+        // `end` so an older manifest still renders.
+        end: Math.max(
+          eventStart,
+          Number(event.midi_end !== undefined && event.midi_end !== null
+            ? event.midi_end
+            : event.end) || eventStart
+        ),
+        playedEnd: Math.max(eventStart, Number(event.end) || eventStart),
         channel: Number(event.channel) || 0,
         color: channelColor(Number(event.channel) || 0),
         audible: event.audible !== false,
@@ -1439,13 +1449,38 @@
     var eventY = (127 - record.pitch) * ROLL.rowHeight - scrollTop + 1;
     var eventHeight = Math.max(2, ROLL.rowHeight - 2);
     var eventWidth = Math.max(2, endX - startX);
+    // Where the sound actually stops inside the block, when that is earlier
+    // than the written note-off. Null when the note plays its full length.
+    var cutX = null;
+    if (record.playedEnd !== undefined && record.playedEnd < record.end) {
+      cutX = clamp(contentXAtTime(record.playedEnd) - scrollLeft, startX, startX + eventWidth);
+    }
     return {
       x: startX,
       y: eventY,
       width: eventWidth,
       height: eventHeight,
-      radius: Math.min(4, eventWidth / 2, eventHeight / 2)
+      radius: Math.min(4, eventWidth / 2, eventHeight / 2),
+      cutX: cutX
     };
+  }
+
+  function shadeCutTail(context, geometry, palette) {
+    if (geometry.cutX === null || geometry.cutX === undefined) { return; }
+    var tail = geometry.x + geometry.width - geometry.cutX;
+    if (tail <= 0.5) { return; }
+    context.save();
+    context.globalAlpha = 0.62;
+    context.fillStyle = palette.field;
+    context.fillRect(geometry.cutX, geometry.y, tail, geometry.height);
+    context.globalAlpha = 0.9;
+    context.strokeStyle = palette.field;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(geometry.cutX + 0.5, geometry.y);
+    context.lineTo(geometry.cutX + 0.5, geometry.y + geometry.height);
+    context.stroke();
+    context.restore();
   }
 
   function parseMeter(value) {
@@ -1999,6 +2034,7 @@
   }
   function drawStaticNotes(context, records, scrollLeft, scrollTop, width, height, duration, palette) {
     var detailed = ROLL.rowHeight >= 12 && ROLL.zoom > 140;
+    var cuts = [];
     if (!detailed) {
       var batches = {};
       records.forEach(function (record) {
@@ -2011,6 +2047,7 @@
           batches[key] = { color: visual.color, alpha: visual.alpha, blocks: [] };
         }
         batches[key].blocks.push(geometry);
+        if (geometry.cutX !== null) { cuts.push(geometry); }
       });
       Object.keys(batches).forEach(function (key) {
         var batch = batches[key];
@@ -2023,6 +2060,7 @@
         context.fill();
       });
       context.globalAlpha = 1;
+      cuts.forEach(function (geometry) { shadeCutTail(context, geometry, palette); });
       return;
     }
 
@@ -2042,6 +2080,7 @@
         visual.alpha,
         false
       );
+      shadeCutTail(context, geometry, palette);
       drawNoteLabel(
         context,
         record,
@@ -2200,6 +2239,7 @@
         1,
         true
       );
+      shadeCutTail(context, geometry, palette);
       drawNoteLabel(context, hovered.record, geometry, 1, visual.color);
       context.globalAlpha = 1;
     }

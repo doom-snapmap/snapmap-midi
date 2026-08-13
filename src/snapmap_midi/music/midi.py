@@ -43,6 +43,27 @@ class Note:
         return self.end - self.start
 
 
+def _record(note):
+    """Freeze the note's written length before any scheduling policy touches it.
+
+    `note.end` is the note's SCHEDULED end and later stages are entitled to move
+    it: `prepare_voice_layers` shortens it for `cap_sustain_ms` and the family
+    caps, and speaker stealing cuts it shorter still. Every one of those is a
+    consequence of the tuning levers rather than a fact about the file, so a
+    piano roll drawn from `note.end` redraws the composition every time a slider
+    moves and the user cannot tell a thinned passage from lost data.
+
+    `midi_end` is the parsed note-off and nothing downstream writes to it. It is
+    set here, at the one moment it is known to be untouched.
+
+    Set as an attribute rather than a `Note` field on purpose: field order in
+    that dataclass is load-bearing for the exported bytes, and this value is
+    never exported.
+    """
+    note.midi_end = note.end
+    return note
+
+
 def channel_is_percussion(mid, drum_map=DRUM_MAP) -> bool:
     """Guess whether the percussion channel really carries a kit.
 
@@ -261,14 +282,14 @@ def parse_notes(
             if pending:
                 started, shader, sustained, family, expression, metadata = pending.pop(0)
                 note = Note(started, now, shader, sustained, msg.channel, family)
-                notes.append(annotate(note, expression, **metadata))
+                notes.append(_record(annotate(note, expression, **metadata)))
 
     end = int(elapsed * 1000)
     for (channel, pitch), pending in active.items():
         for started, shader, sustained, family, expression, metadata in pending:
             # Still sounding when the file ended; hold it rather than drop it.
             note = Note(started, end, shader, sustained, channel, family)
-            notes.append(annotate(note, expression, **metadata))
+            notes.append(_record(annotate(note, expression, **metadata)))
 
     audible_notes = [note for note in notes if getattr(note, "audible", True)]
     pitch_limits = {}

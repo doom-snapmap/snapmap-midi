@@ -258,6 +258,51 @@ def test_complete_final_measure_does_not_add_another_measure(tmp_path):
     assert manifest["duration_ms"] == 1500
 
 
+def test_a_few_ticks_of_editor_padding_do_not_buy_a_whole_measure(tmp_path):
+    """One tick past the bar line is a DAW artefact, not a bar of music.
+
+    Editors routinely write End-of-Track a hair past the final bar. Ceiling that
+    and the ruler grows a whole empty measure -- two seconds of dead timeline
+    bought with 1/1920th of a bar. The source boundary still reports the tick.
+    """
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+            mido.MetaMessage("end_of_track", time=1),
+        ],
+        name="one-tick-of-padding.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 1921
+    assert manifest["timing"]["grid_duration_ticks"] == 1921
+    assert manifest["source_duration_ms"] == 2001
+
+
+def test_a_real_partial_measure_still_earns_its_bar(tmp_path):
+    """The tolerance must absorb padding without absorbing music."""
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+            mido.Message("note_on", channel=0, note=62, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=62, velocity=0, time=960),
+        ],
+        name="half-final-measure.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 2880
+    assert manifest["timing"]["grid_duration_ticks"] == 3840
+
+
 def test_short_final_note_gets_grid_room_without_changing_its_duration(tmp_path):
     # Regression for cutoff_example.mid, scaled from its 96 PPQ to this helper's
     # 480 PPQ: the final note begins at 3.5 s, ends at 3.625 s, and End-of-Track
@@ -384,6 +429,57 @@ def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
     assert len(events) == 3
     assert len(cut) == 2
     assert all(event["end"] == event["start"] for event in cut)
+
+
+def test_a_cut_note_keeps_its_written_length_for_the_roll(tmp_path):
+    """A tuning lever shades a note; it must not redraw the composition.
+
+    `end` is where the sound stops, so playback still honours the stolen
+    speaker. `midi_end` is what the file wrote, and it is the same number at
+    every speaker setting -- otherwise moving the slider looks exactly like
+    losing notes, which is the complaint this answers.
+    """
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_speakers": 1}})
+    events = [e for e in session.preview_manifest()["events"] if e["channel"] == 3]
+    cut = [e for e in events if e["cut"]]
+
+    assert len(cut) == 2
+    assert all(event["end"] == event["start"] for event in cut)
+    assert all(event["midi_end"] == 500 for event in events)
+
+
+def test_written_note_length_is_the_same_at_every_speaker_setting(tmp_path):
+    written = {}
+    for max_speakers in (1, 2, 32):
+        session = Session(midi=_dense(tmp_path))
+        session.apply({"tuning": {"max_speakers": max_speakers}})
+        manifest = session.preview_manifest()
+        written[max_speakers] = sorted(
+            (event["id"], event["start"], event["midi_end"]) for event in manifest["display_events"]
+        )
+
+    assert written[1] == written[32]
+    assert written[2] == written[32]
+
+
+def test_a_capped_sustain_shades_rather_than_shortens_the_written_note(tmp_path):
+    """`cap_sustain_ms` moves `end`; the file's note-off is not its to move."""
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+        ],
+        name="long-sustain.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"cap_sustain_ms": 300}})
+    event = session.preview_manifest()["display_events"][0]
+
+    assert event["midi_end"] == 2000
+    assert event["end"] <= 300
 
 
 def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):

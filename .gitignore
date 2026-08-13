@@ -16,3 +16,6 @@ tests/fixtures/_tmp_*
 # Local editor / agent config (per-machine; not part of the package)
 .claude/
 .codex/
+
+# Agent research notes (per-machine, not part of the package)
+.notes/
