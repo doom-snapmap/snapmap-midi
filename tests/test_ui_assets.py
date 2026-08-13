@@ -982,3 +982,35 @@ def test_a_drum_key_row_says_which_table_answered_for_it():
     # The redraw payload has to carry it, or the badge is stale the moment a
     # default is saved.
     assert "'drum_defaults'" in _JS
+
+
+def test_the_key_picker_draws_on_the_percussive_folders_as_well():
+    """Seventy curated sounds could not cover a kit anyone wanted. The folders
+    are where the game says what a sound is FOR -- impacts, footsteps, foley,
+    the interface branch -- which is the only signal that survives contact with
+    a catalog where a half-second event is as likely to be a scope chirp.
+    """
+    assert "function eventIsDrummable(event)" in _JS
+    assert "function drumChoices()" in _JS
+    assert "STATE.catalog && STATE.catalog.drum_folders" in _JS
+    # Both halves of the rule. Dropping either one is silent: without the
+    # folder check the picker fills with weapon chirps, and without the loop
+    # check it offers sounds that hold an emitter open forever.
+    assert 'event.looping !== false || event.looping_known !== true' in _JS
+    assert 'path.indexOf(folder + "/") === 0' in _JS
+
+
+def test_the_curated_percussion_stays_at_the_top_of_the_picker():
+    """The curated names carry hand-written ear-labels, and this game's names
+    lie: `play_noise_tom` is a knock on a door. Sorting them in with five
+    hundred catalog events would bury the ones that describe themselves."""
+    assert "if (!!curated[left] !== !!curated[right]) { return curated[left] ? -1 : 1; }" in _JS
+    assert '"Curated percussion"' in _JS
+
+
+def test_a_drum_sound_row_leads_with_its_length():
+    """Length is what decides whether a sound works as a hit at all. A
+    three-second sample on a sixteenth-note hat leaks nothing -- it just piles
+    up voices and turns to mush -- so it has to be visible before the click,
+    not discovered after an export."""
+    assert 'var metadata = [event ? eventDuration(event) : "", entry.group];' in _JS

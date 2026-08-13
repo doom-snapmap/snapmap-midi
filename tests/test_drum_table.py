@@ -150,3 +150,62 @@ def test_the_table_is_read_fresh_so_a_save_is_audible_at_once(tmp_path):
     assert gm.drum_table()[36] == "play_sfx_ben_kick_03"
     kit = [c for c in analyze(mid).channels if c.is_drums][0]
     assert kit.drum_keys[36] == "play_sfx_ben_kick_03"
+
+
+# ---- what a percussion key may name ----
+
+
+def test_a_palette_sound_outside_the_kit_is_still_refused():
+    """The palette is the one place a definite answer exists, so it is still
+    used for one. A looping ambience fired as a drum hit is never told to stop
+    and holds its emitter until the engine recycles the slot out from under
+    something else; a pitched sound plays one fixed note under every hit."""
+    loop = palette.sounds_in_category("amb_air")[0]
+    assert palette.drum_sound_problem(loop)
+    assert palette.drum_sound_problem("play_pianoc4")
+    with pytest.raises(ValueError):
+        gm.save_user_drum_table({36: loop})
+
+
+def test_a_full_game_event_is_accepted_on_the_shape_of_its_name():
+    """There is nothing here to check it against: the installed catalog needs
+    the game, and this runs on machines that do not have it. Exact channel
+    sounds have always been accepted this way, and a percussion key that
+    refused what a channel accepts would be the odd one out."""
+    assert palette.drum_sound_problem("Play_sfx_snapmaps_PutDownObject") is None
+    assert gm.save_user_drum_table({36: "Play_sfx_snapmaps_PutDownObject"})
+    assert gm.drum_table()[36] == "Play_sfx_snapmaps_PutDownObject"
+
+
+def test_a_name_that_is_not_an_event_at_all_is_refused():
+    assert palette.drum_sound_problem("nonsense")
+    assert palette.drum_sound_problem(None)
+    assert palette.drum_sound_problem(42)
+
+
+def test_the_song_and_the_saved_table_answer_the_question_the_same_way():
+    """They used to disagree. The sidecar had been taught about full-game
+    events while `save_user_drum_table` still refused everything outside the
+    palette pool, so a sound the picker offered could be stored for one song
+    and rejected as a default."""
+    from snapmap_midi import settings as settings_module
+
+    for sound in ("play_noise_hat", "Play_PickUp_Weapon", "play_pianoc4", "nope"):
+        refused_by_table = palette.drum_sound_problem(sound) is not None
+        try:
+            settings_module.validate({**settings_module.defaults(), "drum_keys": {"36": sound}})
+            refused_by_song = False
+        except settings_module.SettingsError:
+            refused_by_song = True
+        assert refused_by_song == refused_by_table, sound
+
+
+def test_the_percussive_folders_are_paths_the_catalog_could_actually_hold():
+    """Spelled with forward slashes and no leading or trailing one, because the
+    window compares them against a normalised event path. A stray slash matches
+    nothing and silently narrows the picker back to the curated seventy."""
+    assert palette.DRUM_EVENT_FOLDERS
+    for folder in palette.DRUM_EVENT_FOLDERS:
+        assert folder == folder.strip("/"), folder
+        assert "\\" not in folder, folder
+        assert folder.islower() or "/" in folder, folder

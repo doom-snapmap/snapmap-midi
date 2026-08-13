@@ -227,8 +227,29 @@ Keys with no sound are called out rather than left silent to be discovered in ga
 shipped table covers 22 of the 47 named General MIDI keys, and a file using the others
 plays nothing on them.
 
-Clicking a row opens the sound browser for that key alone, restricted to the percussion
-pool. **Apply to** decides where the choice is stored:
+Clicking a row opens the sound browser for that key alone. It offers the curated percussion
+pool first, then every installed event from the folders the game files itself use for
+percussive material — impacts, footsteps, player foley, explosions, gore, the whole
+interface branch, SnapMap's own object and gameplay sounds, and the struck instruments
+(marimba, brass bells) plus the classic DOOM effects. Weapons, voice, music and ambience
+are excluded, as are piano, guitar, horns and the waveform sets: those are held notes, and
+a held note under every hit is not a kit.
+
+Two rules decide what appears, and both are needed. The folder is the only place the game
+says what a sound is *for* — by length alone, a half-second event is as likely to be a
+scope chirp as a drum hit. The soundbank's loop flag is the only thing that says whether
+firing it as a one-shot is safe: a loop is never told to stop, so it holds its emitter open
+until the engine recycles the slot out from under something else. Unknown counts as
+looping. Each row leads with the sound's length, because that is what decides whether it
+works as a hit — a three-second sample on a sixteenth-note hat leaks nothing, it just piles
+up voices and turns to mush.
+
+A hand-edited sidecar may still name any DOOM `Play_` event, including a looping one. The
+document cannot check it: confirming a name exists needs the installed game, and settings
+validation runs without it. A sound the *palette* knows is checked, so a palette loop or a
+pitched palette sound is still refused by name.
+
+**Apply to** decides where the choice is stored:
 
 * **This song** writes `drum_keys` in the settings document, and travels with the song's
   sidecar.

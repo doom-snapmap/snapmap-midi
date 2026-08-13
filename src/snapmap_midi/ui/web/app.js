@@ -1006,27 +1006,35 @@
   function renderDrumTree() {
     var host = el("soundTree");
     host.textContent = "";
-    var pool = drumPool();
+    var choices = drumChoices();
     host.appendChild(soundTreeButton(
-      "All percussion sounds", "folder-open", pool.length,
+      "All percussion sounds", "folder-open", choices.length,
       !SOUND_BROWSER.path, 0,
       function () {
         SOUND_BROWSER.path = "";
         el("soundBrowserSearch").value = "";
         renderSoundBrowser();
       },
-      true, pool.length > 0
+      true, choices.length > 0
     ));
     var counts = {};
-    pool.forEach(function (entry) {
-      counts[entry.category] = (counts[entry.category] || 0) + 1;
+    var curated = {};
+    choices.forEach(function (entry) {
+      counts[entry.group] = (counts[entry.group] || 0) + 1;
+      if (entry.curated) { curated[entry.group] = true; }
     });
-    Object.keys(counts).sort().forEach(function (category) {
+    // Curated groups first, then the catalog folders alphabetically. The one a
+    // kit is normally built from should not be somewhere down a list of forty.
+    Object.keys(counts).sort(function (left, right) {
+      if (!!curated[left] !== !!curated[right]) { return curated[left] ? -1 : 1; }
+      return left.localeCompare(right);
+    }).forEach(function (group) {
       host.appendChild(soundTreeButton(
-        humanCategory(category), "folder", counts[category],
-        SOUND_BROWSER.path === category, 1,
+        curated[group] ? group : folderLabel(group.split("/").pop()),
+        "folder", counts[group],
+        SOUND_BROWSER.path === group, 1,
         function () {
-          SOUND_BROWSER.path = category;
+          SOUND_BROWSER.path = group;
           el("soundBrowserSearch").value = "";
           renderSoundBrowser();
         },
@@ -1169,14 +1177,65 @@
     return SOUND_BROWSER.drumKey !== null && SOUND_BROWSER.drumKey !== undefined;
   }
 
+  function drumFolders() {
+    return (STATE.catalog && STATE.catalog.drum_folders) || [];
+  }
+
+  // Two rules, and both are needed. The folder is the only place the game says
+  // what a sound is FOR -- a half-second event is as likely to be a scope chirp
+  // as a drum hit -- and the loop flag is the only thing that says whether
+  // firing it as a one-shot leaks an emitter. Unknown counts as looping, the
+  // same way an exact channel sound treats it.
+  function eventIsDrummable(event) {
+    if (!event || event.looping !== false || event.looping_known !== true) { return false; }
+    var path = event._path || "";
+    var folders = drumFolders();
+    for (var index = 0; index < folders.length; index += 1) {
+      var folder = folders[index];
+      if (path === folder || path.indexOf(folder + "/") === 0) { return true; }
+    }
+    return false;
+  }
+
+  // The curated percussion first, then everything the folders allow. The
+  // curated names carry hand-written ear-labels -- `play_noise_tom` is a knock
+  // on a door and `play_noise_crash` is a shaker -- so they stay at the top
+  // where the common choice is one scroll away.
+  function drumChoices() {
+    var seen = {};
+    var out = [];
+    drumPool().forEach(function (entry) {
+      seen[entry.name.toLowerCase()] = true;
+      out.push({
+        name: entry.name,
+        label: entry.label || humanSoundName(entry.name),
+        group: humanCategory(entry.category),
+        curated: true,
+        event: browserSoundEvent(entry.name)
+      });
+    });
+    var events = (SOUND_BROWSER.catalog && SOUND_BROWSER.catalog.events) || [];
+    events.forEach(function (event) {
+      if (seen[event.name.toLowerCase()] || !eventIsDrummable(event)) { return; }
+      out.push({
+        name: event.name,
+        label: event.label || humanSoundName(event.name),
+        group: event._path,
+        curated: false,
+        event: event
+      });
+    });
+    return out;
+  }
+
   function filteredDrumSounds() {
     var query = el("soundBrowserSearch").value.trim().toLowerCase();
-    return drumPool().filter(function (entry) {
+    return drumChoices().filter(function (entry) {
       if (query) {
-        return (entry.name + " " + entry.label + " " + entry.category)
+        return (entry.name + " " + entry.label + " " + entry.group)
           .toLowerCase().indexOf(query) >= 0;
       }
-      return !SOUND_BROWSER.path || entry.category === SOUND_BROWSER.path;
+      return !SOUND_BROWSER.path || entry.group === SOUND_BROWSER.path;
     });
   }
 
@@ -1198,17 +1257,17 @@
     ));
 
     sounds.forEach(function (entry) {
-      var event = browserSoundEvent(entry.name);
-      var metadata = [humanCategory(entry.category)];
-      if (event) {
-        metadata.push(event.previewable
-          ? "Local preview"
-          : "In-game only; local preview unavailable");
-        metadata.push(eventDuration(event));
+      var event = entry.event;
+      // Length first. It is what decides whether a sound works as a hit at
+      // all: a three-second sample on a sixteenth-note hat does not leak
+      // anything, it just piles up voices and turns to mush.
+      var metadata = [event ? eventDuration(event) : "", entry.group];
+      if (entry.curated) { metadata.push("Curated percussion"); }
+      if (event && !event.previewable) {
+        metadata.push("In-game only; local preview unavailable");
       }
       list.appendChild(resultRow(
-        "sound", entry.name, entry.label || humanSoundName(entry.name),
-        entry.name, metadata, event
+        "sound", entry.name, entry.label, entry.name, metadata, event
       ));
     });
   }

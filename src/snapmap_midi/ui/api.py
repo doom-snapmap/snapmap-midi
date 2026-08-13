@@ -249,6 +249,10 @@ class Bridge:
             # already the overlay, so without this there is no way back: a saved
             # default would have nothing to be cleared to.
             "drum_shipped": {str(key): sound for key, sound in gm.DRUM_MAP.items()},
+            # Which installed-catalog folders the key picker may also draw
+            # from. Sent rather than spelled into the window, so the curation
+            # stays one list in one language.
+            "drum_folders": list(palette.DRUM_EVENT_FOLDERS),
             "sound_groups": sound_groups,
             "sound_count": sum(len(group["sounds"]) for group in sound_groups),
         }

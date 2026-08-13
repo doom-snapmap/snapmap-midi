@@ -170,17 +170,14 @@ def save_user_drum_table(mapping) -> dict:
     from snapmap_midi import paths
     from snapmap_midi.sound import palette
 
-    pool = palette.drum_sound_pool()
     table = {}
     for key, sound in dict(mapping).items():
         index = int(key)
         if not 0 <= index <= 127:
             raise ValueError("drum key %r is outside 0-127" % key)
-        if sound not in pool:
-            raise ValueError(
-                "drum key %d: %r is not one of the %d percussion sounds"
-                % (index, sound, len(pool))
-            )
+        problem = palette.drum_sound_problem(sound)
+        if problem is not None:
+            raise ValueError("drum key %d: %s" % (index, problem))
         table[index] = sound
     path = paths.drum_map_file()
     path.parent.mkdir(parents=True, exist_ok=True)

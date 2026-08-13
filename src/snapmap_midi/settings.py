@@ -464,26 +464,32 @@ def _notes(section) -> dict:
 
 
 def _drum_keys(section) -> dict:
-    """Percussion keys mapped to sounds, checked against the kit.
+    """Percussion keys mapped to sounds, checked as far as they can be checked.
 
-    Checked against `drum_sound_pool` rather than "any unpitched sound",
-    because the unpitched half of the palette is mostly ambience: a pitched
-    sound would play one fixed note under every hit, and a looping ambience is
-    never told to stop, so it holds its emitter open until the engine recycles
-    the slot out from under something else.
+    Two different questions, because two different things can be named here.
+
+    A sound the PALETTE knows is checked against `drum_sound_pool` and nothing
+    else, because for those the answer is available and definite: the unpitched
+    half of the palette is mostly ambience, a pitched sound would play one fixed
+    note under every hit, and a looping ambience is never told to stop -- it
+    holds its emitter open until the engine recycles the slot out from under
+    something else.
+
+    A name the palette has never heard of is a full-game event, and there is
+    nothing here to check it against: the installed catalog needs the game, and
+    this runs on machines that do not have it. Accepted on the shape of the name
+    alone, exactly as an exact channel sound is. The window only ever offers
+    events the soundbank reports as one-shots from the percussive folders; a
+    hand-written sidecar can still name a loop, and that stays the sidecar's
+    risk rather than a reason to refuse every event in the game.
     """
     section = _mapping(section, "drum_keys")
-    pool = palette.drum_sound_pool()
     out = {}
     for key, sound in section.items():
         drum_key = _index(key, _MAX_NOTE, "drum key")
-        if sound not in pool:
-            raise SettingsError(
-                "drum key %s: %r is not one of the %d percussion sounds. A pitched sound "
-                "plays one fixed note under every hit, and a looping ambience is never "
-                "stopped -- it holds its emitter until the engine recycles the slot out "
-                "from under something else." % (drum_key, sound, len(pool))
-            )
+        problem = palette.drum_sound_problem(sound)
+        if problem is not None:
+            raise SettingsError("drum key %s: %s" % (drum_key, problem))
         out[drum_key] = sound
     return out
 
