@@ -247,7 +247,15 @@ def parse_notes(
     index = note_index if note_index is not None else palette.build_note_index()
     drums_on = channel_is_percussion(mid) if drums == "auto" else bool(drums)
 
-    program = {}
+    # Program change is a channel message, so ONE slot per channel means the
+    # last track to announce an instrument owns the channel for the rest of
+    # the song. With three tracks on channel 0 that made every note after the
+    # first take the bass part's program -- the window said "Violin" from its
+    # own per-part reading while the compiler played a pulse wave. Track a
+    # part's own program, and fall back to the channel only when its track
+    # never named one.
+    program_by_part = {}
+    program_by_channel = {}
     active = defaultdict(list)  # (channel, pitch) -> [pending starts]
     notes: list[Note] = []
     dropped = 0
@@ -257,7 +265,8 @@ def parse_notes(
     for track_index, msg, elapsed in messages_with_tracks(mid):
         now = int(elapsed * 1000)
         if msg.type == "program_change":
-            program[msg.channel] = msg.program
+            program_by_channel[msg.channel] = msg.program
+            program_by_part[(track_index, msg.channel)] = msg.program
         elif msg.type == "note_on" and msg.velocity > 0:
             occurrence_key = (msg.channel, msg.note)
             occurrences[occurrence_key] += 1
@@ -321,7 +330,12 @@ def parse_notes(
                         shader = drum_overrides.get(shader, shader)
                 sustained, family = False, "drums"
             else:
-                family = gm_to_family(program.get(msg.channel, 0))
+                family = gm_to_family(
+                    program_by_part.get(
+                        (track_index, msg.channel),
+                        program_by_channel.get(msg.channel, 0),
+                    )
+                )
                 family = family_overrides.get(family, family)
                 if low_family and msg.note < low_cut:
                     family = low_family

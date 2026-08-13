@@ -268,6 +268,62 @@ def test_one_track_on_several_channels_is_still_one_part_per_channel(tmp_path):
     assert [c.track for c in result.channels] == [0, 0, 0]
 
 
+def test_a_neighbouring_tracks_instrument_does_not_leak_across_the_channel(tmp_path):
+    """Program change is a channel message, so one slot per channel means the
+    last track to announce an instrument owns the channel from then on.
+
+    With three tracks on channel 0 that made every note after the first take the
+    LAST track's program: a violin lead and a string pad both played the bass
+    part's pulse wave, while the window went on labelling them from its own
+    per-part reading. The window described one arrangement and the compiler
+    wrote another.
+    """
+    from snapmap_midi.music.midi import parse_notes
+
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("lead", 0, 40, [72, 74]),
+            ("pad", 0, 48, [60, 64]),
+            ("bass", 0, 33, [36, 38]),
+        ],
+        name="program-bleed.mid",
+    )
+
+    notes, _ = parse_notes(mid)
+    by_track = {}
+    for note in notes:
+        by_track.setdefault(note.track, set()).add(note.fam)
+
+    assert by_track[1] == {"ins_violin"}
+    assert by_track[2] == {"ins_violin"}
+    assert by_track[3] == {"ins_pulse"}
+    # And the analysis agrees, which is the point: one arrangement, not two.
+    assert [c.program for c in analysis.analyze(mid).channels] == [40, 48, 33]
+
+
+def test_a_track_that_names_no_instrument_still_reads_its_channels(tmp_path):
+    """The channel-wide value is the fallback, not the default. A track that
+    never sends a program change takes whatever the channel last said, which is
+    what a format 0 file and a single-track file have always relied on."""
+    from snapmap_midi.music.midi import parse_notes
+
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("named", 0, 40, [72]),
+            ("silent", 0, None, [74]),
+        ],
+        name="program-fallback.mid",
+    )
+
+    notes, _ = parse_notes(mid)
+    families = {note.track: note.fam for note in notes}
+
+    assert families[1] == "ins_violin"
+    assert families[2] == "ins_violin"
+
+
 def test_a_format_0_track_name_is_the_song_title_not_a_part_name(tmp_path):
     """SMF FF 03: "If in a format 0 track, or the first track in a format 1
     file, the name of the sequence. Otherwise, the name of the track."
