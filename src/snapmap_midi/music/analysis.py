@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, gm_program_name, gm_to_family
-from snapmap_midi.music.midi import channel_is_percussion
+from snapmap_midi.music.midi import channel_is_percussion, messages_with_tracks
 
 
 @dataclass
@@ -47,6 +47,22 @@ class ChannelInfo:
     auto_family: Optional[str]
     pitches: dict
     drum_keys: dict
+    track: int = 0
+    track_name: str = ""
+
+    @property
+    def key(self) -> str:
+        """This part's identity: the track that wrote it and the channel it uses.
+
+        A bare channel number is not an identity. Two tracks sharing channel 0 --
+        a lead and a pad, which is ordinary in a type 1 file -- are two parts a
+        composer chose separately, and keying anything by channel alone merges
+        them into one row that can hold only one instrument.
+
+        The track comes first so parts sort in the order the file lists them,
+        which is the order the composer sees in their editor.
+        """
+        return "%d:%d" % (self.track, self.channel)
 
 
 @dataclass
@@ -94,20 +110,35 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
     else:
         drums_on = bool(drums)
 
-    program, seen, elapsed = {}, {}, 0.0
-    for msg in mid:
-        elapsed += msg.time
+    names = {}
+    for index, track in enumerate(mid.tracks):
+        named = next((m.name for m in track if m.type == "track_name"), "")
+        names[index] = named.strip()
+
+    # Program changes are channel messages, so a later one anywhere in the file
+    # is the channel's current voice. But a type 1 file normally has each track
+    # announce its own instrument, and reading a neighbouring track's program
+    # would rename a part the composer never touched. Prefer what the part's own
+    # track said; fall back to the channel only when it said nothing.
+    by_part, by_channel, seen, elapsed = {}, {}, {}, 0.0
+    for track_index, msg, elapsed in messages_with_tracks(mid):
         if msg.type == "program_change":
-            program[msg.channel] = msg.program
+            by_channel[msg.channel] = msg.program
+            by_part[(track_index, msg.channel)] = msg.program
         elif msg.type == "note_on" and msg.velocity > 0:
+            part = (track_index, msg.channel)
             entry = seen.setdefault(
-                msg.channel, {"program": program.get(msg.channel, 0), "pitches": {}}
+                part,
+                {
+                    "program": by_part.get(part, by_channel.get(msg.channel, 0)),
+                    "pitches": {},
+                },
             )
             entry["pitches"][msg.note] = entry["pitches"].get(msg.note, 0) + 1
 
     channels = []
-    for channel in sorted(seen):
-        entry = seen[channel]
+    for track_index, channel in sorted(seen):
+        entry = seen[(track_index, channel)]
         pitches = entry["pitches"]
         is_drums = channel == DRUM_CHANNEL and drums_on
         channels.append(
@@ -122,6 +153,8 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
                 auto_family=None if is_drums else gm_to_family(entry["program"]),
                 pitches=pitches,
                 drum_keys={k: DRUM_MAP.get(k) for k in sorted(pitches)} if is_drums else {},
+                track=track_index,
+                track_name=names.get(track_index, ""),
             )
         )
     return MidiAnalysis(str(mid_path), round(elapsed, 2), drums_on, channels)
@@ -142,6 +175,9 @@ def as_dict(analysis: MidiAnalysis) -> dict:
         "drums_detected": analysis.drums_detected,
         "channels": [
             {
+                "key": c.key,
+                "track": c.track,
+                "track_name": c.track_name,
                 "channel": c.channel,
                 "program": c.program,
                 "program_name": c.program_name,

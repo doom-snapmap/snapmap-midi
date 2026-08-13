@@ -43,6 +43,47 @@ class Note:
         return self.end - self.start
 
 
+def messages_with_tracks(mid):
+    """mido's own merge, except each message keeps the track it came from.
+
+    `MidiFile.__iter__` merges the tracks and discards which one each message
+    came from. That single omission is why two parts written as separate tracks
+    collapsed into one whenever they shared a MIDI channel: by the time the
+    first note was paired, the only identity left was `msg.channel`.
+
+    This reproduces mido's merge exactly -- each track to absolute ticks, one
+    stable sort so ties keep track order, then ticks to seconds against the
+    running tempo -- and yields `(track_index, message, elapsed_seconds)`.
+    Tempo is applied after the message that changes it, as mido does, so a
+    `set_tempo` governs what follows it rather than the gap before it.
+
+    Type 2 files are refused for the same reason mido refuses them: their tracks
+    are asynchronous, so there is no shared clock to merge them onto.
+    """
+    import mido
+
+    if mid.type == 2:
+        raise TypeError("can't merge tracks in a type 2 (asynchronous) MIDI file")
+
+    tagged = []
+    for index, track in enumerate(mid.tracks):
+        now = 0
+        for message in track:
+            now += message.time
+            tagged.append((now, index, message))
+    tagged.sort(key=lambda item: item[0])
+
+    tempo = 500_000
+    elapsed = 0.0
+    previous = 0
+    for tick, index, message in tagged:
+        elapsed += mido.tick2second(tick - previous, mid.ticks_per_beat, tempo)
+        previous = tick
+        yield index, message, elapsed
+        if message.type == "set_tempo":
+            tempo = message.tempo
+
+
 def _record(note):
     """Freeze the note's written length before any scheduling policy touches it.
 
@@ -170,8 +211,7 @@ def parse_notes(
     occurrences = defaultdict(int)
     elapsed = 0.0
 
-    for msg in mid:
-        elapsed += msg.time
+    for track_index, msg, elapsed in messages_with_tracks(mid):
         now = int(elapsed * 1000)
         if msg.type == "program_change":
             program[msg.channel] = msg.program
@@ -263,6 +303,12 @@ def parse_notes(
                 )
                 metadata = {
                     "id": note_id,
+                    # Which SMF track wrote this note. Deliberately NOT part of
+                    # `id`: the occurrence counter is already per (channel,
+                    # pitch) across the whole file, so ids stay unique without
+                    # it -- and adding it would invalidate every `note_overrides`
+                    # entry in every settings sidecar already on disk.
+                    "track": track_index,
                     "profile_root_pitch": profile_root,
                     "root_confidence": root_confidence,
                     "root_source": root_source,

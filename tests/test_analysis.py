@@ -189,6 +189,85 @@ def test_the_drums_switch_overrides_the_heuristic(tmp_path):
     assert forced.channels[0].auto_family is None
 
 
+def _multitrack(tmp_path, parts, name="multitrack.mid"):
+    """A type 1 file, one track per `(name, channel, program, [notes])` part."""
+    import mido
+
+    mid = mido.MidiFile(type=1)
+    conductor = mido.MidiTrack()
+    conductor.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+    conductor.append(mido.MetaMessage("end_of_track", time=0))
+    mid.tracks.append(conductor)
+    for label, channel, program, notes in parts:
+        track = mido.MidiTrack()
+        track.append(mido.MetaMessage("track_name", name=label, time=0))
+        if program is not None:
+            track.append(mido.Message("program_change", channel=channel, program=program, time=0))
+        for note in notes:
+            track.append(mido.Message("note_on", channel=channel, note=note, velocity=100, time=0))
+            track.append(mido.Message("note_off", channel=channel, note=note, velocity=0, time=240))
+        track.append(mido.MetaMessage("end_of_track", time=0))
+        mid.tracks.append(track)
+    path = tmp_path / name
+    mid.save(str(path))
+    return path
+
+
+def test_two_tracks_sharing_one_channel_are_two_parts(tmp_path):
+    """The headline: a channel number is not a part identity.
+
+    A type 1 file routinely writes several parts to channel 0. Keying the
+    analysis by channel merged them into one row that could hold only one
+    instrument, so choosing a sound for the lead silently retimbred the pad.
+    """
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("lead", 0, 40, [72, 74, 76]),
+            ("pad", 0, 48, [48, 50]),
+        ],
+    )
+
+    result = analysis.analyze(mid)
+
+    assert [c.key for c in result.channels] == ["1:0", "2:0"]
+    assert [c.track_name for c in result.channels] == ["lead", "pad"]
+    assert [c.notes for c in result.channels] == [3, 2]
+    assert [c.channel for c in result.channels] == [0, 0]
+
+
+def test_each_part_keeps_the_instrument_its_own_track_named(tmp_path):
+    """Program change is a channel message, so the last one anywhere in the file
+    is the channel's voice. Reading a neighbour's program would rename a part
+    nobody touched."""
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("violin", 0, 40, [72]),
+            ("strings", 0, 48, [48]),
+        ],
+    )
+
+    result = analysis.analyze(mid)
+
+    assert [c.program for c in result.channels] == [40, 48]
+    assert [c.program_name for c in result.channels] == [
+        gm_program_name(40),
+        gm_program_name(48),
+    ]
+
+
+def test_one_track_on_several_channels_is_still_one_part_per_channel(tmp_path):
+    """The type 0 shape, and the byte-gate fixture's shape. Track 0 carrying
+    three channels stays three parts, exactly as before tracks existed here."""
+    mid = _write_midi(tmp_path, [(0, 40, 60), (1, 48, 62), (5, 0, 64)], name="one-track.mid")
+
+    result = analysis.analyze(mid)
+
+    assert [c.key for c in result.channels] == ["0:0", "0:1", "0:5"]
+    assert [c.track for c in result.channels] == [0, 0, 0]
+
+
 def test_as_dict_survives_the_trip_through_json(tmp_path):
     """Everything here crosses into Javascript, where an integer dict key does
     not exist. Converting on the way out is what keeps the window from
@@ -200,6 +279,9 @@ def test_as_dict_survives_the_trip_through_json(tmp_path):
         assert set(payload) == {"path", "duration_s", "drums_detected", "channels"}
         for channel in payload["channels"]:
             assert set(channel) == {
+                "key",
+                "track",
+                "track_name",
                 "channel",
                 "program",
                 "program_name",
