@@ -36,7 +36,7 @@ A compile is a straight line. Each stage owns one module, and each hands the nex
 values rather than a hidden audio or UI context.
 
 ```
-song.mid + settings v5
+song.mid + settings v9
    |
    |  music/midi.py       pair events; preserve stable id, source pitch, velocity
    |  music/gm.py         program -> family; channel 9 -> percussion
@@ -109,27 +109,30 @@ The installed full-game catalog is deliberately separate. It supplies thousands 
 manual choices, but those events generally have no instrument family or chromatic coverage.
 Automatic mapping therefore remains on the curated index. Selecting an exact event repeats its
 event string for every MIDI note on the channel, then lazily asks `audio/pitch.py` whether its
-decoded media has a trustworthy musical root. Pitchable events follow MIDI from that root.
-The trusted pitch class may move by whole octaves to minimize overflow for that channel. A
-spectral guard rejects a candidate above the strongest lower component instead of promoting a
-chime overtone to a fundamental. Tonal but root-ambiguous media follows MIDI from the channel
-midpoint without making an acoustic claim. Rejected speech, noise, impacts, ambience, and
-variable containers keep natural playback and offer the midpoint only as an optional reference.
+decoded media has a trustworthy musical root. Pitchable events follow MIDI from that measured
+octave. A spectral guard rejects a candidate above the strongest lower component instead of
+promoting a chime overtone to a fundamental. Tonal but root-ambiguous media, rejected speech,
+noise, impacts, ambience, and variable containers keep natural playback by default. If the user
+explicitly enables Follow MIDI note, those rootless events use a fixed MIDI 60/C4 operational
+reference. It is never inferred from the channel's first note, range, midpoint, or median and is
+not presented as acoustic evidence.
 
 ### `music/expression.py` — one pitch and loudness contract
 
-Every parsed note carries a stable source id and its MIDI velocity. The expression module
-keeps source pitch immutable while deriving an optional automatic root-relative shift, a
-playback-only Pitch adjustment, velocity-derived initial note volume, an optional absolute note
-volume override, global volume, and final
-SnapMap modifiers without changing the `Note` dataclass's serialized field order.
+Every parsed note carries a stable source id and its MIDI velocity. The MIDI parser keeps separate
+optional absolute values for Manual and Follow MIDI modes, selects only the active one, and passes it
+to the expression module. That module keeps source pitch immutable while deriving an optional
+automatic root-relative shift, applying the active user-facing SnapMap pitch override,
+initializing note volume from velocity, applying an optional absolute note-volume override and
+global volume, and producing final SnapMap modifiers without changing the `Note` dataclass's
+serialized field order.
 
 SnapMap pitch values are integral semitones clamped to -24 through 24. Velocity uses a squared
 amplitude response, `40 * log10(velocity / 127)`, to initialize note volume. A per-note
 override replaces that level; global dB is added afterward, and the output is clamped to -60
-through 20. The same pure functions feed map export,
-preview manifests,
-warnings, and inspector readouts.
+through 20. In Follow MIDI mode, no active override means use the derived root-relative value; in
+Manual mode, no active override means zero. Switching modes selects state without mutating it. The
+same pure functions feed map export, preview manifests, warnings, and inspector readouts.
 
 ### The split that defines the design
 
@@ -217,15 +220,26 @@ Settings version 2 added optional `pitch_follow`, `root_midi`, `root_confidence`
 `root_source` fields to exact channel choices, plus a sparse top-level `notes` mapping.
 Version 6 requires `root_midi` to identify the sound's actual natural note. Legacy relative and
 octave-fitted references are disabled during migration because they could transpose absolute pitch.
+A version-7 `pitch_follow_preference` separates the user's channel choice from the acoustic profile
+of whichever exact sound is currently assigned. Changing the sound replaces that acoustic profile but
+preserves the preference, mute/solo state, and every source-note override.
+Version 8 adds the neutral C4 opt-in reference and absolute `pitch_semitones` note edits. Version 9
+defines that field as the preserved Manual value and adds an optional `follow_pitch_semitones`
+value for user adjustments made while automatic following is active.
 A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute,
-solo, and root changes. Each entry may hold integral `pitch_offset` (-24 through 24) and
-`volume_db` (-60 through 20), the absolute pre-master note level. Explicit zero is retained.
+solo, and root changes. Each entry may hold both integral pitch values (-24 through 24) and
+`volume_db` (-60 through 20), both absolute engine values. Explicit zero is retained. Legacy
+sidecars may retain a relative `pitch_offset` until that note is edited.
 
 Settings version 3 adds integral `tuning.master_volume_db` (-60 through 20). Version 4 adds
 `soloed` and renames legacy note `transpose` to `pitch_offset`. Version 5 makes note
 `volume_db` absolute; version 1 through 4 relative values migrate to a compatibility-only
 `volume_trim_db` field and retain their prior playback until edited. Version 6 removes silent
-octave fitting from exact-sound pitch references. Derived values and
+octave fitting from exact-sound pitch references. Version 7 deep-merges sparse note patches and
+serializes browser-side settings writes, so concurrent pitch, volume, and sound changes cannot
+replace one another. Version 8 makes the visible note Pitch value absolute while preserving legacy
+relative offsets. Version 9 makes pitch-mode toggles reversible by preserving Manual and Follow MIDI
+adjustments independently; a version-8 value becomes the Manual state. Derived automatic values and
 decoded audio never persist.
 
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
@@ -257,10 +271,11 @@ containers whose leaves disagree, and candidates contradicted by lower dominant 
 are rejected rather than assigned a guessed root.
 
 An ambiguous periodic result says the event is tonal but its fundamental cannot be trusted.
-Python leaves such an event at natural playback, and the normal UI exposes no raw calibration
-control. Advanced settings/library callers may still supply an actual natural note. A trusted root
-keeps the measured octave. Notes outside SnapMap's -24 through 24 range expose ordinary clamp
-diagnostics instead of silently transposing the channel to reduce overflow.
+Python leaves such an event at natural playback by default, and the normal UI exposes no raw
+calibration control. Follow MIDI note remains an explicit opt-in using the non-acoustic neutral C4
+reference. Advanced settings/library callers may still supply an actual natural note. A trusted
+root keeps the measured octave. Notes outside SnapMap's -24 through 24 range expose ordinary
+clamp diagnostics instead of silently transposing the channel to reduce overflow.
 
 Accepted and rejected profiles are cached as small numeric JSON records keyed by install,
 event, complete media signature, and analysis version. The cache contains root, confidence,
@@ -329,9 +344,10 @@ Selection uses an outline and does not become a playback animation.
 Channel-row selection opens a separate Channel settings inspector while retaining the existing
 display-only focus filter. That inspector exposes only the useful exact-sound `pitch_follow`
 outcome; detector roots, confidence, and manual calibration stay out of the normal UI. Note
-expression consumes the resolved basis as read-only context and writes only sparse per-note
-pitch/volume overrides. The two inspectors are mutually exclusive, so control scope is also
-visible in the surface hierarchy.
+expression consumes the resolved basis as read-only context. Its slider reads the active
+`pitch_modifier` and writes `pitch_semitones` in Manual mode or `follow_pitch_semitones` in Follow
+MIDI mode. Neither write removes the other field. It also writes the sparse per-note volume override.
+The two inspectors are mutually exclusive, so control scope is visible in the surface hierarchy.
 
 The manifest's `events` list schedules audible converted audio. Its `display_events` list
 retains mapped notes excluded by mute, solo, or polyphony so the roll can remain truthful.
@@ -358,8 +374,8 @@ against the new time scale. The draggable pane separator stores only the preferr
 width in local browser storage, clamps it against dynamic channel/roll minimums, and resizes the
 high-DPI canvases on the next animation frame. Grid, meter, zoom, pane width, hover, channel
 focus, and which channel/note inspector is open are view state. Global volume, per-note pitch/volume
-offsets, exact-channel root choices, mute, and multi-solo are conversion state and go through the
-validated settings bridge.
+mode values, exact-channel root choices, mute, and multi-solo are conversion state and go through
+the validated settings bridge.
 
 JavaScript names no palette family or game event in source. The small startup catalog comes
 from the curated palette; the full installed event catalog crosses a separate lazy bridge only

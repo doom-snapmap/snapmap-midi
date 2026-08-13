@@ -454,7 +454,7 @@ def test_root_pitch_profile_crosses_the_bridge_as_numeric_evidence(monkeypatch):
     }
 
 
-def test_unpitched_sound_profile_preserves_natural_playback_without_a_fake_root(monkeypatch):
+def test_unpitched_sound_profile_offers_an_opt_in_neutral_reference(monkeypatch):
     from snapmap_midi.audio import library
 
     profile = {
@@ -469,15 +469,15 @@ def test_unpitched_sound_profile_preserves_natural_playback_without_a_fake_root(
     bridge = Bridge(midi=TINY_MIDI)
     expected = {
         "pitch_follow": False,
-        "root_midi": None,
+        "root_midi": 60.0,
         "root_confidence": 0.0,
-        "root_source": None,
-        "reason": "natural playback; no trustworthy musical pitch",
+        "root_source": "neutral",
+        "reason": "natural playback; MIDI following can use a neutral C4 reference",
     }
 
-    # Channel ranges differ, but neither range is acoustic evidence about the
-    # sound. In particular, no channel midpoint (such as the reported 78)
-    # becomes a synthetic natural note.
+    # Channel ranges differ, but both receive the same stable opt-in reference.
+    # The channel midpoint (such as the previously reported 78) never becomes
+    # a synthetic natural note.
     first = bridge.sound_profile("Play_Custom_Grunt", 0)
     second = bridge.sound_profile("Play_Custom_Grunt", 1)
     assert first["profile"] == profile
@@ -487,7 +487,7 @@ def test_unpitched_sound_profile_preserves_natural_playback_without_a_fake_root(
     assert "relative_anchor" not in second
 
 
-def test_root_ambiguous_tonal_sound_preserves_natural_playback(monkeypatch):
+def test_root_ambiguous_tonal_sound_offers_the_same_neutral_reference(monkeypatch):
     from snapmap_midi.audio import library
 
     profile = {
@@ -503,10 +503,10 @@ def test_root_ambiguous_tonal_sound_preserves_natural_playback(monkeypatch):
     plan = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Chime", 0)["pitch_plan"]
     assert plan == {
         "pitch_follow": False,
-        "root_midi": None,
+        "root_midi": 60.0,
         "root_confidence": 0.0,
-        "root_source": None,
-        "reason": "tonal but root-ambiguous; natural playback preserved",
+        "root_source": "neutral",
+        "reason": "tonal but root-ambiguous; optional neutral C4 reference",
     }
 
 
@@ -600,9 +600,51 @@ def test_startup_repairs_an_old_automatic_root_with_current_evidence(monkeypatch
     entry = payload["settings"]["channels"]["0"]
     assert payload["pitch_reconciled"] == [0]
     assert entry["pitch_follow"] is False
-    assert "root_midi" not in entry
-    assert "root_confidence" not in entry
-    assert "root_source" not in entry
+    assert entry["root_midi"] == 60.0
+    assert entry["root_confidence"] == 0.0
+    assert entry["root_source"] == "neutral"
+
+
+def test_startup_keeps_explicit_follow_preference_with_a_neutral_fallback(monkeypatch):
+    from snapmap_midi.audio import library
+
+    bridge = Bridge(midi=TINY_MIDI)
+    assert bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": "Play_Custom_Chime",
+                    "pitch_follow": True,
+                    "pitch_follow_preference": True,
+                    "root_midi": 83.0,
+                    "root_confidence": 0.87,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )["ok"]
+    monkeypatch.setattr(
+        library,
+        "pitch_profile",
+        lambda name: {
+            "classification": "ambiguous",
+            "pitchable": False,
+            "root_midi": None,
+            "confidence": 0.0,
+            "relative_recommended": True,
+            "source": "none",
+        },
+    )
+
+    payload = bridge.startup()
+    entry = payload["settings"]["channels"]["0"]
+
+    assert payload["pitch_reconciled"] == [0]
+    assert entry["pitch_follow"] is True
+    assert entry["pitch_follow_preference"] is True
+    assert entry["root_midi"] == 60.0
+    assert entry["root_confidence"] == 0.0
+    assert entry["root_source"] == "neutral"
 
 
 def test_old_automatic_root_is_retained_when_current_media_is_unavailable(monkeypatch):
@@ -821,6 +863,71 @@ def test_settings_apply_as_a_patch_and_answer_with_the_whole_document():
     assert bridge.get_settings()["settings"] == payload["settings"]
 
 
+def test_changing_a_sound_preserves_note_expression_and_channel_configuration():
+    bridge = Bridge(midi=TINY_MIDI)
+    sounds = palette.sounds_in_category("ins_piano")[:2]
+    note_id = bridge.preview_manifest()["preview"]["display_events"][0]["id"]
+    bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": sounds[0],
+                    "muted": True,
+                    "soloed": True,
+                    "pitch_follow": True,
+                    "pitch_follow_preference": True,
+                    "root_midi": 60,
+                    "root_confidence": 1,
+                    "root_source": "manual",
+                }
+            },
+            "notes": {
+                note_id: {
+                    "pitch_semitones": 5,
+                    "follow_pitch_semitones": -3,
+                    "volume_db": 7,
+                }
+            },
+        }
+    )
+
+    result = bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "family": None,
+                    "sound": sounds[1],
+                    "pitch_follow": True,
+                    "root_midi": 61,
+                    "root_confidence": 0.9,
+                    "root_source": "detected",
+                }
+            }
+        }
+    )
+
+    channel = result["settings"]["channels"]["0"]
+    note = next(item for item in result["preview"]["display_events"] if item["id"] == note_id)
+    assert channel["sound"] == sounds[1]
+    assert channel["muted"] is True
+    assert channel["soloed"] is True
+    assert channel["pitch_follow_preference"] is True
+    assert result["settings"]["notes"][note_id] == {
+        "pitch_semitones": 5,
+        "follow_pitch_semitones": -3,
+        "volume_db": 7,
+    }
+    assert note["pitch_semitones"] == -3
+    assert note["manual_pitch_semitones"] == 5
+    assert note["follow_pitch_semitones"] == -3
+    assert note["note_volume_db"] == 7
+    assert settings_module.to_compile_kwargs(result["settings"])["note_overrides"][note_id] == {
+        "pitch_semitones": 5,
+        "follow_pitch_semitones": -3,
+        "volume_db": 7,
+    }
+
+
 def test_restore_conversion_defaults_keeps_the_song_and_track_assignments():
     bridge = Bridge(midi=TINY_MIDI)
     sound = palette.sounds_in_category("ins_noise")[0]
@@ -988,6 +1095,9 @@ def test_loading_a_song_repairs_a_stale_automatic_root_from_its_sidecar(tmp_path
         "soloed": False,
         "sound": "Play_Custom_Chime",
         "pitch_follow": False,
+        "root_midi": 60.0,
+        "root_confidence": 0.0,
+        "root_source": "neutral",
     }
 
 

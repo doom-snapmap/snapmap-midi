@@ -88,6 +88,9 @@
   var TRACKS_PREFERRED_WIDTH = TRACKS_DEFAULT_WIDTH;
   var CANVAS_RESIZE_QUEUED = false;
   var PLAY_TOKEN = 0;
+  var PATCH_QUEUE = Promise.resolve();
+  var PATCH_PENDING = 0;
+  var PATCH_RESUME = false;
 
   var SOUND_BROWSER = {
     open: false,
@@ -676,6 +679,15 @@
     return !!candidate && candidate.kind === kind && String(candidate.value || "") === String(value || "");
   }
 
+  function soundCandidateChanged() {
+    var candidate = SOUND_BROWSER.candidate;
+    var channel = channelByNumber(SOUND_BROWSER.channel);
+    if (!candidate || !channel) { return false; }
+    var current = candidateForChannel(channel);
+    return candidate.kind !== current.kind ||
+      String(candidate.value || "") !== String(current.value || "");
+  }
+
   function updateSoundSelection() {
     var rows = el("soundResultList").querySelectorAll(".sound-result-row");
     for (var index = 0; index < rows.length; index += 1) {
@@ -701,7 +713,7 @@
     } else {
       summary.appendChild(document.createTextNode("  \u00b7  Follows the MIDI channel"));
     }
-    el("soundBrowserUse").disabled = false;
+    el("soundBrowserUse").disabled = !soundCandidateChanged();
   }
 
   function setSoundCandidate(kind, value, label) {
@@ -1162,7 +1174,15 @@
   function useSoundBrowserSelection() {
     var candidate = SOUND_BROWSER.candidate;
     var channel = SOUND_BROWSER.channel;
-    if (!candidate || channel === null || channel === undefined) { return; }
+    if (!candidate || channel === null || channel === undefined || !soundCandidateChanged()) { return; }
+    var savedChannel = channelEntry(channel);
+    var hasPitchPreference = Object.prototype.hasOwnProperty.call(
+      savedChannel,
+      "pitch_follow_preference"
+    );
+    var pitchPreference = hasPitchPreference
+      ? !!savedChannel.pitch_follow_preference
+      : null;
     var body = { family: null, sound: null };
     if (candidate.kind === "family") { body.family = candidate.value; }
     function commit() {
@@ -1188,9 +1208,10 @@
       setBusy(false);
       if (response && response.ok && response.profile && response.pitch_plan) {
         var plan = response.pitch_plan;
-        body.pitch_follow = !!plan.pitch_follow;
         body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined &&
           isFinite(Number(plan.root_midi)) ? Number(plan.root_midi) : null;
+        body.pitch_follow = body.root_midi !== null &&
+          (pitchPreference === null ? !!plan.pitch_follow : pitchPreference);
         body.root_confidence = Number(plan.root_confidence || 0);
         body.root_source = plan.root_source || null;
         if (!body.pitch_follow && body.root_midi === null) {
@@ -2914,7 +2935,7 @@
       noteName(channel.lowest) + "-" + noteName(channel.highest);
     el("channelNoteCount").textContent = String(channel.notes || 0);
 
-    follow.disabled = !exact || !canFollow;
+    follow.disabled = !exact;
     follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums;
     if (!exact) {
       el("channelPitchModeHelp").textContent = channel.is_drums
@@ -2929,7 +2950,7 @@
       ? "This sound follows the imported MIDI notes."
       : (canFollow
         ? "This sound plays unchanged on every note."
-        : "This sound plays unchanged; MIDI pitch matching is not available for it.");
+        : "This sound plays unchanged. Enable Follow MIDI note to make it rise and fall with the MIDI notes.");
   }
 
   function openChannelInspector(channelNumber) {
@@ -2960,8 +2981,22 @@
 
   function updateSelectedChannelPitchFollow(enabled) {
     if (SELECTED_CHANNEL === null) { return; }
+    var saved = channelEntry(SELECTED_CHANNEL);
     var patch = { channels: {} };
-    patch.channels[String(SELECTED_CHANNEL)] = { pitch_follow: !!enabled };
+    var channelPatch = {
+      pitch_follow: !!enabled,
+      pitch_follow_preference: !!enabled
+    };
+    if (enabled && (
+      saved.root_midi === null ||
+      saved.root_midi === undefined ||
+      saved.root_source === "detected_octave_pending"
+    )) {
+      channelPatch.root_midi = 60;
+      channelPatch.root_confidence = 0;
+      channelPatch.root_source = "neutral";
+    }
+    patch.channels[String(SELECTED_CHANNEL)] = channelPatch;
     applyPatch(patch, true);
   }
 
@@ -2971,30 +3006,26 @@
       closeChannelInspectorAndClearSelection
     );
     el("channelPitchFollow").addEventListener("change", function () {
-      var saved = channelEntry(SELECTED_CHANNEL);
-      if (!saved.sound) {
-        syncChannelInspector();
-        return;
-      }
-      if (this.checked && (
-        saved.root_source === "detected_octave_pending" ||
-        saved.root_midi === null ||
-        saved.root_midi === undefined
-      )) {
-        this.checked = false;
-        syncChannelInspector();
-        return;
-      }
       updateSelectedChannelPitchFollow(this.checked);
     });
   }
 
-  function selectedNoteEvent() {
+  function noteEventById(noteId) {
     var events = previewDisplayEvents();
     for (var index = 0; index < events.length; index += 1) {
-      if (String(events[index].id || "") === SELECTED_NOTE_ID) { return events[index]; }
+      if (String(events[index].id || "") === String(noteId || "")) { return events[index]; }
     }
     return null;
+  }
+
+  function selectedNoteEvent() {
+    return noteEventById(SELECTED_NOTE_ID);
+  }
+
+  function notePitchOverrideKey(noteId) {
+    var note = noteEventById(noteId);
+    if (!note) { return null; }
+    return note.pitch_follow ? "follow_pitch_semitones" : "pitch_semitones";
   }
 
   function signed(value) {
@@ -3044,7 +3075,9 @@
     el("noteSourcePitch").textContent =
       noteName(note.source_pitch) + " (" + note.source_pitch + ")";
     el("noteSound").textContent = String(note.sound || "");
-    syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_offset || 0));
+    syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_modifier || 0));
+    el("notePitchMode").textContent =
+      (note.pitch_follow ? "Follow MIDI" : "Manual") + " / semitones";
     syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.note_volume_db || 0));
     el("noteVolumeReadout").textContent =
       "Global " + signed(note.master_volume_db) +
@@ -3086,40 +3119,44 @@
   }
 
   function updateNoteOverride(noteId, key, rawValue) {
-    if (!STATE.settings || !noteId) { return; }
-    var limits = key === "pitch_offset" ? [-24, 24] : [-60, 20];
+    if (!STATE.settings || !noteId || !key) { return; }
+    var pitchKey = key === "pitch_semitones" || key === "follow_pitch_semitones";
+    var limits = pitchKey ? [-24, 24] : [-60, 20];
     var value = clamp(Math.round(Number(rawValue) || 0), limits[0], limits[1]);
-    var next = Object.assign({}, STATE.settings.notes || {});
-    var entry = Object.assign({}, next[noteId] || {});
-    if (key === "volume_db") {
+    var notePatch = {};
+    var entry = {};
+    if (pitchKey) {
+      entry[key] = value;
+    } else if (key === "volume_db") {
       // Zero is a meaningful absolute note level, not an empty relative trim.
       entry[key] = value;
-      delete entry.volume_trim_db;
-    } else if (value === 0) {
-      delete entry[key];
+      entry.volume_trim_db = null;
     } else {
-      entry[key] = value;
+      entry[key] = value === 0 ? null : value;
     }
-    if (Object.keys(entry).length) { next[noteId] = entry; }
-    else { delete next[noteId]; }
-    applyPatch({ notes: next }, true);
+    notePatch[noteId] = entry;
+    applyPatch({ notes: notePatch }, true);
   }
 
   function initNoteInspector() {
     el("closeNoteInspector").addEventListener("click", closeNoteInspector);
-    var sendPitch = debounce(function (value, noteId) {
-      updateNoteOverride(noteId, "pitch_offset", value);
+    var sendPitch = debounce(function (value, noteId, key) {
+      updateNoteOverride(noteId, key, value);
     }, 180);
     var sendVolume = debounce(function (value, noteId) {
       updateNoteOverride(noteId, "volume_db", value);
     }, 180);
     el("notePitchRange").addEventListener("input", function () {
       el("notePitchNumber").value = this.value;
-      sendPitch(this.value, SELECTED_NOTE_ID);
+      sendPitch(this.value, SELECTED_NOTE_ID, notePitchOverrideKey(SELECTED_NOTE_ID));
     });
     el("notePitchNumber").addEventListener("change", function () {
       el("notePitchRange").value = this.value;
-      updateNoteOverride(SELECTED_NOTE_ID, "pitch_offset", this.value);
+      updateNoteOverride(
+        SELECTED_NOTE_ID,
+        notePitchOverrideKey(SELECTED_NOTE_ID),
+        this.value
+      );
     });
     el("noteVolumeRange").addEventListener("input", function () {
       el("noteVolumeNumber").value = this.value;
@@ -3131,9 +3168,9 @@
     });
     el("resetNoteExpression").addEventListener("click", function () {
       if (!STATE.settings || !SELECTED_NOTE_ID) { return; }
-      var next = Object.assign({}, STATE.settings.notes || {});
-      delete next[SELECTED_NOTE_ID];
-      applyPatch({ notes: next }, true);
+      var notePatch = {};
+      notePatch[SELECTED_NOTE_ID] = null;
+      applyPatch({ notes: notePatch }, true);
     });
   }
 
@@ -3284,21 +3321,45 @@
   }
 
   function applyPatch(body, resumePlayback) {
-    if (!api()) { return; }
-    var wasPlaying = !!resumePlayback && AUDIO.playing;
+    if (!api()) { return Promise.resolve(); }
+    var patch = JSON.parse(JSON.stringify(body || {}));
+    if (!resumePlayback) { PATCH_RESUME = false; }
+    else if (AUDIO.playing) { PATCH_RESUME = true; }
     pausePlayback();
-    var sequence = nextRequest();
-    setBusy(true, 'Updating conversion...');
-    api().apply_settings(body).then(function (response) {
-      setBusy(false);
-      if (!response || !response.ok) { fail(response); render(); return; }
-      adopt(response, sequence);
-      invalidateAudio(false);
-      AUDIO.position = clamp(AUDIO.position, 0, (STATE.preview && STATE.preview.duration_ms) || 0);
-      render();
-      prepareSongAudio();
-      if (wasPlaying) { startPlayback(); }
-    }, function (error) { setBusy(false); fail(error); render(); });
+    PATCH_PENDING += 1;
+
+    function runPatch() {
+      var sequence = nextRequest();
+      setBusy(true, 'Updating conversion...');
+      return api().apply_settings(patch).then(function (response) {
+        setBusy(false);
+        if (!response || !response.ok) { fail(response); render(); return; }
+        adopt(response, sequence);
+        invalidateAudio(false);
+        AUDIO.position = clamp(
+          AUDIO.position,
+          0,
+          (STATE.preview && STATE.preview.duration_ms) || 0
+        );
+        render();
+        prepareSongAudio();
+      }, function (error) {
+        setBusy(false);
+        fail(error);
+        render();
+      });
+    }
+
+    var operation = PATCH_QUEUE.then(runPatch, runPatch).finally(function () {
+      PATCH_PENDING = Math.max(0, PATCH_PENDING - 1);
+      if (PATCH_PENDING === 0) {
+        var shouldResume = PATCH_RESUME;
+        PATCH_RESUME = false;
+        if (shouldResume) { startPlayback(); }
+      }
+    });
+    PATCH_QUEUE = operation.catch(function () { /* keep later edits live */ });
+    return operation;
   }
 
   function boot() {

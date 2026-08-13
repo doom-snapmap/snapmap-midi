@@ -292,6 +292,61 @@ def test_a_version_five_octave_fitted_root_is_disabled_until_reanalyzed():
     assert migrated["channels"]["0"]["root_source"] == "detected_octave_pending"
 
 
+def test_a_version_six_pitch_choice_becomes_a_retimbre_preference():
+    old = settings.defaults()
+    old["version"] = 6
+    sound = palette.sounds_in_category("ins_piano")[0]
+    old["channels"] = {
+        "0": {
+            "sound": sound,
+            "pitch_follow": True,
+            "root_midi": 60,
+            "root_confidence": 1,
+            "root_source": "palette_name",
+        }
+    }
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["channels"]["0"]["pitch_follow"] is True
+    assert migrated["channels"]["0"]["pitch_follow_preference"] is True
+
+
+def test_a_version_seven_retimbre_preference_is_not_replaced_by_effective_mode():
+    old = settings.defaults()
+    old["version"] = 7
+    sound = palette.sounds_in_category("ins_piano")[0]
+    old["channels"] = {
+        "0": {
+            "sound": sound,
+            "pitch_follow": False,
+            "pitch_follow_preference": True,
+            "root_midi": 60,
+            "root_confidence": 1,
+            "root_source": "palette_name",
+        }
+    }
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["channels"]["0"]["pitch_follow"] is False
+    assert migrated["channels"]["0"]["pitch_follow_preference"] is True
+
+
+def test_a_version_eight_pitch_value_becomes_the_preserved_manual_state():
+    old = settings.defaults()
+    old["version"] = 8
+    old["notes"] = {"0:60:1": {"pitch_semitones": 5, "volume_db": -3}}
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["notes"] == {"0:60:1": {"pitch_semitones": 5, "volume_db": -3}}
+    assert "follow_pitch_semitones" not in migrated["notes"]["0:60:1"]
+
+
 def test_a_disabled_version_five_octave_fitted_root_stays_disabled():
     old = settings.defaults()
     old["version"] = 5
@@ -430,6 +485,23 @@ def test_legacy_relative_reference_is_not_valid_in_a_current_document():
         )
 
 
+def test_a_neutral_reference_is_always_middle_c():
+    sound = palette.sounds_in_category("amb_air")[0]
+    with pytest.raises(settings.SettingsError, match="neutral root_midi must be 60"):
+        _patch(
+            {
+                "channels": {
+                    "0": {
+                        "sound": sound,
+                        "pitch_follow": True,
+                        "root_midi": 61,
+                        "root_source": "neutral",
+                    }
+                }
+            }
+        )
+
+
 def test_pitch_follow_requires_a_root():
     sound = palette.sounds_in_category("ins_piano")[0]
     with pytest.raises(settings.SettingsError, match="root_midi"):
@@ -452,6 +524,77 @@ def test_per_note_expression_preserves_an_explicit_zero_volume_and_is_forwarded(
     kwargs = settings.to_compile_kwargs(doc)
     assert kwargs["note_overrides"] == doc["notes"]
     assert kwargs["note_overrides"] is not doc["notes"]
+
+
+def test_mode_specific_note_pitch_preserves_zero_and_the_legacy_fallback():
+    doc = _patch(
+        {
+            "notes": {
+                "0:60:1": {
+                    "pitch_offset": 1,
+                    "pitch_semitones": 0,
+                    "follow_pitch_semitones": -2,
+                }
+            }
+        }
+    )
+
+    assert doc["notes"]["0:60:1"] == {
+        "pitch_offset": 1,
+        "pitch_semitones": 0,
+        "follow_pitch_semitones": -2,
+    }
+
+
+def test_note_patches_merge_one_field_without_replacing_other_edits():
+    doc = _patch(
+        {
+            "notes": {
+                "0:60:1": {"pitch_offset": -3, "volume_db": 4},
+                "0:64:1": {"pitch_offset": 7, "volume_db": -8},
+            }
+        }
+    )
+
+    doc = settings.merge(doc, {"notes": {"0:60:1": {"pitch_offset": 2}}})
+
+    assert doc["notes"] == {
+        "0:60:1": {"pitch_offset": 2, "volume_db": 4},
+        "0:64:1": {"pitch_offset": 7, "volume_db": -8},
+    }
+
+
+def test_note_patch_null_restores_one_field_or_one_note_only():
+    doc = _patch(
+        {
+            "notes": {
+                "0:60:1": {"pitch_offset": -3, "volume_db": 4},
+                "0:64:1": {"volume_db": -8},
+            }
+        }
+    )
+
+    doc = settings.merge(doc, {"notes": {"0:60:1": {"pitch_offset": None}}})
+    assert doc["notes"]["0:60:1"] == {"volume_db": 4}
+    assert doc["notes"]["0:64:1"] == {"volume_db": -8}
+
+    doc = settings.merge(doc, {"notes": {"0:60:1": None}})
+    assert doc["notes"] == {"0:64:1": {"volume_db": -8}}
+
+
+def test_channel_pitch_preference_survives_non_exact_assignments():
+    doc = _patch(
+        {
+            "channels": {
+                "0": {
+                    "family": "ins_piano",
+                    "pitch_follow_preference": False,
+                }
+            }
+        }
+    )
+
+    assert doc["channels"]["0"]["pitch_follow_preference"] is False
 
 
 @pytest.mark.parametrize(

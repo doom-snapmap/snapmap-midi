@@ -44,6 +44,17 @@ def test_a_trusted_root_follows_the_imported_midi_note():
     assert expression.pitch_limited is False
 
 
+def test_absolute_note_pitch_replaces_automatic_pitch_without_moving_the_note():
+    expression = expression_for(64, 127, 60, pitch_semitones=-3)
+    assert expression.source_pitch == 64
+    assert expression.target_pitch == 64
+    assert expression.automatic_pitch == 4
+    assert expression.pitch_semitones == -3
+    assert expression.requested_pitch == -3
+    assert expression.pitch_modifier == -3
+    assert expression.pitch_limited is False
+
+
 def test_natural_playback_treats_the_note_offset_as_a_direct_modifier():
     expression = expression_for(60, 127, None, pitch_offset=-7)
     assert expression.automatic_pitch is None
