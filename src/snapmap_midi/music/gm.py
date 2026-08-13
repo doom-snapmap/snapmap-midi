@@ -65,6 +65,35 @@ def gm_to_family(program: int) -> str:
     return "ins_marimba"
 
 
+#: General MIDI reserves channel 10 for percussion and gives the program
+#: number a different meaning there: it selects a KIT rather than an
+#: instrument. Reading it as an instrument is how a drum part came to be
+#: labelled "Acoustic Guitar (nylon)" -- program 24, which is a nylon guitar
+#: everywhere except the one channel where it is the Electronic kit.
+_DRUM_KITS = {
+    0: "Standard Kit",
+    8: "Room Kit",
+    16: "Power Kit",
+    24: "Electronic Kit",
+    25: "TR-808 Kit",
+    32: "Jazz Kit",
+    40: "Brush Kit",
+    48: "Orchestra Kit",
+    56: "Sound FX Kit",
+}
+
+
+def gm_drum_kit_name(program: int) -> str:
+    """The kit a percussion channel's program number selects.
+
+    Files routinely leave channel 10 on a program nobody chose, and the
+    standard names only the nine listed above. Anything else is reported as
+    plain percussion rather than invented, because a kit name nobody picked
+    reads as a decision.
+    """
+    return _DRUM_KITS.get(program, "Percussion")
+
+
 #: Percussion key to sound. Covers the common kit; exotic keys are dropped
 #: rather than guessed at, and land in the compile statistics as `dropped`.
 DRUM_MAP = {

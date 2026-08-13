@@ -37,7 +37,10 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
 .hint { color: var(--muted); font-size: 10px; }
-.track-channel-chip { color: var(--muted); font-size: 10px; font-weight: 500; margin-left: 6px; }
+/* Fixed width and no shrinking: it sits beside a name that may be any
+   length, and it is one of the two facts that must survive that. */
+.track-chip { flex: none; color: var(--muted); font: 600 9px Consolas, monospace;
+  padding: 1px 4px; border: 1px solid var(--border2); border-radius: 3px; }
 .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
 .ui-icon { width: 16px; height: 16px; display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 

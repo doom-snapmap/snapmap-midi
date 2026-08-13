@@ -17,7 +17,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, gm_program_name, gm_to_family
+from snapmap_midi.music.gm import (
+    DRUM_CHANNEL,
+    DRUM_MAP,
+    gm_drum_kit_name,
+    gm_program_name,
+    gm_to_family,
+)
 from snapmap_midi.music.midi import channel_is_percussion, messages_with_tracks
 
 
@@ -155,7 +161,13 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
             ChannelInfo(
                 channel=channel,
                 program=entry["program"],
-                program_name=gm_program_name(entry["program"]),
+                # On the percussion channel the program selects a kit, not an
+                # instrument, so the melodic name is simply the wrong table.
+                program_name=(
+                    gm_drum_kit_name(entry["program"])
+                    if is_drums
+                    else gm_program_name(entry["program"])
+                ),
                 notes=sum(pitches.values()),
                 lowest=min(pitches),
                 highest=max(pitches),

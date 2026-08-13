@@ -519,18 +519,28 @@
 
       var number = document.createElement("div");
       number.className = "track-channel";
-      // The badge exists to tell rows apart, so it shows whichever number
-      // actually does. Where every part has its own channel that is the
-      // channel, which is what this has always shown and what a file with one
-      // part per channel still shows. Where a channel is shared it would be
-      // the same digit on every row, so the part's position is shown instead.
-      number.textContent = String(shared ? position + 1 : channel.channel + 1);
-      number.title = "Part " + (position + 1) + " \u00b7 track " + channel.track +
-        " \u00b7 MIDI channel " + (channel.channel + 1);
+      // Always the MIDI channel. It lives in the fixed column precisely so no
+      // title can push it out: a part's name is arbitrary text -- this file's
+      // are copyright notices -- and anything that must always be readable
+      // cannot sit behind it. One meaning in every file, so it is learnable.
+      number.textContent = String(channel.channel + 1);
+      number.title = "MIDI channel " + (channel.channel + 1) +
+        " \u00b7 track " + channel.track;
       row.appendChild(number);
 
       var heading = document.createElement("div");
       heading.className = "track-heading";
+
+      if (shared) {
+        // Two parts on one channel: the channel alone no longer tells the rows
+        // apart, so the track does. Only shown when it is doing work, and
+        // OUTSIDE the name so a long title cannot clip it away.
+        var trackChip = document.createElement("span");
+        trackChip.className = "track-chip";
+        trackChip.textContent = "T" + channel.track;
+        trackChip.title = "Track " + channel.track + " of the MIDI file";
+        heading.appendChild(trackChip);
+      }
 
       var name = document.createElement("div");
       name.className = "track-name";
@@ -540,16 +550,7 @@
       name.textContent = partLabel(channel) + (channel.is_drums ? " \u00b7 Percussion" : "");
       name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest) +
         " \u00b7 MIDI channel " + (channel.channel + 1);
-      if (shared) {
-        // The badge is showing the part's position here, so the channel has
-        // nowhere else to be read at a glance. A MIDI composer needs it, and
-        // it is the number any future editing surface would speak in.
-        var chip = document.createElement("span");
-        chip.className = "track-channel-chip";
-        chip.textContent = "ch " + (channel.channel + 1);
-        chip.title = "MIDI channel " + (channel.channel + 1);
-        name.appendChild(chip);
-      }
+
       heading.appendChild(name);
 
       var actions = document.createElement("div");
