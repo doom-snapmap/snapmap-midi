@@ -560,7 +560,8 @@ def test_startup_repairs_a_legacy_octave_fitted_root(monkeypatch):
 
     payload = bridge.startup()
     entry = payload["settings"]["channels"]["1"]
-    assert payload["pitch_reconciled"] == [1]
+    # The settings key, not a channel number: it may name one part ("1:0").
+    assert payload["pitch_reconciled"] == ["1"]
     assert entry["pitch_follow"] is True
     assert entry["root_midi"] == 83.0
     assert entry["root_source"] == "detected"
@@ -598,7 +599,7 @@ def test_startup_repairs_an_old_automatic_root_with_current_evidence(monkeypatch
 
     payload = bridge.startup()
     entry = payload["settings"]["channels"]["0"]
-    assert payload["pitch_reconciled"] == [0]
+    assert payload["pitch_reconciled"] == ["0"]
     assert entry["pitch_follow"] is False
     assert "root_midi" not in entry
     assert "root_confidence" not in entry
@@ -981,7 +982,7 @@ def test_loading_a_song_repairs_a_stale_automatic_root_from_its_sidecar(tmp_path
     )
 
     payload = Bridge().load_midi(song)
-    assert payload["pitch_reconciled"] == [0]
+    assert payload["pitch_reconciled"] == ["0"]
     assert payload["settings"]["channels"]["0"] == {
         "family": None,
         "muted": False,

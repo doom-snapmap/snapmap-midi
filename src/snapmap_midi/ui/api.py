@@ -425,7 +425,11 @@ class Bridge:
                 source == "detected" and entry.get("pitch_follow") is True
             ) or source == "detected_octave_pending"
             if entry.get("sound") and entry.get("root_midi") is not None and automatic:
-                candidates.append((int(raw_channel), entry))
+                # Kept as the opaque key `validate` normalised. It may name a
+                # part ("1:0") rather than a channel, and int() would raise on
+                # that -- during startup reconciliation, so the song would
+                # fail to open at all.
+                candidates.append((raw_channel, entry))
         if not candidates:
             return []
 
@@ -433,7 +437,7 @@ class Bridge:
 
         patch = {"channels": {}}
         changed = []
-        for channel, entry in candidates:
+        for key, entry in candidates:
             try:
                 profile = library.pitch_profile(entry["sound"])
                 if profile.get("classification") == "unavailable":
@@ -452,8 +456,8 @@ class Bridge:
             }
             if all(entry.get(key) == value for key, value in replacement.items()):
                 continue
-            patch["channels"][str(channel)] = replacement
-            changed.append(channel)
+            patch["channels"][key] = replacement
+            changed.append(key)
 
         if changed:
             self._session.apply(patch)
