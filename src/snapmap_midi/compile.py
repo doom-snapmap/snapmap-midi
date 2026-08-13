@@ -162,8 +162,15 @@ def compile_to_rawmap(
     voices_used = 0
     peak_voices = 0
     speaker_index = 0
-    for channel in sorted(layers):
-        layer = layers[channel]
+    # A speaker's name carries the track only when the channel needs it to stay
+    # unique. One part per channel is the ordinary case and keeps the name it
+    # has always had, so maps that were byte-identical before still are.
+    parts_per_channel: dict = {}
+    for _track, _chan in layers:
+        parts_per_channel[_chan] = parts_per_channel.get(_chan, 0) + 1
+    for part_key in sorted(layers):
+        track, channel = part_key
+        layer = layers[part_key]
         if max_poly:
             layer = thin_polyphony(layer, max_poly)
         count = allocate_voices(layer, max_speakers)
@@ -182,7 +189,11 @@ def compile_to_rawmap(
             uid = doc.add_speaker(
                 sound=(voice_notes[0].shader if voice_notes else ""),
                 position=template.speaker_position(speaker_index),
-                display_name="snapmap-midi-ch%d-v%d" % (channel, voice),
+                display_name=(
+                    "snapmap-midi-ch%d-v%d" % (channel, voice)
+                    if parts_per_channel.get(channel, 1) < 2
+                    else "snapmap-midi-ch%d-t%d-v%d" % (channel, track, voice)
+                ),
             )
             speaker_id = "0_{}/{}_{}".format(module, SPEAKER_INHERIT, uid)
             speaker_index += 1

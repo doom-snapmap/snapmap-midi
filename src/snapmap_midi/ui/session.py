@@ -479,8 +479,8 @@ class Session:
                 duration_lookup=installed_event_duration_ms,
             )
             prepared = list(shared_decaying)
-            for channel in sorted(layers):
-                layer = layers[channel]
+            for part_key in sorted(layers):
+                layer = layers[part_key]
                 if levers["max_poly"]:
                     layer = thin_polyphony(layer, levers["max_poly"])
                 allocate_voices(layer, levers["max_speakers"])
@@ -754,10 +754,10 @@ class Session:
             duration_lookup=installed_event_duration_ms,
         )
         counts = {}
-        for channel, layer in layers.items():
+        for part_key, layer in layers.items():
             if levers["max_poly"]:
                 layer = thin_polyphony(layer, levers["max_poly"])
-            counts[channel] = allocate_voices(layer, levers["max_speakers"])
+            counts[part_key] = allocate_voices(layer, levers["max_speakers"])
         return counts
 
     def _busiest_channel(self, stats):
@@ -772,12 +772,19 @@ class Session:
 
         Ties resolve to the lower channel number rather than to whichever layer
         the dictionary happened to be built in.
+
+        Layers are keyed by part now, so the tie-break reads the channel out of
+        the key. The sentence still names a CHANNEL, because that is what the
+        speaker lever is labelled with and naming a part here would point at a
+        control that does not exist.
         """
         counts = self._layer_voices()
         if not counts:
             return None
-        channel = max(counts, key=lambda number: (counts[number], -number))
-        return channel if counts[channel] == stats["peak_voices"] else None
+        part_key = max(counts, key=lambda key: (counts[key], -key[1], -key[0]))
+        if counts[part_key] != stats["peak_voices"]:
+            return None
+        return part_key[1]
 
     def _unmapped_drum_keys(self) -> list:
         """Percussion keys the file plays that nothing has a sound for.

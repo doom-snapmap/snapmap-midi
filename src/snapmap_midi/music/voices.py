@@ -67,9 +67,17 @@ def prepare_voice_layers(
         duration = pitched_duration_ms(duration, note.pitch_modifier)
         note.voice_end = note.start + duration
 
+    # Keyed by PART -- (track, channel) -- and not by channel alone. A MIDI
+    # channel is not an identity: two tracks can write to the same one, and the
+    # window shows them as two rows because they are two parts. Keying the pool
+    # by channel put both rows in one pool, so one part's notes stole the
+    # other's speakers and each looked like it was being cut by the other's
+    # music. Same song exported with the second part on channel 2 instead of
+    # channel 1 then behaved completely differently, which is the bug report
+    # this comes from.
     layers = {}
     for note in sustained + expressive:
-        layers.setdefault(note.chan, []).append(note)
+        layers.setdefault((getattr(note, "track", 0), note.chan), []).append(note)
     return shared, expressive, layers
 
 

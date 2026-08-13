@@ -148,7 +148,10 @@ def test_decaying_voice_reservation_tracks_pitch_changed_playback_speed(pitch_mo
 
     assert shared == []
     assert expressive == [note]
-    assert layers == {0: [note]}
+    # Keyed by PART -- (track, channel) -- because a channel is not an identity:
+    # two tracks can write to one channel and they are two rows, two pools. This
+    # bare Note carries no track, so it reads as track 0.
+    assert layers == {(0, 0): [note]}
     assert note.voice_end == voice_end
 
 
@@ -157,3 +160,41 @@ def test_neutral_decaying_note_stays_on_the_shared_timeline():
     note.pitch_modifier = note.volume_db = 0
     shared, expressive, layers = prepare_voice_layers([note], [])
     assert (shared, expressive, layers) == ([note], [], {})
+
+
+def test_two_tracks_on_one_channel_get_their_own_speaker_pools():
+    """A MIDI channel is not an identity, so it cannot be the pool key.
+
+    Two exports of the same music -- one with the second part on channel 1, one
+    on channel 2 -- behaved completely differently: on the shared channel both
+    parts landed in ONE pool, so one part's notes stole the other's speakers and
+    each looked like it was being cut by the other's music. The window shows two
+    rows either way, because rows are parts.
+    """
+    a = Note(0, 100, "play_noise_one", False, 0, "exact")
+    b = Note(0, 100, "play_noise_two", False, 0, "exact")
+    a.track, b.track = 1, 2          # two tracks ...
+    a.chan = b.chan = 0              # ... writing to ONE channel
+    for note in (a, b):
+        note.pitch_modifier = 0
+        note.volume_db = 0
+
+    _shared, _expressive, layers = prepare_voice_layers([], [a, b])
+
+    assert set(layers) == {(1, 0), (2, 0)}, "two parts collapsed into one pool"
+    assert layers[(1, 0)] == [a]
+    assert layers[(2, 0)] == [b]
+
+
+def test_one_track_per_channel_is_unchanged():
+    """The ordinary case keeps one pool per part, which is one per channel."""
+    a = Note(0, 100, "play_noise_one", False, 0, "exact")
+    b = Note(0, 100, "play_noise_two", False, 1, "exact")
+    a.track = b.track = 1
+    for note in (a, b):
+        note.pitch_modifier = 0
+        note.volume_db = 0
+
+    _shared, _expressive, layers = prepare_voice_layers([], [a, b])
+
+    assert set(layers) == {(1, 0), (1, 1)}
