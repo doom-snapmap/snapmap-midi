@@ -688,6 +688,14 @@ def _migrate(doc: dict) -> dict:
                     entry.pop("root_midi", None)
                     entry.pop("root_confidence", None)
                     entry.pop("root_source", None)
+                elif source == "assumed":
+                    # Same idea as `neutral`, reached independently and named
+                    # differently: the C4 convention standing in for a root
+                    # nothing could measure. Only documents written before the
+                    # two names were reconciled carry it, and `validate` refuses
+                    # a source it does not know -- so without this line those
+                    # documents stop opening rather than degrading.
+                    entry["root_source"] = "neutral"
                 elif source == "detected_octave":
                     if entry.get("pitch_follow") is True:
                         entry["pitch_follow"] = False

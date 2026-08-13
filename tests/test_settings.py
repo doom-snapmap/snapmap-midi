@@ -997,3 +997,29 @@ def test_the_document_actually_reaches_the_compile():
     _, muted = compile_to_rawmap(TINY_MIDI, **kwargs)
     _, plain = compile_to_rawmap(TINY_MIDI)
     assert muted["notes"] < plain["notes"]
+
+
+def test_an_assumed_root_migrates_to_the_neutral_name():
+    """The two names were the same idea, and `validate` refuses the old one.
+
+    A document written before they were reconciled carries root_source
+    "assumed". Without a migration it does not degrade -- it stops opening,
+    because validate rejects a source it does not recognise.
+    """
+    doc = {
+        "version": 7,
+        "channels": {
+            "0": {
+                "sound": "Play_Custom_Chime",
+                "pitch_follow": True,
+                "root_midi": 60.0,
+                "root_confidence": 0.0,
+                "root_source": "assumed",
+            }
+        },
+    }
+    migrated = settings._migrate(doc)
+    assert migrated["channels"]["0"]["root_source"] == "neutral"
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    # The whole point: it has to survive the gate it used to fail.
+    settings.validate(migrated)
