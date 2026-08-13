@@ -1814,6 +1814,24 @@
     return lines;
   }
 
+  // Erase the whole bitmap, not the logical box drawn into.
+  //
+  // `sizeCanvas` rounds the backing store to Math.round(width * ratio) device
+  // pixels while every draw clears `width` LOGICAL pixels under a `ratio`
+  // transform. When that rounding goes up, the rightmost fraction of a device
+  // pixel is never cleared. The opaque canvases repaint over it and nothing
+  // shows; the two overlays have no background, so that column keeps whatever
+  // was last stroked into it. The playhead reaches the right edge at the end of
+  // the song and strokes accent blue there, which is how a permanent blue line
+  // appeared beside the scrollbar and survived every redraw -- only a canvas
+  // resize, which reallocates the bitmap, could clear it.
+  function clearCanvas(context, canvas) {
+    context.save();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.restore();
+  }
+
   function prepareContext(canvas) {
     var ratio = canvasPixelRatio();
     var context = canvas.getContext('2d');
@@ -2194,7 +2212,7 @@
     var context = prepareContext(canvas);
     var width = ROLL.viewportWidth;
     var height = ROLL.viewportHeight;
-    context.clearRect(0, 0, width, height);
+    clearCanvas(context, canvas);
 
     if (SELECTED_NOTE_ID) {
       var selectedRecords = eventRenderIndex().records;
@@ -2254,8 +2272,9 @@
       context.stroke();
     }
 
-    var ruler = prepareContext(el('timeRulerOverlay'));
-    ruler.clearRect(0, 0, width, 31);
+    var rulerCanvas = el('timeRulerOverlay');
+    var ruler = prepareContext(rulerCanvas);
+    clearCanvas(ruler, rulerCanvas);
     if (playheadX >= -1 && playheadX <= width + 1) {
       ruler.strokeStyle = palette.accent;
       ruler.lineWidth = 2;
