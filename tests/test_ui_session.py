@@ -636,6 +636,59 @@ def test_two_parts_on_one_channel_follow_midi_independently(tmp_path):
     assert sound.encode() in raw
 
 
+def _kit_on(tmp_path, channel) -> str:
+    """An ordinary kick/snare/hat pattern, written to whichever channel."""
+    messages = []
+    for key in (36, 38, 42, 36, 38, 42, 36, 46):
+        messages.extend(_hits(channel, key, count=1))
+    return _midi(tmp_path, messages, name="kit-ch%d.mid" % channel)
+
+
+def test_a_kit_written_off_channel_ten_can_be_declared_percussion(tmp_path):
+    """General MIDI puts drums on channel 10 by convention, and a convention is
+    all it is. A kit written to channel 5 was mapped as a melodic instrument --
+    kick, snare and hats came out as four piano notes, silently.
+
+    The heuristic is deliberately not extended to other channels: its keys span
+    B1 to F5, exactly where bass lines sit, so guessing would turn a sparse bass
+    part into drums with nothing to say so. The user says which it is instead.
+    """
+    session = Session(midi=_kit_on(tmp_path, 5))
+
+    melodic = {e["sound"] for e in session.preview_manifest()["events"]}
+    assert all("piano" in sound for sound in melodic)
+
+    session.apply({"channels": {"0:5": {"percussion": "kit"}}})
+    kit = {e["sound"] for e in session.preview_manifest()["events"]}
+
+    assert not any("piano" in sound for sound in kit)
+    assert "play_sfx_ben_snare_01" in kit
+    assert [c["is_drums"] for c in session.analysis_dict()["channels"]] == [True]
+
+
+def test_a_melody_on_channel_ten_can_be_declared_melodic(tmp_path):
+    """The other direction, and the one the global drums switch handles far too
+    bluntly: it silences percussion for the whole song rather than for the part
+    that is not percussion."""
+    session = Session(midi=_kit(tmp_path))
+    assert session.analysis_dict()["channels"][0]["is_drums"] is True
+
+    session.apply({"channels": {"0:9": {"percussion": "melodic"}}})
+
+    assert session.analysis_dict()["channels"][0]["is_drums"] is False
+    assert all("piano" in e["sound"] for e in session.preview_manifest()["events"])
+
+
+def test_declaring_percussion_reaches_the_exported_map(tmp_path):
+    session = Session(midi=_kit_on(tmp_path, 5))
+    session.apply({"channels": {"0:5": {"percussion": "kit"}}})
+
+    raw, _ = session.compile()
+
+    assert b"play_sfx_ben_snare_01" in raw
+    assert b"play_piano" not in raw
+
+
 def test_a_cut_note_keeps_its_written_length_for_the_roll(tmp_path):
     """A tuning lever shades a note; it must not redraw the composition.
 
@@ -767,6 +820,7 @@ def test_apply_is_a_patch_and_not_a_replacement():
     session.apply({"channels": {"0": {"muted": True}}})
     assert session.settings()["channels"]["0"] == {
         "family": "ins_marimba",
+        "percussion": "auto",
         "muted": True,
         "soloed": False,
     }
@@ -833,7 +887,7 @@ def test_changes_from_several_threads_all_land():
         thread.join()
 
     assert session.settings()["channels"] == {
-        str(index): {"family": family, "muted": False, "soloed": False}
+        str(index): {"family": family, "percussion": "auto", "muted": False, "soloed": False}
         for index, family in enumerate(families)
     }
 

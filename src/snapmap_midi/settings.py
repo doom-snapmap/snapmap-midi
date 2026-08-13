@@ -69,6 +69,7 @@ _CHANNEL_KEYS = frozenset(
         "family",
         "sound",
         "muted",
+        "percussion",
         "pitch_follow",
         "soloed",
         "root_midi",
@@ -76,6 +77,13 @@ _CHANNEL_KEYS = frozenset(
         "root_source",
     }
 )
+#: Whether a part is a drum kit. `auto` keeps the channel-10 heuristic, which
+#: is right for nearly every file. The other two are the user saying so, and
+#: they exist because the heuristic cannot be extended safely: `DRUM_MAP`'s
+#: keys span B1 to F5, exactly where bass lines live, so guessing on other
+#: channels would silently turn a bass part into drums.
+_PERCUSSION_MODES = ("auto", "kit", "melodic")
+
 _NOTE_KEYS = frozenset({"pitch_offset", "volume_db", "volume_trim_db"})
 _ROOT_SOURCES = frozenset(
     {
@@ -333,8 +341,15 @@ def _channels(section, families, sounds) -> dict:
             raise SettingsError(
                 "channel %s: choose a pitched family or one exact sound, not both" % channel
             )
+        percussion = entry.get("percussion", "auto")
+        if percussion not in _PERCUSSION_MODES:
+            raise SettingsError(
+                "channel %s: percussion is %r; it has to be one of %s"
+                % (channel, percussion, ", ".join(_PERCUSSION_MODES))
+            )
         normalized = {
             "family": family,
+            "percussion": percussion,
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
             "soloed": _flag(entry.get("soloed", False), "channel %s: soloed" % channel),
         }
@@ -780,6 +795,11 @@ def to_compile_kwargs(doc) -> dict:
             }
             for channel, entry in channels.items()
             if entry.get("sound") is not None
+        },
+        "part_percussion": {
+            part_selector(c): entry["percussion"]
+            for c, entry in channels.items()
+            if entry.get("percussion", "auto") != "auto"
         },
         "note_overrides": copy.deepcopy(doc["notes"]),
         # Mappings, not sets: only a mapping can say that one named part is NOT

@@ -84,6 +84,7 @@ def compile_to_rawmap(
     channel_solos: Optional[set] = None,
     channel_sounds: Optional[dict] = None,
     channel_pitch_profiles: Optional[dict] = None,
+    part_percussion: Optional[dict] = None,
     note_overrides: Optional[dict] = None,
     master_volume_db: int = 0,
 ):
@@ -119,6 +120,7 @@ def compile_to_rawmap(
         channel_sounds=channel_sounds,
         event_is_looping=installed_event_is_looping,
         channel_pitch_profiles=channel_pitch_profiles,
+        part_percussion=part_percussion,
         note_overrides=note_overrides,
         master_volume_db=master_volume_db,
     )

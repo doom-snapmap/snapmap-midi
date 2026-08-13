@@ -816,6 +816,7 @@ def test_settings_apply_as_a_patch_and_answer_with_the_whole_document():
     assert payload["ok"] is True
     assert payload["settings"]["channels"]["0"] == {
         "family": "ins_marimba",
+        "percussion": "auto",
         "muted": True,
         "soloed": False,
     }
@@ -985,6 +986,7 @@ def test_loading_a_song_repairs_a_stale_automatic_root_from_its_sidecar(tmp_path
     assert payload["pitch_reconciled"] == ["0"]
     assert payload["settings"]["channels"]["0"] == {
         "family": None,
+        "percussion": "auto",
         "muted": False,
         "soloed": False,
         "sound": "Play_Custom_Chime",
@@ -1008,7 +1010,7 @@ def test_the_sidecar_is_applied_after_the_load_and_not_before(tmp_path):
     bridge.apply_settings({"channels": {"0": {"family": "ins_marimba"}}})
     payload = bridge.load_midi(song)
     assert payload["settings"]["channels"] == {
-        "1": {"family": "ins_sine", "muted": False, "soloed": False}
+        "1": {"family": "ins_sine", "percussion": "auto", "muted": False, "soloed": False}
     }
     assert payload["settings"]["drum_keys"] == {"36": "play_clave1"}
 

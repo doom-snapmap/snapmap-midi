@@ -157,6 +157,22 @@ def _timing_manifest(mid_path) -> dict:
     }
 
 
+def _percussion_modes(doc) -> tuple:
+    """Every part's declared percussion mode, in a form two documents compare by.
+
+    The analysis has to be re-read when one of these changes, for exactly the
+    reason the drums switch forces a re-read: the mode decides whether a part is
+    a kit, and a row still offering a family dropdown for a part the compiler
+    has started routing through `DRUM_MAP` is the window describing an
+    instrument nothing plays.
+    """
+    return tuple(
+        sorted(
+            (key, entry.get("percussion", "auto")) for key, entry in doc.get("channels", {}).items()
+        )
+    )
+
+
 def _advice(destination: Path) -> str:
     """How to reach a map that has just been written to `destination`.
 
@@ -229,7 +245,11 @@ class Session:
         compile the window exports are always answering the same question about
         the same file.
         """
-        return analysis.analyze(self._doc["midi"], drums=self._doc["drums"])
+        return analysis.analyze(
+            self._doc["midi"],
+            drums=self._doc["drums"],
+            part_percussion=settings_module.to_compile_kwargs(self._doc)["part_percussion"],
+        )
 
     def load(self, midi_path) -> dict:
         """Open a song, forgetting the last one's instruments and keeping the setup.
@@ -256,7 +276,11 @@ class Session:
             candidate["drum_keys"] = {}
             candidate = settings_module.validate(candidate)
 
-            fresh = analysis.analyze(midi_path, drums=candidate["drums"])
+            fresh = analysis.analyze(
+                midi_path,
+                drums=candidate["drums"],
+                part_percussion=settings_module.to_compile_kwargs(candidate)["part_percussion"],
+            )
             self._doc = candidate
             self._analysis = fresh
             return analysis.as_dict(fresh)
@@ -338,9 +362,14 @@ class Session:
         """
         with self._lock:
             merged = settings_module.merge(self._doc, patch)
-            reread = (merged["drums"], merged["midi"]) != (
+            reread = (
+                merged["drums"],
+                merged["midi"],
+                _percussion_modes(merged),
+            ) != (
                 self._doc["drums"],
                 self._doc["midi"],
+                _percussion_modes(self._doc),
             )
             previous = self._doc
             self._doc = merged
@@ -419,6 +448,7 @@ class Session:
                 drum_key_overrides=levers["drum_key_overrides"],
                 event_is_looping=installed_event_is_looping,
                 channel_pitch_profiles=levers["channel_pitch_profiles"],
+                part_percussion=levers["part_percussion"],
                 note_overrides=levers["note_overrides"],
                 master_volume_db=levers["master_volume_db"],
                 include_silent=True,
@@ -692,6 +722,7 @@ class Session:
             drum_key_overrides=levers["drum_key_overrides"],
             event_is_looping=installed_event_is_looping,
             channel_pitch_profiles=levers["channel_pitch_profiles"],
+            part_percussion=levers["part_percussion"],
             note_overrides=levers["note_overrides"],
             master_volume_db=levers["master_volume_db"],
         )

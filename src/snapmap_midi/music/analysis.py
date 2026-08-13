@@ -18,13 +18,16 @@ from dataclasses import dataclass
 from typing import Optional
 
 from snapmap_midi.music.gm import (
-    DRUM_CHANNEL,
     DRUM_MAP,
     gm_drum_kit_name,
     gm_program_name,
     gm_to_family,
 )
-from snapmap_midi.music.midi import channel_is_percussion, messages_with_tracks
+from snapmap_midi.music.midi import (
+    channel_is_percussion,
+    is_percussion_part,
+    messages_with_tracks,
+)
 
 
 @dataclass
@@ -88,7 +91,7 @@ class MidiAnalysis:
     channels: list
 
 
-def analyze(mid_path, drums="auto") -> MidiAnalysis:
+def analyze(mid_path, drums="auto", part_percussion=None) -> MidiAnalysis:
     """Read a file's channels without collapsing them into families.
 
     Takes the drums mode because the window's drums switch decides whether
@@ -108,6 +111,7 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
     """
     import mido
 
+    part_percussion = part_percussion or {}
     mid = mido.MidiFile(str(mid_path), clip=True)
     if drums == "auto":
         drums_on = channel_is_percussion(mid)
@@ -156,7 +160,7 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
     for track_index, channel in sorted(seen):
         entry = seen[(track_index, channel)]
         pitches = entry["pitches"]
-        is_drums = channel == DRUM_CHANNEL and drums_on
+        is_drums = is_percussion_part(part_percussion, track_index, channel, drums_on)
         channels.append(
             ChannelInfo(
                 channel=channel,

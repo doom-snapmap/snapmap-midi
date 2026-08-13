@@ -373,6 +373,7 @@ def test_a_channel_may_choose_any_exact_sound_in_the_shipped_palette():
     doc = _patch({"channels": {"0": {"sound": sound}}})
     assert doc["channels"]["0"] == {
         "family": None,
+        "percussion": "auto",
         "sound": sound,
         "muted": False,
         "soloed": False,
@@ -396,6 +397,7 @@ def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
     )
     assert doc["channels"]["0"] == {
         "family": None,
+        "percussion": "auto",
         "sound": sound,
         "muted": False,
         "soloed": False,
@@ -661,7 +663,12 @@ def test_muting_a_channel_does_not_clear_its_instrument():
     moment earlier, and the ruler would jump back to the automatic choice."""
     base = _patch({"channels": {"1": {"family": "ins_marimba"}}})
     doc = _patch({"channels": {"1": {"muted": True}}}, base)
-    assert doc["channels"]["1"] == {"family": "ins_marimba", "muted": True, "soloed": False}
+    assert doc["channels"]["1"] == {
+        "family": "ins_marimba",
+        "percussion": "auto",
+        "muted": True,
+        "soloed": False,
+    }
 
 
 def test_changing_one_channel_leaves_the_others_alone():
@@ -706,7 +713,9 @@ def test_a_patch_that_spells_a_channel_as_a_number_still_finds_it():
     add a second entry for the same channel and skip the merge entirely."""
     base = _patch({"channels": {"0": {"family": "ins_marimba"}}})
     doc = settings.merge(base, {"channels": {0: {"muted": True}}})
-    assert doc["channels"] == {"0": {"family": "ins_marimba", "muted": True, "soloed": False}}
+    assert doc["channels"] == {
+        "0": {"family": "ins_marimba", "percussion": "auto", "muted": True, "soloed": False}
+    }
 
 
 def test_merge_leaves_the_document_it_was_given_alone():
@@ -741,7 +750,9 @@ def test_an_integer_channel_key_becomes_the_string_json_will_write():
     file have to be equal, or the session compares them and sees a change
     nobody made."""
     doc = settings.validate({**settings.defaults(), "channels": {0: {"family": "ins_tri"}}})
-    assert doc["channels"] == {"0": {"family": "ins_tri", "muted": False, "soloed": False}}
+    assert doc["channels"] == {
+        "0": {"family": "ins_tri", "percussion": "auto", "muted": False, "soloed": False}
+    }
 
 
 # ---- what the compiler is handed ----

@@ -126,6 +126,27 @@ def _switch_is_used(collection) -> bool:
     return bool(collection)
 
 
+def is_percussion_part(modes, track, channel, drums_on: bool) -> bool:
+    """Whether this part is a drum kit.
+
+    `auto` is the General MIDI convention -- channel 10, if the heuristic
+    accepted it as a kit -- and is right for nearly every file. A part may
+    also say outright which it is, because the convention is only a
+    convention: a composer may write a kit to channel 6, and before this
+    existed those notes were mapped as piano and nothing said so.
+
+    The heuristic is deliberately NOT extended to other channels. Its keys
+    span B1 to F5, which is exactly where bass lines sit, so a sparse bass
+    part would qualify as a kit and be turned into drums with no warning.
+    """
+    mode = for_part(modes, track, channel, "auto")
+    if mode == "kit":
+        return True
+    if mode == "melodic":
+        return False
+    return channel == DRUM_CHANNEL and drums_on
+
+
 def _record(note):
     """Freeze the note's written length before any scheduling policy touches it.
 
@@ -204,6 +225,7 @@ def parse_notes(
     note_overrides=None,
     master_volume_db=0,
     include_silent=False,
+    part_percussion=None,
 ):
     """Parse a MIDI file into paired notes plus a statistics summary.
 
@@ -237,6 +259,7 @@ def parse_notes(
     note_overrides = note_overrides or {}
     no_sustain = set(decaying_families or ())
     channel_solos = channel_solos or frozenset()
+    part_percussion = part_percussion or {}
     solos_in_force = _switch_is_used(channel_solos)
     event_looping_cache = {}
     low_cut, low_family = low_split or (0, None)
@@ -318,7 +341,7 @@ def parse_notes(
                 family = chosen_family
                 shader = palette.decl_for(family, msg.note, index)
                 sustained = family in SUSTAINED and family not in no_sustain
-            elif msg.channel == DRUM_CHANNEL and drums_on:
+            elif is_percussion_part(part_percussion, track_index, msg.channel, drums_on):
                 # The per-key choice is the user's and is final. `drum_overrides`
                 # is keyed by resolved shader and exists to retimbre what the
                 # TABLE picked, so applying it after a per-key override would
