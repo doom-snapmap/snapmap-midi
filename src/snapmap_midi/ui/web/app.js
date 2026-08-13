@@ -440,17 +440,6 @@
   // the track is not (one track often carries several channels); on a file
   // that writes several tracks to one channel it is the other way round, and
   // on a format 0 file every part shares track 0.
-  function anyChannelShared() {
-    var list = channels();
-    var seen = {};
-    for (var index = 0; index < list.length; index += 1) {
-      var key = String(list[index].channel);
-      if (seen[key]) { return true; }
-      seen[key] = true;
-    }
-    return false;
-  }
-
   function partLabel(part) {
     if (!part) { return ""; }
     return part.track_name || part.program_name;
@@ -637,7 +626,6 @@
   function buildTracks() {
     var list = el("trackList");
     list.textContent = "";
-    var shared = anyChannelShared();
     channels().forEach(function (channel, position) {
       var row = document.createElement("div");
       row.className = "track-row";
@@ -647,28 +635,36 @@
 
       var number = document.createElement("div");
       number.className = "track-channel";
-      // Always the MIDI channel. It lives in the fixed column precisely so no
-      // title can push it out: a part's name is arbitrary text -- this file's
-      // are copyright notices -- and anything that must always be readable
-      // cannot sit behind it. One meaning in every file, so it is learnable.
-      number.textContent = String(channel.channel + 1);
-      number.title = "MIDI channel " + (channel.channel + 1) +
-        " \u00b7 track " + channel.track;
+      // The ROW's number, 1..N -- counted here, not read out of the file. A DAW
+      // puts one part on one row and numbers the rows, so this is what a
+      // musician means by "track", and it is the only number that is always
+      // DISTINCT: a MIDI track index repeats in a type 0 file (one chunk
+      // carries every channel, so every part is track 0) and a MIDI channel
+      // repeats whenever two tracks share one -- rip and tear's two drum parts
+      // are both on channel 10. A column whose job is "this is a different
+      // part" cannot be built on either of those.
+      //
+      // The file's real track index is not lost, just not shouted: it stays in
+      // the title for anyone debugging against the source file.
+      number.textContent = String(position + 1);
+      number.title = "Part " + (position + 1) +
+        " \u00b7 track " + channel.track +
+        " \u00b7 MIDI channel " + (channel.channel + 1);
       row.appendChild(number);
 
       var heading = document.createElement("div");
       heading.className = "track-heading";
 
-      if (shared) {
-        // Two parts on one channel: the channel alone no longer tells the rows
-        // apart, so the track does. Only shown when it is doing work, and
-        // OUTSIDE the name so a long title cannot clip it away.
-        var trackChip = document.createElement("span");
-        trackChip.className = "track-chip";
-        trackChip.textContent = "T" + channel.track;
-        trackChip.title = "Track " + channel.track + " of the MIDI file";
-        heading.appendChild(trackChip);
-      }
+      // The channel, on every row rather than only when it is ambiguous. It
+      // decides behaviour -- channel 10 is the drum kit -- and the settings
+      // panel names it by number, so a reader has to be able to see it without
+      // hunting. Labelled, because a bare number in a column reads as a row
+      // count. OUTSIDE the name so a long title cannot clip it away.
+      var channelChip = document.createElement("span");
+      channelChip.className = "track-chip";
+      channelChip.textContent = "CH" + (channel.channel + 1);
+      channelChip.title = "MIDI channel " + (channel.channel + 1);
+      heading.appendChild(channelChip);
 
       var name = document.createElement("div");
       name.className = "track-name";
