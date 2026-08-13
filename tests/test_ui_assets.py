@@ -567,6 +567,19 @@ def test_channel_strip_separates_focus_from_multi_solo_and_mute():
     assert re.search(r"\.track-row\s*\{[^}]*cursor:\s*pointer", _CSS)
 
 
+def test_the_script_never_reads_a_name_it_does_not_declare():
+    """Every other assertion here checks that `app.js` CONTAINS some text, and
+    none of them can see a rename that missed one use. The file still parses,
+    still holds every pinned string, and throws `ReferenceError` the first time
+    the missed line runs. `patchTracks` kept one `channelNumber` after the rest
+    of it moved to part keys; it sits in the render path, so every control in
+    the window went dead while this suite stayed green.
+    """
+    from tests.js_scope import undeclared
+
+    assert undeclared(_JS) == set()
+
+
 def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     for control in (
         "channelInspector",

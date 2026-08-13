@@ -594,19 +594,18 @@
       var solo = row.querySelector(".track-solo-toggle");
       mute.classList.toggle("active", !!entry.muted);
       mute.setAttribute("aria-pressed", entry.muted ? "true" : "false");
-      mute.setAttribute("aria-label",
-        (entry.muted ? "Unmute" : "Mute") +
-        " MIDI channel " + (channelNumber + 1));
-      mute.title = entry.muted ? "Unmute this channel" : "Mute this channel";
+      var who = channel ? partLabel(channel) : "this part";
+      mute.setAttribute("aria-label", (entry.muted ? "Unmute " : "Mute ") + who);
+      mute.title = entry.muted ? "Unmute this part" : "Mute this part";
       setIcon(mute, entry.muted ? "volume-x" : "volume-2");
       solo.classList.toggle("active", !!entry.soloed);
       solo.setAttribute("aria-pressed", entry.soloed ? "true" : "false");
       solo.setAttribute("aria-label", entry.soloed
-        ? "Remove MIDI channel " + (channelNumber + 1) + " from the solo mix"
-        : "Solo MIDI channel " + (channelNumber + 1));
+        ? "Remove " + who + " from the solo mix"
+        : "Solo " + who);
       solo.title = entry.soloed
-        ? "Remove this channel from the solo mix"
-        : "Solo this channel; other soloed channels remain audible";
+        ? "Remove this part from the solo mix"
+        : "Solo this part; other soloed parts remain audible";
     }
   }
 
