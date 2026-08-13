@@ -384,6 +384,14 @@ DRUM_EVENT_FOLDERS = (
     "doom_dlc1_sfx/SnapMaps/props",
     "doom_dlc1_sfx/hack_modules",
     "doom_dlc2_sfx/hack modules",
+    "doom_dlc1_sfx/kineticMine",
+    # The shortest transients in the game: this set runs from four hundredths
+    # of a second, which is shorter than anything in the curated pool.
+    "doom_dlc1_sfx/SnapMaps/ui_user_defined",
+    # Demon voices and hell atmosphere. Two to five seconds, so these read as
+    # atmosphere over a bar rather than as hits -- included because they are
+    # one-shots a SnapMap author reaches for, not because they are drums.
+    "doom_dlc1_sfx/SnapMaps/hellOneShots",
     # The only melodic folders here, and both earn it: a marimba and a bell are
     # struck, and the classic DOOM effects are almost all short transients.
     # Piano, guitar, horns and the waveform sets are deliberately absent -- they
