@@ -83,6 +83,13 @@ _ROOT_SOURCES = frozenset(
         "detected",
         "detected_octave_pending",
         "manual",
+        # A reference nobody measured. Following MIDI needs SOME note to call
+        # the sound's own, and a sound with no musical root has none to find --
+        # a door slam is not in any key. The engine will pitch it regardless, so
+        # the choice is between refusing the effect and naming a convention.
+        # This names it, and is labelled so the window can say the reference was
+        # assumed rather than heard.
+        "assumed",
     }
 )
 

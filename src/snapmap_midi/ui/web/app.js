@@ -72,6 +72,13 @@
   var APPLIED = {};
   var BUSY = 0;
   var BOOTED = false;
+  // The note a rootless sound is treated as already sounding, so Follow MIDI
+  // has an interval to measure from. C4 is the sampler convention: the sample
+  // plays untouched on middle C and shifts by the interval everywhere else.
+  // Nothing measured this -- a door slam is not in any key -- so it is stored
+  // as root_source "assumed" and the window says so.
+  var ASSUMED_ROOT_MIDI = 60;
+
   // The focused part, as its "track:channel" key, or null for "show all".
   var SELECTED_PART = null;
   var TRACK_KEY = '';
@@ -3022,7 +3029,11 @@
       noteName(channel.lowest) + "-" + noteName(channel.highest);
     el("channelNoteCount").textContent = String(channel.notes || 0);
 
-    follow.disabled = !exact || !canFollow;
+    // Available for every exact sound. A detected root makes following
+    // musically faithful; without one it still works, against an assumed
+    // reference. Refusing it removed the whole point of pitching an
+    // unmusical effect across the keyboard.
+    follow.disabled = !exact;
     follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums;
     if (!exact) {
       el("channelPitchModeHelp").textContent = channel.is_drums
@@ -3033,11 +3044,19 @@
       return;
     }
 
-    el("channelPitchModeHelp").textContent = entry.pitch_follow
-      ? "This sound follows the imported MIDI notes."
-      : (canFollow
-        ? "This sound plays unchanged on every note."
-        : "This sound plays unchanged; MIDI pitch matching is not available for it.");
+    if (entry.pitch_follow) {
+      el("channelPitchModeHelp").textContent = entry.root_source === "assumed"
+        ? "This sound follows the imported MIDI notes, treating " +
+          noteName(ASSUMED_ROOT_MIDI) + " as its own pitch. No musical root was "
+          + "detected for it, so that reference is assumed rather than measured."
+        : "This sound follows the imported MIDI notes.";
+      return;
+    }
+    el("channelPitchModeHelp").textContent = canFollow
+      ? "This sound plays unchanged on every note."
+      : "This sound plays unchanged. No musical root was detected for it, so "
+        + "following MIDI will pitch it against an assumed " +
+        noteName(ASSUMED_ROOT_MIDI) + ".";
   }
 
   function openChannelInspector(partKey) {
@@ -3069,7 +3088,19 @@
   function updateSelectedChannelPitchFollow(enabled) {
     var channel = partByKey(SELECTED_PART);
     if (!channel) { return; }
-    applyPatch(partPatch(channel, { pitch_follow: !!enabled }), true);
+    var saved = partEntry(channel);
+    var body = { pitch_follow: !!enabled };
+    var usable = saved.root_midi !== null && saved.root_midi !== undefined &&
+      saved.root_source !== "detected_octave_pending";
+    if (enabled && !usable) {
+      // Following needs a reference. Supplying the convention is what makes
+      // the switch usable on sounds nothing could measure a root for; the
+      // settings document requires a root whenever pitch_follow is on.
+      body.root_midi = ASSUMED_ROOT_MIDI;
+      body.root_confidence = 0;
+      body.root_source = "assumed";
+    }
+    applyPatch(partPatch(channel, body), true);
   }
 
   function initChannelInspector() {
@@ -3080,15 +3111,6 @@
     el("channelPitchFollow").addEventListener("change", function () {
       var saved = partEntry(partByKey(SELECTED_PART));
       if (!saved.sound) {
-        syncChannelInspector();
-        return;
-      }
-      if (this.checked && (
-        saved.root_source === "detected_octave_pending" ||
-        saved.root_midi === null ||
-        saved.root_midi === undefined
-      )) {
-        this.checked = false;
         syncChannelInspector();
         return;
       }

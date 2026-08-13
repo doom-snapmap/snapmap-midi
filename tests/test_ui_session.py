@@ -528,6 +528,114 @@ def test_muting_one_part_leaves_the_other_audible(tmp_path):
     assert "Nothing will play" not in " ".join(session.stats()["warnings"])
 
 
+def test_an_assumed_root_makes_a_rootless_sound_follow_the_midi_notes(tmp_path):
+    """A sound with no musical root can still be played musically.
+
+    The engine will pitch anything; it has no notion of a root. Following MIDI
+    only needs SOME note to treat as the sound's own, so an unmusical effect
+    gets the C4 convention and moves with the part instead of repeating one
+    fixed pitch.
+    """
+    sound = palette.sounds_in_category("ins_noise")[0]
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=240),
+            mido.Message("note_on", channel=0, note=72, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=72, velocity=0, time=240),
+        ],
+        name="rootless.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"channels": {"0": {"sound": sound}}})
+
+    fixed = session.preview_manifest()["events"]
+    assert [e["pitch_modifier"] for e in fixed] == [0, 0]
+
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "assumed",
+                }
+            }
+        }
+    )
+
+    following = session.preview_manifest()["events"]
+    assert [e["pitch_modifier"] for e in following] == [0, 12]
+    assert all(e["sound"] == sound for e in following)
+
+
+def test_a_followed_rootless_sound_reaches_the_exported_map(tmp_path):
+    """The switch has to survive into the map, not just the preview. Preview and
+    export share one parse, and this pins that they do."""
+    sound = palette.sounds_in_category("ins_noise")[0]
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=72, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=72, velocity=0, time=240),
+        ],
+        name="rootless-export.mid",
+    )
+    session = Session(midi=midi)
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "assumed",
+                }
+            }
+        }
+    )
+
+    raw, stats = session.compile()
+
+    assert stats["pitch_adjusted"] == 1
+    assert sound.encode() in raw
+
+
+def test_two_parts_on_one_channel_follow_midi_independently(tmp_path):
+    """Answers both halves at once: an assumed root is a per-PART setting, so
+    one part can follow while the other stays fixed, and it exports that way."""
+    sound = palette.sounds_in_category("ins_noise")[0]
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply(
+        {
+            "channels": {
+                "1:0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "assumed",
+                },
+                "2:0": {"sound": sound},
+            }
+        }
+    )
+
+    events = session.preview_manifest()["events"]
+    lead = [e for e in events if e["part"] == "1:0"]
+    pad = [e for e in events if e["part"] == "2:0"]
+
+    assert [e["pitch_modifier"] for e in lead] == [12, 14]
+    assert [e["pitch_modifier"] for e in pad] == [0, 0]
+
+    raw, _ = session.compile()
+    assert sound.encode() in raw
+
+
 def test_a_cut_note_keeps_its_written_length_for_the_roll(tmp_path):
     """A tuning lever shades a note; it must not redraw the composition.
 

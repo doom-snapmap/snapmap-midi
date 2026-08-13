@@ -585,7 +585,12 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     assert "function openChannelInspector(partKey)" in _JS
     assert "function updateSelectedChannelPitchFollow(enabled)" in _JS
     assert "updateSelectedChannelPitchFollow(this.checked)" in _JS
-    assert "follow.disabled = !exact || !canFollow" in _JS
+    # Available for every exact sound, including one nothing could measure a
+    # musical root for. Pitching an unmusical effect across the keyboard is
+    # the point of the switch, and gating it on a detected root removed it.
+    assert "follow.disabled = !exact;" in _JS
+    assert "var ASSUMED_ROOT_MIDI = 60;" in _JS
+    assert 'body.root_source = "assumed"' in _JS
     assert "follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums" in _JS
     assert "Automatic percussion selects a dedicated sound for each MIDI key" in _JS
     assert 'id="notePitchFollow"' not in _HTML
