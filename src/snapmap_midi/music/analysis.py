@@ -110,8 +110,18 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
     else:
         drums_on = bool(drums)
 
+    # SMF FF 03: "If in a format 0 track, or the first track in a format 1
+    # file, the name of the sequence. Otherwise, the name of the track." So the
+    # one name a format 0 file carries is the SONG's title, and using it as a
+    # part label would print the song's name over every row. Format 1's first
+    # track is the conductor and holds the sequence name for the same reason;
+    # it has no notes, so it never becomes a part, but the rule is spelled out
+    # here rather than left to that coincidence.
     names = {}
     for index, track in enumerate(mid.tracks):
+        if mid.type == 0 or index == 0:
+            names[index] = ""
+            continue
         named = next((m.name for m in track if m.type == "track_name"), "")
         names[index] = named.strip()
 

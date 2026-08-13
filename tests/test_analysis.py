@@ -268,6 +268,45 @@ def test_one_track_on_several_channels_is_still_one_part_per_channel(tmp_path):
     assert [c.track for c in result.channels] == [0, 0, 0]
 
 
+def test_a_format_0_track_name_is_the_song_title_not_a_part_name(tmp_path):
+    """SMF FF 03: "If in a format 0 track, or the first track in a format 1
+    file, the name of the sequence. Otherwise, the name of the track."
+
+    A format 0 file has exactly one track carrying the whole performance, so
+    its one name is the song's. Reading it as a part name prints the song title
+    over every row in the window.
+    """
+    import mido
+
+    mid = mido.MidiFile(type=0)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.MetaMessage("track_name", name="My Great Song", time=0))
+    for channel, note in ((0, 60), (1, 72)):
+        track.append(mido.Message("note_on", channel=channel, note=note, velocity=100, time=0))
+        track.append(mido.Message("note_off", channel=channel, note=note, velocity=0, time=240))
+    path = tmp_path / "format0-named.mid"
+    mid.save(str(path))
+
+    result = analysis.analyze(path)
+
+    assert [c.key for c in result.channels] == ["0:0", "0:1"]
+    assert [c.track_name for c in result.channels] == ["", ""]
+
+
+def test_a_format_1_conductor_name_never_labels_a_part(tmp_path):
+    """Same rule: the first track of a format 1 file names the sequence. It has
+    no notes so it never becomes a part, but a part must not borrow its name."""
+    mid = _multitrack(tmp_path, [("lead", 0, 40, [72])], name="named-conductor.mid")
+    reopened = __import__("mido").MidiFile(str(mid))
+    reopened.tracks[0].insert(0, __import__("mido").MetaMessage("track_name", name="Song", time=0))
+    reopened.save(str(mid))
+
+    result = analysis.analyze(mid)
+
+    assert [c.track_name for c in result.channels] == ["lead"]
+
+
 def test_as_dict_survives_the_trip_through_json(tmp_path):
     """Everything here crosses into Javascript, where an integer dict key does
     not exist. Converting on the way out is what keeps the window from
