@@ -431,6 +431,67 @@ def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
     assert all(event["end"] == event["start"] for event in cut)
 
 
+def _two_parts_one_channel(tmp_path) -> str:
+    """A type 1 file writing a lead and a pad both to channel 0."""
+    mid = mido.MidiFile(type=1)
+    conductor = mido.MidiTrack()
+    conductor.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+    mid.tracks.append(conductor)
+    for name, program, pitches in (("lead", 40, (72, 74)), ("pad", 48, (48, 50))):
+        track = mido.MidiTrack()
+        track.append(mido.MetaMessage("track_name", name=name, time=0))
+        track.append(mido.Message("program_change", channel=0, program=program, time=0))
+        for pitch in pitches:
+            track.append(mido.Message("note_on", channel=0, note=pitch, velocity=100, time=0))
+            track.append(mido.Message("note_off", channel=0, note=pitch, velocity=0, time=240))
+        mid.tracks.append(track)
+    path = tmp_path / "two-parts.mid"
+    mid.save(str(path))
+    return str(path)
+
+
+def test_two_parts_on_one_channel_take_different_instruments(tmp_path):
+    """The headline of the track work, end to end through the settings document.
+
+    Before parts existed, `channels: {"0": ...}` was the only thing that could
+    be said about channel 0, so choosing a sound for the lead retimbred the pad
+    too. A `track:channel` key names one of them.
+    """
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"1:0": {"family": "ins_marimba"}}})
+
+    events = session.preview_manifest()["display_events"]
+    lead = {e["sound"] for e in events if e["source_pitch"] in (72, 74)}
+    pad = {e["sound"] for e in events if e["source_pitch"] in (48, 50)}
+
+    assert lead and pad
+    assert not (lead & pad)
+
+
+def test_a_bare_channel_key_still_reaches_every_part_on_it(tmp_path):
+    """The wildcard is what makes every settings file written before parts
+    existed keep meaning what it meant. Muting channel 0 mutes all of it."""
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"0": {"muted": True}}})
+
+    events = session.preview_manifest()["display_events"]
+
+    assert events
+    assert all(event["muted"] for event in events)
+
+
+def test_naming_one_part_beats_the_wildcard_for_that_part_only(tmp_path):
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"0": {"muted": True}, "2:0": {"muted": False}}})
+
+    events = session.preview_manifest()["display_events"]
+    lead = [e for e in events if e["source_pitch"] in (72, 74)]
+    pad = [e for e in events if e["source_pitch"] in (48, 50)]
+
+    assert all(event["muted"] for event in lead)
+    assert not any(event["muted"] for event in pad)
+
+
 def test_a_cut_note_keeps_its_written_length_for_the_roll(tmp_path):
     """A tuning lever shades a note; it must not redraw the composition.
 

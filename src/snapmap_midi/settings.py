@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 6
+SETTINGS_VERSION = 7
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -186,6 +186,47 @@ def _index(key, limit: int, what: str) -> str:
     return str(number)
 
 
+def _part_key(key, what: str = "channel") -> str:
+    """A `channels` key: a bare channel, or `track:channel` naming one part.
+
+    Both shapes are permanent, and the bare one is not legacy debris. It means
+    "every part on this channel" -- which is exactly what it meant back when a
+    channel could only hold one part, so every settings document written before
+    parts existed keeps its meaning without being rewritten. That is the whole
+    migration: nothing to translate, because nothing changed underneath it.
+
+    An explicit `track:channel` names one part and beats the wildcard, which is
+    what lets a lead and a pad sharing channel 0 hold different instruments.
+
+    Tracks have no upper bound the way channels do -- a file may hold as many as
+    it likes -- so only the channel half is range-checked.
+    """
+    if isinstance(key, str) and ":" in key:
+        track, _, channel = key.partition(":")
+        try:
+            number = int(track)
+        except ValueError:
+            raise SettingsError("%s %r does not start with a track number" % (what, key)) from None
+        if number < 0:
+            raise SettingsError("%s %r has a negative track" % (what, key))
+        return "%d:%s" % (number, _index(channel, _MAX_CHANNEL, what))
+    return _index(key, _MAX_CHANNEL, what)
+
+
+def part_selector(key: str):
+    """A validated `channels` key as the parser matches on it.
+
+    A bare channel comes back as the channel number and applies to every part on
+    it; a named part comes back as the `(track, channel)` pair. Keeping the two
+    shapes distinguishable all the way down is what lets the specific entry win
+    over the wildcard at the point a note is actually resolved.
+    """
+    if ":" in key:
+        track, _, channel = key.partition(":")
+        return (int(track), int(channel))
+    return int(key)
+
+
 def _flag(value, what: str) -> bool:
     if not isinstance(value, bool):
         raise SettingsError("%s is %r, which is neither true nor false" % (what, value))
@@ -263,7 +304,7 @@ def _channels(section, families, sounds) -> dict:
     section = _mapping(section, "channels")
     out = {}
     for key, entry in section.items():
-        channel = _index(key, _MAX_CHANNEL, "channel")
+        channel = _part_key(key, "channel")
         entry = _mapping(entry, "channel %s" % channel)
         unknown = sorted(set(entry) - _CHANNEL_KEYS)
         if unknown:
@@ -517,7 +558,7 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5):
+    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5, 6):
         return doc
 
     migrated = copy.deepcopy(doc)
@@ -666,11 +707,11 @@ def merge(base, patch) -> dict:
             # `"0"` -- it would add a second one, and the deep merge that is the
             # whole point of this branch would silently not happen.
             channels = {
-                _index(channel, _MAX_CHANNEL, "channel"): entry
+                _part_key(channel, "channel"): entry
                 for channel, entry in _mapping(merged.get("channels", {}), "channels").items()
             }
             for channel, entry in _mapping(value, "channels").items():
-                channel = _index(channel, _MAX_CHANNEL, "channel")
+                channel = _part_key(channel, "channel")
                 existing = _mapping(channels.get(channel, {}), "channel %s" % channel)
                 existing.update(_mapping(entry, "channel %s" % channel))
                 channels[channel] = existing
@@ -714,17 +755,17 @@ def to_compile_kwargs(doc) -> dict:
         "decaying_families": set(tuning["decaying_families"]),
         "family_caps": dict(tuning["family_caps"]),
         "channel_families": {
-            int(channel): entry["family"]
+            part_selector(channel): entry["family"]
             for channel, entry in channels.items()
             if entry["family"] is not None
         },
         "channel_sounds": {
-            int(channel): entry["sound"]
+            part_selector(channel): entry["sound"]
             for channel, entry in channels.items()
             if entry.get("sound") is not None
         },
         "channel_pitch_profiles": {
-            int(channel): {
+            part_selector(channel): {
                 "pitch_follow": entry.get("pitch_follow", False),
                 "root_midi": entry.get("root_midi"),
                 "root_confidence": entry.get("root_confidence"),
@@ -734,8 +775,11 @@ def to_compile_kwargs(doc) -> dict:
             if entry.get("sound") is not None
         },
         "note_overrides": copy.deepcopy(doc["notes"]),
-        "channel_mutes": {int(channel) for channel, entry in channels.items() if entry["muted"]},
-        "channel_solos": {int(channel) for channel, entry in channels.items() if entry["soloed"]},
+        # Mappings, not sets: only a mapping can say that one named part is NOT
+        # muted while its channel is, which is what lets a part key beat the
+        # channel-wide wildcard. The parser accepts either spelling.
+        "channel_mutes": {part_selector(c): entry["muted"] for c, entry in channels.items()},
+        "channel_solos": {part_selector(c): entry["soloed"] for c, entry in channels.items()},
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},
     }
 

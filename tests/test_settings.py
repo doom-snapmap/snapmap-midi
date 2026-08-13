@@ -748,20 +748,22 @@ def test_an_integer_channel_key_becomes_the_string_json_will_write():
 
 
 def test_channel_keys_become_integers_because_that_is_what_the_parser_compares():
-    """`parse_notes` tests `msg.channel in channel_mutes` against a mido
-    integer. A string key never matches, and the mute silently does nothing."""
+    """`parse_notes` matches these against a mido integer. A string key never
+    matches, and the mute silently does nothing.
+
+    The switches are mappings rather than sets because only a mapping can say
+    that one named part is NOT muted while its channel is -- the case a
+    `track:channel` key exists to express."""
     doc = _patch({"channels": {"0": {"family": "ins_tri"}, "9": {"muted": True}}})
     kwargs = settings.to_compile_kwargs(doc)
     assert kwargs["channel_families"] == {0: "ins_tri"}
-    assert kwargs["channel_mutes"] == {9}
-    assert isinstance(kwargs["channel_mutes"], set)
+    assert kwargs["channel_mutes"] == {0: False, 9: True}
 
 
 def test_multiple_soloed_channels_are_forwarded_as_integer_keys():
     doc = _patch({"channels": {"0": {"soloed": True}, "2": {"soloed": True}}})
     solos = settings.to_compile_kwargs(doc)["channel_solos"]
-    assert solos == {0, 2}
-    assert isinstance(solos, set)
+    assert solos == {0: True, 2: True}
 
 
 def test_a_muted_channel_with_an_instrument_appears_in_both():
@@ -771,7 +773,7 @@ def test_a_muted_channel_with_an_instrument_appears_in_both():
         _patch({"channels": {"2": {"family": "ins_flute", "muted": True}}})
     )
     assert kwargs["channel_families"] == {2: "ins_flute"}
-    assert kwargs["channel_mutes"] == {2}
+    assert kwargs["channel_mutes"] == {2: True}
 
 
 def test_exact_channel_sounds_reach_the_compiler_with_integer_channel_keys():
@@ -781,7 +783,7 @@ def test_exact_channel_sounds_reach_the_compiler_with_integer_channel_keys():
     )
     assert kwargs["channel_sounds"] == {9: sound}
     assert kwargs["channel_families"] == {}
-    assert kwargs["channel_mutes"] == {9}
+    assert kwargs["channel_mutes"] == {9: True}
 
 
 @pytest.mark.parametrize("mode,expected", [("auto", "auto"), ("on", True), ("off", False)])

@@ -12,6 +12,7 @@ file ran out.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Optional
 
@@ -82,6 +83,47 @@ def messages_with_tracks(mid):
         yield index, message, elapsed
         if message.type == "set_tempo":
             tempo = message.tempo
+
+
+def for_part(mapping, track, channel, default=None):
+    """The most specific setting for one part.
+
+    Every per-channel lever accepts two kinds of key. A `(track, channel)` pair
+    names one part and wins. A bare channel number is the wildcard: it applies to
+    every part on that channel, which is both what a settings document written
+    before parts existed means and what a user who never split a channel expects.
+
+    Keeping the wildcard rather than expanding it is what lets those documents
+    load untouched -- there is no list of parts at the moment settings are
+    validated, only at the moment a note is resolved, which is here.
+    """
+    if (track, channel) in mapping:
+        return mapping[(track, channel)]
+    return mapping.get(channel, default)
+
+
+def in_part(collection, track, channel) -> bool:
+    """Whether a per-part switch is on for this part.
+
+    A SET names only the parts a switch is on for, which cannot express "this
+    part specifically is off" -- so a named part could never beat a channel-wide
+    entry, and un-muting one part of a muted channel was impossible to say. A
+    MAPPING of selector to boolean can say it, and `to_compile_kwargs` sends
+    one.
+
+    Sets stay accepted: they are the library API's own spelling and the natural
+    way to put it when nothing is being overridden.
+    """
+    if isinstance(collection, Mapping):
+        return bool(for_part(collection, track, channel, False))
+    return (track, channel) in collection or channel in collection
+
+
+def _switch_is_used(collection) -> bool:
+    """Whether any part has this switch on. Solo is only in force when one is."""
+    if isinstance(collection, Mapping):
+        return any(collection.values())
+    return bool(collection)
 
 
 def _record(note):
@@ -195,6 +237,7 @@ def parse_notes(
     note_overrides = note_overrides or {}
     no_sustain = set(decaying_families or ())
     channel_solos = channel_solos or frozenset()
+    solos_in_force = _switch_is_used(channel_solos)
     event_looping_cache = {}
     low_cut, low_family = low_split or (0, None)
     sound_categories = palette.sound_categories()
@@ -223,8 +266,8 @@ def parse_notes(
                 msg.note,
                 occurrences[occurrence_key],
             )
-            muted = msg.channel in channel_mutes
-            solo_excluded = bool(channel_solos and msg.channel not in channel_solos)
+            muted = in_part(channel_mutes, track_index, msg.channel)
+            solo_excluded = solos_in_force and not in_part(channel_solos, track_index, msg.channel)
             audible = not muted and not solo_excluded
             if not audible and not include_silent:
                 continue
@@ -232,8 +275,8 @@ def parse_notes(
             pitch_offset = int(override.get("pitch_offset", 0))
             note_volume_db = int(override["volume_db"]) if "volume_db" in override else None
             volume_trim_db = int(override.get("volume_trim_db", 0))
-            exact_sound = channel_sounds.get(msg.channel)
-            chosen_family = channel_families.get(msg.channel)
+            exact_sound = for_part(channel_sounds, track_index, msg.channel)
+            chosen_family = for_part(channel_families, track_index, msg.channel)
             applied_root = None
             profile_root = None
             root_confidence = None
@@ -242,7 +285,7 @@ def parse_notes(
             if exact_sound is not None:
                 shader = exact_sound
                 family = sound_categories.get(shader, "exact")
-                profile = channel_pitch_profiles.get(msg.channel, {})
+                profile = for_part(channel_pitch_profiles, track_index, msg.channel, {})
                 profile_root = profile.get("root_midi")
                 root_confidence = profile.get("root_confidence")
                 root_source = profile.get("root_source")
