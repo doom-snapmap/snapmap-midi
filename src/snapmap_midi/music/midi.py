@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from snapmap_midi.music.expression import annotate, expression_for
-from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, SUSTAINED, gm_to_family
+from snapmap_midi.music.gm import DRUM_CHANNEL, SUSTAINED, drum_table, gm_to_family
 from snapmap_midi.sound import palette
 
 
@@ -168,13 +168,17 @@ def _record(note):
     return note
 
 
-def channel_is_percussion(mid, drum_map=DRUM_MAP) -> bool:
+def channel_is_percussion(mid, drum_map=None) -> bool:
     """Guess whether the percussion channel really carries a kit.
 
     Some files put a melodic part on the percussion channel, and some put a
     real kit elsewhere. The heuristic: a genuine kit uses few distinct keys
     and most of them are keys we recognise.
     """
+    # Resolved at call time, not bound as a default: the default would freeze
+    # the shipped table at import, and a user who mapped the exotic keys their
+    # own kit uses would still be told their kit is not one.
+    drum_map = drum_table() if drum_map is None else drum_map
     total, recognised, pitches = 0, 0, set()
     for msg in mid:
         if msg.type == "note_on" and msg.velocity > 0 and msg.channel == DRUM_CHANNEL:
@@ -261,6 +265,9 @@ def parse_notes(
     channel_solos = channel_solos or frozenset()
     part_percussion = part_percussion or {}
     solos_in_force = _switch_is_used(channel_solos)
+    # Once, not once per note. This opens the user's percussion table, and the
+    # inner loop below runs for every note_on in the file.
+    drum_defaults = drum_table()
     event_looping_cache = {}
     low_cut, low_family = low_split or (0, None)
     sound_categories = palette.sound_categories()
@@ -268,7 +275,9 @@ def parse_notes(
     # clip=True clamps out-of-range data bytes rather than refusing the file.
     mid = mido.MidiFile(str(mid_path), clip=True)
     index = note_index if note_index is not None else palette.build_note_index()
-    drums_on = channel_is_percussion(mid) if drums == "auto" else bool(drums)
+    drums_on = (
+        channel_is_percussion(mid, drum_defaults) if drums == "auto" else bool(drums)
+    )
 
     # Program change is a channel message, so ONE slot per channel means the
     # last track to announce an instrument owns the channel for the rest of
@@ -348,7 +357,7 @@ def parse_notes(
                 # silently replace the sound someone had just chosen.
                 shader = drum_key_overrides.get(msg.note)
                 if shader is None:
-                    shader = DRUM_MAP.get(msg.note)
+                    shader = drum_defaults.get(msg.note)
                     if shader:
                         shader = drum_overrides.get(shader, shader)
                 sustained, family = False, "drums"

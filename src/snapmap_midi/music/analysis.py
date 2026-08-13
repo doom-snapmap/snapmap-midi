@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from snapmap_midi.music.gm import (
-    DRUM_MAP,
+    drum_table,
     gm_drum_kit_name,
     gm_drum_name,
     gm_program_name,
@@ -157,6 +157,9 @@ def analyze(mid_path, drums="auto", part_percussion=None) -> MidiAnalysis:
             )
             entry["pitches"][msg.note] = entry["pitches"].get(msg.note, 0) + 1
 
+    # Read once. `drum_table` opens the user's file, and a song with twenty
+    # percussion parts would otherwise open it twenty times.
+    table = drum_table()
     channels = []
     for track_index, channel in sorted(seen):
         entry = seen[(track_index, channel)]
@@ -179,7 +182,7 @@ def analyze(mid_path, drums="auto", part_percussion=None) -> MidiAnalysis:
                 is_drums=is_drums,
                 auto_family=None if is_drums else gm_to_family(entry["program"]),
                 pitches=pitches,
-                drum_keys={k: DRUM_MAP.get(k) for k in sorted(pitches)} if is_drums else {},
+                drum_keys={k: table.get(k) for k in sorted(pitches)} if is_drums else {},
                 track=track_index,
                 track_name=names.get(track_index, ""),
             )

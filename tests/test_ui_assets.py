@@ -915,13 +915,15 @@ def test_a_drum_key_patch_carries_every_other_key_with_it():
     expressible, and it is also what makes a patch of one entry erase the rest.
     Choosing a snare must not silently drop the kick chosen a minute earlier.
     """
-    body = re.search(
-        r"function setDrumKeySound\(key, sound\) \{(.+?)\n  \}", _JS, re.S
-    )
-    assert body, "setDrumKeySound is gone or was renamed"
+    body = re.search(r"function withKey\(table, key, sound\) \{(.+?)\n  \}", _JS, re.S)
+    assert body, "withKey is gone or was renamed"
     body = body.group(1)
-    assert "Object.keys(current).forEach" in body, "the patch no longer copies the map"
-    assert "delete next[String(key)]" in body, "no way left to take an override back off"
+    assert "Object.keys(table).forEach" in body, "the patch no longer copies the map"
+    assert "delete next[String(key)]" in body, "no way left to take a choice back off"
+    # Both tables are written through it -- the song's and the user's -- so a
+    # regression in either one shows up here.
+    assert "drum_keys: withKey(drumKeyOverrides(), key, sound)" in _JS
+    assert "set_drum_defaults(withKey(drumDefaults(), key, sound))" in _JS
 
 
 def test_the_key_picker_offers_only_sounds_the_document_will_accept():
@@ -936,3 +938,47 @@ def test_the_key_picker_offers_only_sounds_the_document_will_accept():
     # And the way back to the table's own answer is always the first row, never
     # filtered away by a search: undoing a choice is not a search result.
     assert 'list.appendChild(resultRow(\n      "automatic", ""' in _JS
+
+
+def test_the_key_picker_says_where_the_choice_is_being_saved():
+    """One picker writes two different tables. Without the scope on screen the
+    same click means "this song" or "every song I ever open" and nothing says
+    which -- and the second one is not undoable by closing the file.
+    """
+    assert 'id="soundScope"' in _HTML
+    assert 'id="soundScopeField"' in _HTML
+    assert '<option value="song">' in _HTML
+    assert '<option value="default">' in _HTML
+    assert "function drumScope()" in _JS
+    # The verb has to move with it, because the button is the last thing read
+    # before the click that cannot be taken back by closing the song.
+    assert '"Save as my default"' in _JS
+    assert '"Use for this song"' in _JS
+    # And the scope field is only up while a drum key is being chosen: it means
+    # nothing for a whole part's instrument.
+    assert 'el("soundScopeField").hidden = false;' in _JS
+    assert 'el("soundScopeField").hidden = true;' in _JS
+
+
+def test_saving_a_default_drops_the_song_choice_for_that_key():
+    """The song wins over a default by design. Saving a default for a key the
+    song is already overriding would store the choice and change nothing
+    audible, which reads exactly like a failed save.
+    """
+    body = re.search(r"function setDrumKeyDefault\(key, sound\) \{(.+?)\n  \}\n", _JS, re.S)
+    assert body, "setDrumKeyDefault is gone or was renamed"
+    body = body.group(1)
+    assert "withKey(drumKeyOverrides(), key, null)" in body
+    assert "set_drum_defaults(" in body
+
+
+def test_a_drum_key_row_says_which_table_answered_for_it():
+    """Three tables answer for a key. A row that showed the sound but not its
+    origin makes "save as my default" look like a no-op on the keys the song
+    already claims."""
+    assert 'choice.scope === "song" ? "this song" : "your default"' in _JS
+    assert 'STATE.drum_defaults' in _JS
+    assert 'STATE.catalog && STATE.catalog.drum_shipped' in _JS
+    # The redraw payload has to carry it, or the badge is stale the moment a
+    # default is saved.
+    assert "'drum_defaults'" in _JS

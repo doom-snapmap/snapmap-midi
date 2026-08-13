@@ -241,7 +241,8 @@
 
   function adopt(payload, sequence) {
     var previewChanged = false;
-    ['settings', 'analysis', 'catalog', 'stats', 'preview', 'audio', 'window'].forEach(function (key) {
+    ['settings', 'analysis', 'catalog', 'stats', 'preview', 'audio', 'window',
+     'drum_defaults'].forEach(function (key) {
       if (payload[key] !== undefined && accept(key, sequence)) {
         if (key === 'preview' && STATE[key] !== payload[key]) { previewChanged = true; }
         STATE[key] = payload[key];
@@ -517,34 +518,113 @@
     return names[String(key)] || "Key " + key;
   }
 
+  // Three tables answer for a key, in order. The song's own `drum_keys` wins;
+  // then the user's saved table, which is a preference and outlives the song;
+  // then the shipped one, which is a taste call nothing writes over. The row
+  // has to say WHICH answered, or "save as my default" looks like it did
+  // nothing on a key the song was already overriding.
+
   function drumKeyOverrides() {
     return (STATE.settings && STATE.settings.drum_keys) || {};
   }
 
+  function drumDefaults() {
+    return STATE.drum_defaults || {};
+  }
+
+  function shippedDrumMap() {
+    return (STATE.catalog && STATE.catalog.drum_shipped) || {};
+  }
+
+  // What the analysis fell back to: already the user's table where they set
+  // one, since the whole compile reads through the same overlay.
   function drumKeyDefault(channel, key) {
     return (channel && channel.drum_keys && channel.drum_keys[String(key)]) || null;
   }
 
   function drumKeyChoice(channel, key) {
-    var override = drumKeyOverrides()[String(key)];
-    if (override) { return { sound: override, chosen: true }; }
-    return { sound: drumKeyDefault(channel, key), chosen: false };
+    var song = drumKeyOverrides()[String(key)];
+    if (song) { return { sound: song, scope: "song" }; }
+    var mine = drumDefaults()[String(key)];
+    if (mine) { return { sound: mine, scope: "yours" }; }
+    return { sound: drumKeyDefault(channel, key), scope: "builtin" };
+  }
+
+  function drumScope() {
+    return el("soundScope").value === "default" ? "default" : "song";
+  }
+
+  // The row a chosen sound is measured against, which is not the same row in
+  // both scopes: editing your own default has to offer the shipped one back,
+  // or a saved default could never be undone from here.
+  function drumFallback(channel, key) {
+    if (drumScope() === "default") {
+      var shipped = shippedDrumMap()[String(key)] || null;
+      return {
+        sound: shipped,
+        label: shipped
+          ? "Built-in default \u2014 " + exactSoundLabel(shipped)
+          : "No built-in sound \u2014 this key stays silent",
+        note: shipped
+          ? "Clears your saved default for this key"
+          : "General MIDI names no sound for this key"
+      };
+    }
+    var choice = drumKeyChoice(channel, key);
+    var under = drumDefaults()[String(key)] || drumKeyDefault(channel, key);
+    return {
+      sound: under,
+      label: under
+        ? (drumDefaults()[String(key)] ? "Your default \u2014 " : "Built-in default \u2014 ")
+          + exactSoundLabel(under)
+        : "No sound \u2014 this key stays silent",
+      note: choice.scope === "song"
+        ? "Drops this song's own choice for this key"
+        : "What this key plays with nothing set for this song"
+    };
   }
 
   function defaultDrumLabel(channel, key) {
-    var fallback = drumKeyDefault(channel, key);
-    return fallback
-      ? "General MIDI default \u2014 " + exactSoundLabel(fallback)
-      : "No sound \u2014 this key stays silent";
+    return drumFallback(channel, key).label;
+  }
+
+  function withKey(table, key, sound) {
+    var next = {};
+    Object.keys(table).forEach(function (existing) { next[existing] = table[existing]; });
+    if (sound) { next[String(key)] = sound; }
+    else { delete next[String(key)]; }
+    return next;
   }
 
   function setDrumKeySound(key, sound) {
-    var next = {};
-    var current = drumKeyOverrides();
-    Object.keys(current).forEach(function (existing) { next[existing] = current[existing]; });
-    if (sound) { next[String(key)] = sound; }
-    else { delete next[String(key)]; }
-    applyPatch({ drum_keys: next }, true);
+    applyPatch({ drum_keys: withKey(drumKeyOverrides(), key, sound) }, true);
+  }
+
+  function setDrumKeyDefault(key, sound) {
+    if (!api()) { return; }
+    // The song's own entry goes with it. Saving a default while this song is
+    // overriding the same key would store the choice and change nothing you can
+    // hear, which is indistinguishable from the save having failed.
+    var songNext = drumKeyOverrides()[String(key)] !== undefined
+      ? withKey(drumKeyOverrides(), key, null)
+      : null;
+    var sequence = nextRequest();
+    setBusy(true, "Saving your drum default...");
+    api().set_drum_defaults(withKey(drumDefaults(), key, sound)).then(function (response) {
+      if (!response || !response.ok) { setBusy(false); fail(response); render(); return; }
+      adopt(response, sequence);
+      if (songNext) {
+        setBusy(false);
+        applyPatch({ drum_keys: songNext }, true);
+        return;
+      }
+      setBusy(false);
+      invalidateAudio(false);
+      render();
+      toast(sound
+        ? "Saved as your default for every song."
+        : "Back to the built-in default for every song.");
+    }, function (error) { setBusy(false); fail(error); });
   }
 
   function trackShapeKey() {
@@ -839,6 +919,13 @@
       summary.appendChild(document.createTextNode("  \u00b7  Follows the MIDI channel"));
     }
     el("soundBrowserUse").disabled = false;
+    if (inDrumKeyMode()) {
+      el("soundBrowserUse").textContent = drumScope() === "default"
+        ? "Save as my default"
+        : "Use for this song";
+    } else {
+      el("soundBrowserUse").textContent = "Use sound";
+    }
   }
 
   function setSoundCandidate(kind, value, label) {
@@ -1097,18 +1184,17 @@
     var channel = partByKey(SOUND_BROWSER.part);
     var key = SOUND_BROWSER.drumKey;
     var sounds = filteredDrumSounds();
+    var fallback = drumFallback(channel, key);
     breadcrumb.textContent = drumKeyName(channel, key) +
       " \u00b7 " + noteName(key) + " \u00b7 MIDI " + key;
     count.textContent = sounds.length + (sounds.length === 1 ? " sound" : " sounds");
 
-    // Always first, never filtered away: taking an override back off a key is
-    // not a search result, it is the way out of a choice already made.
+    // Always first, never filtered away: taking a choice back off a key is not
+    // a search result, it is the way out of one already made.
     list.appendChild(resultRow(
-      "automatic", "", defaultDrumLabel(channel, key), "",
-      [drumKeyDefault(channel, key)
-        ? "What this key plays with no override"
-        : "General MIDI names no sound for this key"],
-      browserSoundEvent(drumKeyDefault(channel, key))
+      "automatic", "", fallback.label, "",
+      [fallback.note],
+      browserSoundEvent(fallback.sound)
     ));
 
     sounds.forEach(function (entry) {
@@ -1384,10 +1470,12 @@
     SOUND_BROWSER.drumKey = key;
     SOUND_BROWSER.mode = "events";
     SOUND_BROWSER.path = "";
+    el("soundScopeField").hidden = false;
+    el("soundScope").value = "song";
     var current = drumKeyChoice(channel, key);
-    SOUND_BROWSER.candidate = current.chosen
-      ? { kind: "sound", value: current.sound, label: exactSoundLabel(current.sound) }
-      : { kind: "automatic", value: "", label: defaultDrumLabel(channel, key) };
+    SOUND_BROWSER.candidate = current.scope === "builtin"
+      ? { kind: "automatic", value: "", label: defaultDrumLabel(channel, key) }
+      : { kind: "sound", value: current.sound, label: exactSoundLabel(current.sound) };
     el("soundBrowserSubtitle").textContent =
       drumKeyName(channel, key) + " \u00b7 " + noteName(key) +
       " \u00b7 " + partLabel(channel);
@@ -1400,6 +1488,7 @@
     SOUND_BROWSER.open = false;
     SOUND_BROWSER.part = null;
     SOUND_BROWSER.drumKey = null;
+    el("soundScopeField").hidden = true;
     el("soundBrowserOverlay").hidden = true;
   }
 
@@ -1410,9 +1499,11 @@
     if (inDrumKeyMode()) {
       var drumKey = SOUND_BROWSER.drumKey;
       var chosen = candidate.kind === "sound" ? candidate.value : null;
+      var everySong = drumScope() === "default";
       closeSoundBrowser();
       openChannelInspector(partKey);
-      setDrumKeySound(drumKey, chosen);
+      if (everySong) { setDrumKeyDefault(drumKey, chosen); }
+      else { setDrumKeySound(drumKey, chosen); }
       return;
     }
     var body = { family: null, sound: null };
@@ -1476,6 +1567,11 @@
     el("soundPagePrevious").addEventListener("click", function () {
       SOUND_BROWSER.page = Math.max(0, SOUND_BROWSER.page - 1);
       renderSoundResults();
+    });
+    el("soundScope").addEventListener("change", function () {
+      // The scope changes what the first row means and what the button says,
+      // so both are redrawn rather than left describing the other scope.
+      if (inDrumKeyMode()) { renderSoundResults(); }
     });
     el("soundPageNext").addEventListener("click", function () {
       SOUND_BROWSER.page += 1;
@@ -3236,7 +3332,7 @@
     row.type = "button";
     row.className = "drum-key-row"
       + (choice.sound ? "" : " drum-key-silent")
-      + (choice.chosen ? " drum-key-chosen" : "");
+      + (choice.scope === "builtin" ? "" : " drum-key-chosen");
     row.addEventListener("click", function () {
       openDrumKeyBrowser(channel.key, key);
     });
@@ -3269,19 +3365,19 @@
     sound.textContent = choice.sound
       ? exactSoundLabel(choice.sound)
       : "No sound \u2014 this key stays silent";
-    if (choice.chosen) {
+    if (choice.scope !== "builtin") {
       var chip = document.createElement("span");
       chip.className = "drum-key-chip";
-      chip.textContent = "yours";
+      chip.textContent = choice.scope === "song" ? "this song" : "your default";
       sound.appendChild(chip);
     }
     row.appendChild(sound);
 
+    var origin = { song: "Chosen for this song: ", yours: "Your default: " };
     row.title = "MIDI key " + key + "\n" + (choice.sound
-      ? (choice.chosen ? "Your sound: " : "General MIDI default: ")
+      ? (origin[choice.scope] || "Built-in default: ")
         + choice.sound + "\nClick to change it"
-      : "General MIDI names no sound for this key, so nothing plays. "
-        + "Click to choose one.");
+      : "No sound is mapped to this key, so nothing plays. Click to choose one.");
     return row;
   }
 

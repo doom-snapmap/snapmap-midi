@@ -1150,3 +1150,47 @@ def test_choosing_a_baseline_map_records_it(monkeypatch, tmp_path):
     payload = bridge.pick_baseline()
     assert payload["ok"] is True
     assert payload["settings"]["baseline"] == str(saved)
+
+
+def test_saving_a_drum_default_moves_what_the_open_song_falls_back_to(tmp_path):
+    """Re-reading the song is the whole point. `drum_keys` in the analysis is
+    what each row draws, and it is computed from the percussion table -- a save
+    the open song went on ignoring is indistinguishable from a failed one.
+    """
+    bridge = _bridge(tmp_path)
+    before = _channel(bridge.startup(), 9)["drum_keys"]["36"]
+
+    result = bridge.set_drum_defaults({"36": "play_sfx_ben_kick_02"})
+    assert result["ok"] is True
+    assert result["drum_defaults"] == {"36": "play_sfx_ben_kick_02"}
+    assert _channel(result, 9)["drum_keys"]["36"] == "play_sfx_ben_kick_02"
+    assert before != "play_sfx_ben_kick_02", "the shipped table has to differ to prove anything"
+
+    # And back. The shipped table is never written, so there is always something
+    # to put back.
+    cleared = bridge.set_drum_defaults({})
+    assert cleared["drum_defaults"] == {}
+    assert _channel(cleared, 9)["drum_keys"]["36"] == before
+
+
+def test_a_refused_drum_default_leaves_the_session_alone(tmp_path):
+    """Validation runs before anything is stored. A half-saved table would
+    outlive the session and there is no undo for it."""
+    bridge = _bridge(tmp_path)
+    bridge.startup()
+    result = bridge.set_drum_defaults({"36": "play_pianoc4"})
+    assert result["ok"] is False
+    assert "percussion sounds" in result["error"]
+    assert bridge.startup()["drum_defaults"] == {}
+
+
+def test_the_catalog_carries_the_table_with_no_user_edits_in_it(tmp_path):
+    """`drum_keys` in the analysis is already the overlay, so without the
+    shipped table beside it a saved default could never be cleared from the
+    window: there would be nothing to offer as the way back."""
+    bridge = _bridge(tmp_path)
+    catalog = bridge.startup()["catalog"]
+    assert catalog["drum_shipped"]["36"] == DRUM_MAP[36]
+
+    bridge.set_drum_defaults({"36": "play_sfx_ben_kick_02"})
+    assert bridge.startup()["catalog"]["drum_shipped"]["36"] == DRUM_MAP[36]

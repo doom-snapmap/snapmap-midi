@@ -213,10 +213,37 @@ useful responsive minimum widths, and the chosen channel width is restored the n
 application opens. Focus the divider and use Left/Right Arrow for precise adjustment, Home or
 End for either limit, or double-click it to restore the default width.
 
-Advanced per-key percussion overrides remain valid in the settings sidecar. They are not a
-second instrument screen: Automatic percussion applies them before falling back to the
-built-in General MIDI drum map. A channel-level instrument set or exact sound takes
-precedence over the percussion map.
+### Part type and drum keys
+
+**Part type** is `Automatic`, `Drum kit`, or `Melodic instrument`. Automatic reads MIDI
+channel 10 as percussion and everything else as an instrument, which is the General MIDI
+convention. The other two settings say so explicitly, for the two ordinary files the
+convention gets wrong: a kit written to another channel, and a melodic part written to
+channel 10.
+
+A part read as a kit lists every percussion key it plays, one row each: the note name, the
+General MIDI name for that key, how many times the song hits it, and the sound it plays.
+Keys with no sound are called out rather than left silent to be discovered in game — the
+shipped table covers 22 of the 47 named General MIDI keys, and a file using the others
+plays nothing on them.
+
+Clicking a row opens the sound browser for that key alone, restricted to the percussion
+pool. **Apply to** decides where the choice is stored:
+
+* **This song** writes `drum_keys` in the settings document, and travels with the song's
+  sidecar.
+* **Every song** writes your own percussion table, which lives beside the pitch profiles
+  under `%LOCALAPPDATA%\snapmap-midi\`. Saving a default also drops this song's own choice
+  for that key, so the change is audible immediately rather than stored under an override.
+
+Three tables answer for a key, most specific first: the song's `drum_keys`, then your saved
+table, then the shipped one. Each row says which answered. Both editable tables replace
+wholesale, and an absent entry means "use the answer underneath" — which is why removal is
+expressible at all. The shipped table is never written, so "back to the built-in default"
+always has something to go back to.
+
+A channel-level instrument set or exact sound still takes precedence over the percussion
+map entirely: it makes the whole part play one sound.
 
 ## The piano roll and sweeping playhead
 

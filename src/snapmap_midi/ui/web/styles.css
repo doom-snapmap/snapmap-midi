@@ -268,6 +268,9 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .note-facts dt { color: var(--muted); }
 .note-facts dd { min-width: 0; margin: 0; text-align: right; }
 .note-sound { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.sound-scope { display: flex; align-items: center; gap: 6px; margin-right: 4px; color: var(--muted); white-space: nowrap; }
+.sound-scope select { font: inherit; }
+
 .channel-percussion-group select { width: 100%; }
 .channel-percussion-group > .expression-readout { margin-top: 8px; }
 

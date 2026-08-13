@@ -94,32 +94,107 @@ def gm_drum_kit_name(program: int) -> str:
     return _DRUM_KITS.get(program, "Percussion")
 
 
-#: Percussion key to sound. Covers the common kit; exotic keys are dropped
-#: rather than guessed at, and land in the compile statistics as `dropped`.
-DRUM_MAP = {
-    35: "play_noise_kick_tight",
-    36: "play_noise_kick_tight",
-    37: "play_sfx_ben_snap_01",
-    38: "play_sfx_ben_snare_01",
-    40: "play_sfx_ben_snare_01",
-    39: "play_noise_clap",
-    41: "play_sfx_ben_tom_low_01",
-    43: "play_sfx_ben_tom_low_01",
-    42: "play_noise_hat",
-    44: "play_noise_hat",
-    45: "play_sfx_ben_tom_mid_01",
-    47: "play_sfx_ben_tom_mid_01",
-    46: "play_sfx_ben_hihat_open_01",
-    48: "play_sfx_ben_tom_high_01",
-    50: "play_sfx_ben_tom_high_01",
-    49: "play_noise_crash",
-    57: "play_noise_crash",
-    51: "play_noise_ride",
-    59: "play_noise_ride",
-    75: "play_clave1",
-    76: "play_wood_block_01",
-    77: "play_wood_block_01",
-}
+#: Percussion key to sound, as shipped. Read from data rather than written
+#: inline because it is no longer the only answer: `drum_table()` is what
+#: everything actually plays from, and this is its floor. Keeping the shipped
+#: taste call in a file the app never writes is what makes "put it back" mean
+#: something -- a user table edited over the top can always be thrown away.
+#:
+#: Exotic keys are absent rather than guessed at, and land in the compile
+#: statistics as `dropped`.
+def _load_shipped_drum_map() -> dict:
+    path = Path(__file__).resolve().parents[1] / "data" / "drum_map.json"
+    return {int(key): sound for key, sound in json.loads(path.read_text(encoding="utf-8")).items()}
+
+
+DRUM_MAP = _load_shipped_drum_map()
+
+
+def user_drum_table() -> dict:
+    """The user's own percussion table, or an empty one.
+
+    Unreadable is treated as absent. This file is a convenience -- a saved
+    preference for which kick is "the" kick -- and refusing to open a song
+    because a preference file got truncated would trade a small loss for a
+    total one. The window says so rather than staying silent about it.
+    """
+    from snapmap_midi import paths
+
+    path = paths.drum_map_file()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    table = {}
+    for key, sound in raw.items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= index <= 127 and isinstance(sound, str) and sound:
+            table[index] = sound
+    return table
+
+
+def drum_table() -> dict:
+    """What a percussion key actually plays: the shipped table, then the user's.
+
+    Read fresh rather than cached. The window writes this file while a song is
+    open, and a cached table would leave the preview playing the old kick until
+    the app restarted -- the one moment the change has to be audible.
+
+    Overlay rather than replacement, so a user who renamed one kick still gets
+    every other key. A saved table is an opinion about a few keys, never a
+    complete kit.
+    """
+    table = dict(DRUM_MAP)
+    table.update(user_drum_table())
+    return table
+
+
+def save_user_drum_table(mapping) -> dict:
+    """Replace the user's table, and answer with what was stored.
+
+    Replaces wholesale for the same reason the song's `drum_keys` does: an
+    entry absent from the map is the shipped answer, and no value can say that,
+    because every value has to name a real sound.
+
+    Sounds are checked against the percussion pool here rather than trusted
+    from the window, because this file outlives the session that wrote it. A
+    pitched sound would hold one fixed note under every hit and a looping
+    ambience is never stopped, and finding that out on the next song -- with no
+    memory of having chosen it -- is worse than being refused now.
+    """
+    from snapmap_midi import paths
+    from snapmap_midi.sound import palette
+
+    pool = palette.drum_sound_pool()
+    table = {}
+    for key, sound in dict(mapping).items():
+        index = int(key)
+        if not 0 <= index <= 127:
+            raise ValueError("drum key %r is outside 0-127" % key)
+        if sound not in pool:
+            raise ValueError(
+                "drum key %d: %r is not one of the %d percussion sounds"
+                % (index, sound, len(pool))
+            )
+        table[index] = sound
+    path = paths.drum_map_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if table:
+        path.write_text(
+            json.dumps({str(k): table[k] for k in sorted(table)}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    elif path.exists():
+        # An empty table is "back to shipped", and the file's absence says that
+        # more durably than a file holding `{}` -- which a later reader has to
+        # decide the meaning of all over again.
+        path.unlink()
+    return table
 
 
 @lru_cache(maxsize=1)

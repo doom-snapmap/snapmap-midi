@@ -346,6 +346,12 @@
     </div>
     <footer class="sound-browser-foot">
       <div class="sound-selection" id="soundSelection">Choose an automatic mapping, pitched family, or exact sound.</div>
+      <label class="sound-scope" id="soundScopeField" hidden>Apply to
+        <select id="soundScope" aria-label="Where this drum key choice is saved">
+          <option value="song">This song</option>
+          <option value="default">Every song</option>
+        </select>
+      </label>
       <button type="button" class="btn" id="soundBrowserCancel">Cancel</button>
       <button type="button" class="btn primary" id="soundBrowserUse" disabled>Use sound</button>
     </footer>

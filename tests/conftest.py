@@ -55,7 +55,7 @@ _SAVEDMAP_KEYS = frozenset({"baseline_map", "groove_fixture"})
 
 
 @pytest.fixture(autouse=True)
-def hermetic_environment(request, monkeypatch):
+def hermetic_environment(request, monkeypatch, tmp_path_factory):
     """Hide the override table from every test that has not asked for it.
 
     `SNAPMAP_MIDI_PATHS` is ambient process state, and letting it through
@@ -70,11 +70,19 @@ def hermetic_environment(request, monkeypatch):
 
     The palette cache is cleared either way: it is keyed on the source path,
     and the source path is exactly what this fixture moves.
+
+    `LOCALAPPDATA` moves for the same reason. A contributor who saved their own
+    percussion table in the window would otherwise run a suite where key 36 is
+    whatever they picked, and every assertion about the SHIPPED table would be
+    describing their taste instead. A test that wants a user table writes one
+    into this directory itself.
     """
     import json
 
     from snapmap_midi import paths
     from snapmap_midi.sound import palette
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata")))
 
     if request.node.get_closest_marker("savedmap") is None:
         monkeypatch.delenv(paths.ENV_VAR, raising=False)

@@ -76,6 +76,9 @@ SOUND_CACHE_NAME = "sounds"
 #: Numeric analysis only; never decoded audio.
 PITCH_PROFILE_NAME = "pitch-profiles-v2.json"
 
+#: The user's own percussion table, overlaid on the shipped one.
+DRUM_MAP_NAME = "drum-map-v1.json"
+
 
 def loader_dir() -> Path | None:
     """The folder the map loader reads from, or None when there isn't one.
@@ -117,6 +120,25 @@ def pitch_profile_cache() -> Path:
     else:
         base = Path.home() / (".%s" % APP_DIR_NAME)
     return base / PITCH_PROFILE_NAME
+
+
+def drum_map_file() -> Path:
+    """Where the user's own percussion table lives.
+
+    Beside the pitch profiles rather than beside the song, because it is
+    an answer about this person's taste in kicks and not about one piece of
+    music. A sidecar would make the choice again for every file.
+
+    Always a path, never None, for the same reason `sound_cache` is: the
+    folder is ours, so with no `LOCALAPPDATA` the honest move is to pick
+    somewhere in the home directory rather than refuse to remember anything.
+    """
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        base = Path(local) / APP_DIR_NAME
+    else:
+        base = Path.home() / (".%s" % APP_DIR_NAME)
+    return base / DRUM_MAP_NAME
 
 
 def rawmap_destination(out_dir=None) -> Path:

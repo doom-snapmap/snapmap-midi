@@ -381,6 +381,19 @@ class Session:
                     raise
             return copy.deepcopy(merged)
 
+    def reanalyze(self) -> None:
+        """Read the song again with nothing in the document changed.
+
+        The percussion table is a preference, not a setting of this song, so
+        it lives outside the document and saving one moves what `drum_keys`
+        falls back to without any patch for `apply` to notice. Without this
+        the window goes on drawing -- and the preview goes on playing -- the
+        old kick until the song is reopened.
+        """
+        with self._lock:
+            if self._analysis is not None:
+                self._analysis = self._analyze()
+
     # ---- compiling ----
 
     def _baseline_bytes(self) -> bytes | None:

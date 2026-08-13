@@ -41,6 +41,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from snapmap_midi import settings as settings_module
+from snapmap_midi.music import gm
 from snapmap_midi.music.gm import gm_drum_name
 from snapmap_midi.sound import palette
 from snapmap_midi.ui.session import Session
@@ -166,6 +167,13 @@ class Bridge:
         """
         analysis = self._session.analysis_dict()
         return {
+            # Outside the settings document on purpose: it is an answer about
+            # this person's kit, not about this song. It rides in the redraw
+            # payload anyway, because the rows that show a key's sound have to
+            # say which of the two tables it came from.
+            "drum_defaults": {
+                str(key): sound for key, sound in gm.user_drum_table().items()
+            },
             "settings": self._session.settings(),
             "analysis": analysis,
             "rulers": self._session.rulers(),
@@ -237,6 +245,10 @@ class Bridge:
             "families": families,
             "drum_sounds": drum_sounds,
             "drum_names": drum_names,
+            # The table with no user edits in it. `drum_keys` in the analysis is
+            # already the overlay, so without this there is no way back: a saved
+            # default would have nothing to be cleared to.
+            "drum_shipped": {str(key): sound for key, sound in gm.DRUM_MAP.items()},
             "sound_groups": sound_groups,
             "sound_count": sum(len(group["sounds"]) for group in sound_groups),
         }
@@ -653,6 +665,26 @@ class Bridge:
         """
         try:
             self._session.apply(patch)
+            payload = {"ok": True}
+            payload.update(self._state())
+            return payload
+        except Exception as exc:
+            return _fail(exc)
+
+    def set_drum_defaults(self, defaults) -> dict:
+        """Store the user's own percussion table and re-read the song.
+
+        Re-reading is the whole point. `drum_keys` in the analysis is what
+        each key falls back to, and it is computed from this table -- saving
+        a kick that the open song then goes on playing the old way would look
+        exactly like the save having failed.
+
+        Replaces wholesale, like the song's own `drum_keys`: an entry absent
+        from the map is the shipped answer, and no value can say that.
+        """
+        try:
+            gm.save_user_drum_table(defaults or {})
+            self._session.reanalyze()
             payload = {"ok": True}
             payload.update(self._state())
             return payload
