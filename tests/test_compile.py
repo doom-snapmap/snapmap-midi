@@ -470,7 +470,31 @@ def test_hermetic_multi_voice_steps_speaker_positions(minimal_timeline_map):
         for e in obj["entities"]
         if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
     ]
-    assert positions == [120.0, 144.0]  # stepped by 24 per speaker
+    assert positions == [-1280.0, -1256.0]  # stepped by 24, starting inside the room
+
+
+def test_speakers_stay_inside_the_room_however_many_there_are():
+    """They used to march out from x = 120 with no bound at all, 24 units at a
+    time. A song needing 112 of them put the last one at x = 2,784 -- roughly
+    twice as far out as any point known to be inside this room -- and they
+    landed outside the module, entities the editor has to place in a room that
+    does not contain them.
+
+    Wrapping rather than running on is safe here specifically because these are
+    2D speakers: their output is not positional, so two sharing a spot costs
+    nothing, while one outside the room is a real problem.
+    """
+    from snapmap_midi.rawmap import template
+
+    for index in (0, 1, 50, 111, 500, 5000):
+        x, y, z = template.speaker_position(index)
+        assert template.INTERIOR_X_MIN <= x <= template.INTERIOR_X_MAX, (index, x)
+        assert z > 0.0, index
+    # Distinct while the room has room for them, so an ordinary song's speakers
+    # do not all land on one spot.
+    span = template.INTERIOR_X_MAX - template.INTERIOR_X_MIN
+    fits = span // template.SPEAKER_SPACING
+    assert len({template.speaker_position(i)[0] for i in range(fits)}) == fits
 
 
 # ---- byte gates (need the real palette and baseline) ----

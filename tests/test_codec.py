@@ -47,11 +47,27 @@ def test_vec3_omits_zero_components():
     assert values.Vec3(tagged=True) == {"~type": "idVec3"}
 
 
-def test_mat2d_emits_two_rows():
+def test_mat2d_emits_two_rows_with_both_components():
+    """Two rows, and every component of each row -- including the zeros.
+
+    The format has two opposite rules and this is the one that is easy to get
+    backwards. A POSITION omits its zero components: an engine-saved portal cap
+    is `{"y": 3840}` with no x and no z. That same cap's ROTATION row is
+    `{"x": 0, "y": 1}`, with the zero written out.
+
+    Following the position rule here shipped a half-written basis, and there is
+    no scale field anywhere in the format -- so the basis is the only thing that
+    can change an entity's size. The caps came out stretched and crooked in
+    game, which is exactly what a basis of the wrong length does.
+    """
     m = values.Mat2D(0.0)["mat"]
     assert set(m) == {"mat[0]", "mat[1]"}
-    assert m["mat[0]"] == {"x": 1.0}
-    assert m["mat[1]"] == {"y": 1.0}
+    assert m["mat[0]"] == {"x": 1.0, "y": 0.0}
+    assert m["mat[1]"] == {"x": -0.0, "y": 1.0}
+    # Both rows unit length, which is what makes it a rotation rather than a
+    # rotation with a scale hidden in it.
+    for row in m.values():
+        assert abs((row["x"] ** 2 + row["y"] ** 2) ** 0.5 - 1.0) < 1e-9
 
 
 def test_pointer_shape():

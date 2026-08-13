@@ -24,6 +24,7 @@ from snapmap_midi.music.voices import (
     prepare_voice_layers,
     thin_polyphony,
 )
+from snapmap_midi.rawmap import template
 from snapmap_midi.rawmap.codec import serialize
 from snapmap_midi.rawmap.document import SPEAKER_INHERIT, SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import PRODUCT_PALETTE_REFS
@@ -180,7 +181,7 @@ def compile_to_rawmap(
             voice_notes = sorted(by_voice.get(voice, []), key=lambda n: n.start)
             uid = doc.add_speaker(
                 sound=(voice_notes[0].shader if voice_notes else ""),
-                position=(float(120 + 24 * speaker_index), 0.0, 64.0),
+                position=template.speaker_position(speaker_index),
                 display_name="snapmap-midi-ch%d-v%d" % (channel, voice),
             )
             speaker_id = "0_{}/{}_{}".format(module, SPEAKER_INHERIT, uid)
