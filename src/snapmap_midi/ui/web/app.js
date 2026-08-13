@@ -102,6 +102,7 @@
     loading: false,
     request: 0,
     channel: null,
+    drumKey: null,
     catalog: null,
     tree: null,
     byName: {},
@@ -499,6 +500,53 @@
     return assignmentLabel(channel);
   }
 
+  // ---- Percussion ------------------------------------------------------
+  // `drum_keys` is one map for the whole song, keyed by MIDI note, not one map
+  // per part. Two kits that both play 36 therefore share a kick, which is what
+  // a composer means by "the kick". It also replaces wholesale on patch, and
+  // that is the only reason removal is expressible at all: an entry absent from
+  // the map is the General MIDI table's answer, and no value could say that,
+  // since every value has to name a real sound.
+
+  function drumPool() {
+    return (STATE.catalog && STATE.catalog.drum_sounds) || [];
+  }
+
+  function drumKeyName(channel, key) {
+    var names = (channel && channel.drum_names) || {};
+    return names[String(key)] || "Key " + key;
+  }
+
+  function drumKeyOverrides() {
+    return (STATE.settings && STATE.settings.drum_keys) || {};
+  }
+
+  function drumKeyDefault(channel, key) {
+    return (channel && channel.drum_keys && channel.drum_keys[String(key)]) || null;
+  }
+
+  function drumKeyChoice(channel, key) {
+    var override = drumKeyOverrides()[String(key)];
+    if (override) { return { sound: override, chosen: true }; }
+    return { sound: drumKeyDefault(channel, key), chosen: false };
+  }
+
+  function defaultDrumLabel(channel, key) {
+    var fallback = drumKeyDefault(channel, key);
+    return fallback
+      ? "General MIDI default \u2014 " + exactSoundLabel(fallback)
+      : "No sound \u2014 this key stays silent";
+  }
+
+  function setDrumKeySound(key, sound) {
+    var next = {};
+    var current = drumKeyOverrides();
+    Object.keys(current).forEach(function (existing) { next[existing] = current[existing]; });
+    if (sound) { next[String(key)] = sound; }
+    else { delete next[String(key)]; }
+    applyPatch({ drum_keys: next }, true);
+  }
+
   function trackShapeKey() {
     var families = (STATE.catalog && STATE.catalog.families) || [];
     return channels().map(function (channel) {
@@ -785,6 +833,8 @@
       summary.appendChild(document.createTextNode("  \u00b7  " + candidate.value));
     } else if (candidate.kind === "family") {
       summary.appendChild(document.createTextNode("  \u00b7  Pitched instrument family"));
+    } else if (inDrumKeyMode()) {
+      summary.appendChild(document.createTextNode("  \u00b7  General MIDI percussion table"));
     } else {
       summary.appendChild(document.createTextNode("  \u00b7  Follows the MIDI channel"));
     }
@@ -866,7 +916,43 @@
     });
   }
 
+  function renderDrumTree() {
+    var host = el("soundTree");
+    host.textContent = "";
+    var pool = drumPool();
+    host.appendChild(soundTreeButton(
+      "All percussion sounds", "folder-open", pool.length,
+      !SOUND_BROWSER.path, 0,
+      function () {
+        SOUND_BROWSER.path = "";
+        el("soundBrowserSearch").value = "";
+        renderSoundBrowser();
+      },
+      true, pool.length > 0
+    ));
+    var counts = {};
+    pool.forEach(function (entry) {
+      counts[entry.category] = (counts[entry.category] || 0) + 1;
+    });
+    Object.keys(counts).sort().forEach(function (category) {
+      host.appendChild(soundTreeButton(
+        humanCategory(category), "folder", counts[category],
+        SOUND_BROWSER.path === category, 1,
+        function () {
+          SOUND_BROWSER.path = category;
+          el("soundBrowserSearch").value = "";
+          renderSoundBrowser();
+        },
+        false, false
+      ));
+    });
+  }
+
   function renderSoundTree() {
+    if (inDrumKeyMode()) {
+      renderDrumTree();
+      return;
+    }
     var host = el("soundTree");
     host.textContent = "";
     var familyCount = ((STATE.catalog && STATE.catalog.families) || []).length;
@@ -992,6 +1078,55 @@
     return low.toFixed(2) + "\u2013" + high.toFixed(2) + " s";
   }
 
+  function inDrumKeyMode() {
+    return SOUND_BROWSER.drumKey !== null && SOUND_BROWSER.drumKey !== undefined;
+  }
+
+  function filteredDrumSounds() {
+    var query = el("soundBrowserSearch").value.trim().toLowerCase();
+    return drumPool().filter(function (entry) {
+      if (query) {
+        return (entry.name + " " + entry.label + " " + entry.category)
+          .toLowerCase().indexOf(query) >= 0;
+      }
+      return !SOUND_BROWSER.path || entry.category === SOUND_BROWSER.path;
+    });
+  }
+
+  function renderDrumKeyResults(list, breadcrumb, count) {
+    var channel = partByKey(SOUND_BROWSER.part);
+    var key = SOUND_BROWSER.drumKey;
+    var sounds = filteredDrumSounds();
+    breadcrumb.textContent = drumKeyName(channel, key) +
+      " \u00b7 " + noteName(key) + " \u00b7 MIDI " + key;
+    count.textContent = sounds.length + (sounds.length === 1 ? " sound" : " sounds");
+
+    // Always first, never filtered away: taking an override back off a key is
+    // not a search result, it is the way out of a choice already made.
+    list.appendChild(resultRow(
+      "automatic", "", defaultDrumLabel(channel, key), "",
+      [drumKeyDefault(channel, key)
+        ? "What this key plays with no override"
+        : "General MIDI names no sound for this key"],
+      browserSoundEvent(drumKeyDefault(channel, key))
+    ));
+
+    sounds.forEach(function (entry) {
+      var event = browserSoundEvent(entry.name);
+      var metadata = [humanCategory(entry.category)];
+      if (event) {
+        metadata.push(event.previewable
+          ? "Local preview"
+          : "In-game only; local preview unavailable");
+        metadata.push(eventDuration(event));
+      }
+      list.appendChild(resultRow(
+        "sound", entry.name, entry.label || humanSoundName(entry.name),
+        entry.name, metadata, event
+      ));
+    });
+  }
+
   function filteredSoundEvents() {
     var events = (SOUND_BROWSER.catalog && SOUND_BROWSER.catalog.events) || [];
     var query = el("soundBrowserSearch").value.trim().toLowerCase();
@@ -1012,7 +1147,9 @@
     var count = el("soundResultCount");
     var pageCount = 1;
 
-    if (SOUND_BROWSER.mode === "automatic") {
+    if (inDrumKeyMode()) {
+      renderDrumKeyResults(list, breadcrumb, count);
+    } else if (SOUND_BROWSER.mode === "automatic") {
       var channel = partByKey(SOUND_BROWSER.part);
       breadcrumb.textContent = "Automatic MIDI mapping";
       count.textContent = "1 choice";
@@ -1083,7 +1220,7 @@
       });
     }
 
-    var paginationVisible = SOUND_BROWSER.mode === "events";
+    var paginationVisible = SOUND_BROWSER.mode === "events" && !inDrumKeyMode();
     el("soundPagePrevious").hidden = !paginationVisible;
     el("soundPageNext").hidden = !paginationVisible;
     el("soundPageStatus").hidden = !paginationVisible;
@@ -1216,6 +1353,7 @@
     pausePlayback();
     SOUND_BROWSER.open = true;
     SOUND_BROWSER.part = channel.key;
+    SOUND_BROWSER.drumKey = null;
     SOUND_BROWSER.candidate = candidateForChannel(channel);
     SOUND_BROWSER.page = 0;
     SOUND_BROWSER.path = "";
@@ -1238,11 +1376,30 @@
     setTimeout(function () { el("soundBrowserSearch").focus(); }, 0);
   }
 
+  function openDrumKeyBrowser(partKey, key) {
+    var channel = partByKey(partKey);
+    if (!channel) { return; }
+    openSoundBrowser(partKey);
+    if (!SOUND_BROWSER.open) { return; }
+    SOUND_BROWSER.drumKey = key;
+    SOUND_BROWSER.mode = "events";
+    SOUND_BROWSER.path = "";
+    var current = drumKeyChoice(channel, key);
+    SOUND_BROWSER.candidate = current.chosen
+      ? { kind: "sound", value: current.sound, label: exactSoundLabel(current.sound) }
+      : { kind: "automatic", value: "", label: defaultDrumLabel(channel, key) };
+    el("soundBrowserSubtitle").textContent =
+      drumKeyName(channel, key) + " \u00b7 " + noteName(key) +
+      " \u00b7 " + partLabel(channel);
+    renderSoundBrowser();
+  }
+
   function closeSoundBrowser() {
     if (!SOUND_BROWSER.open) { return; }
     stopSoundAudition();
     SOUND_BROWSER.open = false;
     SOUND_BROWSER.part = null;
+    SOUND_BROWSER.drumKey = null;
     el("soundBrowserOverlay").hidden = true;
   }
 
@@ -1250,6 +1407,14 @@
     var candidate = SOUND_BROWSER.candidate;
     var partKey = SOUND_BROWSER.part;
     if (!candidate || partKey === null || partKey === undefined) { return; }
+    if (inDrumKeyMode()) {
+      var drumKey = SOUND_BROWSER.drumKey;
+      var chosen = candidate.kind === "sound" ? candidate.value : null;
+      closeSoundBrowser();
+      openChannelInspector(partKey);
+      setDrumKeySound(drumKey, chosen);
+      return;
+    }
     var body = { family: null, sound: null };
     if (candidate.kind === "family") { body.family = candidate.value; }
     function commit() {
@@ -3042,6 +3207,102 @@
     else { openNotifications(); }
   }
 
+  function percussionMode(channel) {
+    return partEntry(channel).percussion || "auto";
+  }
+
+  function syncChannelPercussion(channel) {
+    var mode = percussionMode(channel);
+    el("channelPercussion").value = mode;
+    var help = el("channelPercussionHelp");
+    if (mode === "kit") {
+      help.textContent = "Played as a drum kit: each MIDI key is one percussion "
+        + "sound, whatever channel the part is on.";
+    } else if (mode === "melodic") {
+      help.textContent = "Played as an instrument, even though General MIDI "
+        + "reserves this channel for percussion.";
+    } else if (channel.is_drums) {
+      help.textContent = "Automatic: MIDI channel 10 is the General MIDI "
+        + "percussion channel, so this part is read as a drum kit.";
+    } else {
+      help.textContent = "Automatic: read as a melodic instrument. Choose "
+        + "Drum kit if this part is really percussion.";
+    }
+  }
+
+  function drumKeyRow(channel, key) {
+    var choice = drumKeyChoice(channel, key);
+    var row = document.createElement("button");
+    row.type = "button";
+    row.className = "drum-key-row"
+      + (choice.sound ? "" : " drum-key-silent")
+      + (choice.chosen ? " drum-key-chosen" : "");
+    row.addEventListener("click", function () {
+      openDrumKeyBrowser(channel.key, key);
+    });
+
+    var head = document.createElement("div");
+    head.className = "drum-key-head";
+
+    var pitch = document.createElement("span");
+    pitch.className = "drum-key-note mono";
+    pitch.textContent = noteName(key);
+    head.appendChild(pitch);
+
+    var name = document.createElement("span");
+    name.className = "drum-key-name";
+    // The General MIDI name, which is what the composer's editor showed them.
+    // 47 of the 128 keys have one; the rest are a kit maker's own business, so
+    // they get the honest label rather than an invented drum.
+    name.textContent = drumKeyName(channel, key);
+    head.appendChild(name);
+
+    var count = Number((channel.pitches || {})[String(key)] || 0);
+    var hits = document.createElement("span");
+    hits.className = "drum-key-hits mono";
+    hits.textContent = count + (count === 1 ? " hit" : " hits");
+    head.appendChild(hits);
+    row.appendChild(head);
+
+    var sound = document.createElement("div");
+    sound.className = "drum-key-sound";
+    sound.textContent = choice.sound
+      ? exactSoundLabel(choice.sound)
+      : "No sound \u2014 this key stays silent";
+    if (choice.chosen) {
+      var chip = document.createElement("span");
+      chip.className = "drum-key-chip";
+      chip.textContent = "yours";
+      sound.appendChild(chip);
+    }
+    row.appendChild(sound);
+
+    row.title = "MIDI key " + key + "\n" + (choice.sound
+      ? (choice.chosen ? "Your sound: " : "General MIDI default: ")
+        + choice.sound + "\nClick to change it"
+      : "General MIDI names no sound for this key, so nothing plays. "
+        + "Click to choose one.");
+    return row;
+  }
+
+  function renderDrumKeys(channel) {
+    var group = el("drumKeysGroup");
+    var host = el("drumKeyList");
+    host.textContent = "";
+    var keys = Object.keys((channel && channel.drum_keys) || {});
+    group.hidden = !channel.is_drums || !keys.length;
+    if (group.hidden) { return; }
+    keys.sort(function (left, right) { return Number(left) - Number(right); });
+    var silent = keys.filter(function (key) {
+      return !drumKeyChoice(channel, Number(key)).sound;
+    }).length;
+    el("drumKeysCount").textContent = keys.length + (keys.length === 1 ? " key" : " keys")
+      + (silent ? " \u00b7 " + silent + " silent" : "");
+    keys.forEach(function (key) {
+      host.appendChild(drumKeyRow(channel, Number(key)));
+    });
+  }
+
   function syncChannelInspector() {
     if (!CHANNEL_INSPECTOR_OPEN) { return; }
     var channel = partByKey(SELECTED_PART);
@@ -3062,6 +3323,8 @@
     el("channelMidiRange").textContent =
       noteName(channel.lowest) + "-" + noteName(channel.highest);
     el("channelNoteCount").textContent = String(channel.notes || 0);
+    syncChannelPercussion(channel);
+    renderDrumKeys(channel);
 
     // Available for every exact sound. A detected root makes following
     // musically faithful; without one it still works, against an assumed
@@ -3142,6 +3405,11 @@
       "click",
       closeChannelInspectorAndClearSelection
     );
+    el("channelPercussion").addEventListener("change", function () {
+      var channel = partByKey(SELECTED_PART);
+      if (!channel) { return; }
+      applyPatch(partPatch(channel, { percussion: this.value }), true);
+    });
     el("channelPitchFollow").addEventListener("change", function () {
       var saved = partEntry(partByKey(SELECTED_PART));
       if (!saved.sound) {

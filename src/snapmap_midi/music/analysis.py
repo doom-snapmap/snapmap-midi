@@ -20,6 +20,7 @@ from typing import Optional
 from snapmap_midi.music.gm import (
     DRUM_MAP,
     gm_drum_kit_name,
+    gm_drum_name,
     gm_program_name,
     gm_to_family,
 )
@@ -214,6 +215,11 @@ def as_dict(analysis: MidiAnalysis) -> dict:
                 "auto_family": c.auto_family,
                 "pitches": {str(note): count for note, count in c.pitches.items()},
                 "drum_keys": {str(key): shader for key, shader in c.drum_keys.items()},
+                # Carried beside the keys rather than looked up from the
+                # catalog, because the catalog is built when a file opens and
+                # this list changes whenever a part is declared a kit. A name
+                # fetched from the stale one reads every key as unnamed.
+                "drum_names": {str(key): gm_drum_name(key) for key in c.drum_keys},
             }
             for c in analysis.channels
         ],

@@ -268,6 +268,28 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .note-facts dt { color: var(--muted); }
 .note-facts dd { min-width: 0; margin: 0; text-align: right; }
 .note-sound { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.channel-percussion-group select { width: 100%; }
+.channel-percussion-group > .expression-readout { margin-top: 8px; }
+
+/* One row per key the part actually plays. A kit is a set of keys, not a
+   sound, so the panel that edits it has to be a list -- and a scrolling one,
+   because a busy kit runs past twenty keys and the facts below it must stay
+   reachable. */
+.drum-key-list { display: flex; flex-direction: column; gap: 3px; max-height: 268px; overflow: auto; }
+.drum-key-row { display: block; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.drum-key-row:hover { border-color: var(--sel); }
+.drum-key-head { display: flex; align-items: center; gap: 8px; }
+.drum-key-note { flex: none; width: 34px; color: var(--muted); }
+.drum-key-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drum-key-hits { flex: none; color: var(--muted); }
+.drum-key-sound { margin-top: 2px; padding-left: 42px; color: var(--muted); overflow-wrap: anywhere; }
+.drum-key-chip { margin-left: 6px; padding: 0 5px; border-radius: 8px; background: var(--sel); color: var(--selText); font-size: 11px; }
+/* A key General MIDI names but the palette does not map plays nothing at all.
+   Silence is indistinguishable from a working kit until the map is exported,
+   so it is called out here rather than left to be discovered in game. */
+.drum-key-silent { border-color: color-mix(in srgb, var(--sqWarn) 58%, var(--border)); background: color-mix(in srgb, var(--sqWarn) 9%, var(--panel)); }
+.drum-key-silent .drum-key-sound { color: var(--sqWarn); }
+
 .expression-readout { margin-top: 7px; color: var(--muted); line-height: 1.45; }
 .expression-readout strong { color: var(--text); font-weight: 600; }
 .expression-warning { margin-top: 11px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--sqWarn) 58%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--sqWarn) 9%, var(--panel)); color: var(--text); line-height: 1.4; }

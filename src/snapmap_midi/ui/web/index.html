@@ -232,7 +232,22 @@
       <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close part settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body" id="channelInspectorBody">
-      <div class="control-group channel-pitch-group">
+      <div class="control-group channel-percussion-group">
+        <div class="control-title"><span>Part type</span><span class="hint">part</span></div>
+        <select id="channelPercussion" aria-label="How this part is played">
+          <option value="auto">Automatic</option>
+          <option value="kit">Drum kit</option>
+          <option value="melodic">Melodic instrument</option>
+        </select>
+        <div class="expression-readout" id="channelPercussionHelp"></div>
+      </div>
+
+      <div class="control-group drum-keys-group" id="drumKeysGroup" hidden>
+        <div class="control-title"><span>Drum keys</span><span class="hint" id="drumKeysCount"></span></div>
+        <div class="drum-key-list" id="drumKeyList"></div>
+      </div>
+
+      <div class="control-group channel-pitch-group" id="channelPitchGroup">
         <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
         <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
         <div class="expression-readout" id="channelPitchModeHelp"></div>

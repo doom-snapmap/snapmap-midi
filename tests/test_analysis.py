@@ -387,9 +387,12 @@ def test_as_dict_survives_the_trip_through_json(tmp_path):
                 "auto_family",
                 "pitches",
                 "drum_keys",
+                "drum_names",
             }
             assert all(isinstance(k, str) for k in channel["pitches"])
             assert all(isinstance(k, str) for k in channel["drum_keys"])
+            assert all(isinstance(k, str) for k in channel["drum_names"])
+            assert set(channel["drum_names"]) == set(channel["drum_keys"])
     payload = json.loads(json.dumps(analysis.as_dict(analysis.analyze(mid2))))
     assert payload["channels"][0]["pitches"] == {"60": 2}
 

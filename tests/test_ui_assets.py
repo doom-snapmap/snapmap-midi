@@ -879,3 +879,60 @@ def test_every_setting_the_window_reads_is_one_the_document_holds():
     assert read <= produced, "app.js reads settings the document does not have: %s" % sorted(
         read - produced
     )
+
+
+def test_the_part_panel_can_say_a_part_is_a_kit():
+    """The mode exists in the document and the parser already obeys it, but a
+    setting with no control is a setting nobody has. Percussion off channel 10
+    is ordinary -- a composer who put the kit on channel 6 hears it played as a
+    piano, and nothing in the window says why or offers a way out.
+    """
+    assert 'id="channelPercussion"' in _HTML
+    assert 'id="channelPercussionHelp"' in _HTML
+    for mode in ("auto", "kit", "melodic"):
+        assert '<option value="%s">' % mode in _HTML
+    assert "function syncChannelPercussion(channel)" in _JS
+    assert 'partPatch(channel, { percussion: this.value })' in _JS
+
+
+def test_the_part_panel_lists_the_keys_a_kit_plays():
+    """`drum_keys` was reachable only by hand-editing the sidecar, so the answer
+    to "I do not like this kick" was "edit JSON". Worse, a key General MIDI
+    names but `DRUM_MAP` does not map plays NOTHING, and silence is
+    indistinguishable from a working kit until the map is in game.
+    """
+    assert 'id="drumKeysGroup"' in _HTML
+    assert 'id="drumKeyList"' in _HTML
+    assert 'id="drumKeysCount"' in _HTML
+    assert "function renderDrumKeys(channel)" in _JS
+    assert "function openDrumKeyBrowser(partKey, key)" in _JS
+    assert ".drum-key-silent" in _CSS
+    assert ".drum-key-row" in _CSS
+
+
+def test_a_drum_key_patch_carries_every_other_key_with_it():
+    """`drum_keys` replaces wholesale -- that asymmetry is what makes removal
+    expressible, and it is also what makes a patch of one entry erase the rest.
+    Choosing a snare must not silently drop the kick chosen a minute earlier.
+    """
+    body = re.search(
+        r"function setDrumKeySound\(key, sound\) \{(.+?)\n  \}", _JS, re.S
+    )
+    assert body, "setDrumKeySound is gone or was renamed"
+    body = body.group(1)
+    assert "Object.keys(current).forEach" in body, "the patch no longer copies the map"
+    assert "delete next[String(key)]" in body, "no way left to take an override back off"
+
+
+def test_the_key_picker_offers_only_sounds_the_document_will_accept():
+    """The full browser lists every installed event, and `_drum_keys` refuses
+    all but the percussion pool: a pitched sound holds one fixed note under
+    every hit, and a looping ambience is never stopped. Offering a choice the
+    document rejects turns a click into an error toast.
+    """
+    assert "function filteredDrumSounds()" in _JS
+    assert "drumPool()" in _JS
+    assert "STATE.catalog && STATE.catalog.drum_sounds" in _JS
+    # And the way back to the table's own answer is always the first row, never
+    # filtered away by a search: undoing a choice is not a search result.
+    assert 'list.appendChild(resultRow(\n      "automatic", ""' in _JS
