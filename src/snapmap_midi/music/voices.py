@@ -88,8 +88,26 @@ def allocate_voices(notes, max_speakers: int) -> int:
     `max_speakers` it steals the voice that frees earliest, which truncates
     that note rather than dropping this one -- losing the tail of an older
     note is less audible than a missing attack.
+
+    Notes that START TOGETHER are ordered by pitch, LOWEST first, and that tie
+    break is load-bearing rather than tidiness. Sorting on `start` alone is a
+    stable sort, so a chord kept whatever order the FILE happened to list its
+    notes in -- and which notes won a speaker followed from that. The same
+    five-note chord under two speakers gave C3+G3, or G4+E4, or C4+C3, purely
+    from how the exporter ordered its events. Two exports of one arrangement
+    sounded different for no musical reason, which is what this was reported as.
+
+    Lowest-first because among notes that start together the LAST one allocated
+    to a voice is the one that keeps it -- every earlier note on that voice is
+    truncated by the next. Ascending pitch therefore leaves the top note
+    holding a speaker, which is the note a listener would miss.
+
+    This makes the outcome deterministic and protects the melody. It does NOT
+    make the model right for chords: see `docs/limits.md` -- a note that cannot
+    get a speaker at its onset is truncated to zero length, so it is silent
+    while still being drawn as a shortened note rather than a deleted one.
     """
-    notes.sort(key=lambda n: n.start)
+    notes.sort(key=lambda n: (n.start, _note_pitch(n)))
     free_at: list[int] = []
     for note in notes:
         voice = next((i for i, t in enumerate(free_at) if t <= note.start), None)

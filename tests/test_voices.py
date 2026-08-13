@@ -198,3 +198,34 @@ def test_one_track_per_channel_is_unchanged():
     _shared, _expressive, layers = prepare_voice_layers([], [a, b])
 
     assert set(layers) == {(1, 0), (1, 1)}
+
+
+def test_simultaneous_notes_do_not_depend_on_the_order_the_file_lists_them():
+    """A chord must not sound different because the exporter reordered events.
+
+    `sort(key=start)` is stable, so a chord kept the file's own order and the
+    notes that won a speaker followed from it. The same five-note chord under
+    two speakers gave C3+G3, G4+E4, or C4+C3 depending only on how the events
+    were written. Two exports of one arrangement then sounded different.
+    """
+    pitches = [48, 55, 60, 64, 67]  # C3 G3 C4 E4 G4
+
+    def audible_for(order):
+        notes = [Note(0, 2000, "s%d" % p, True, 0, "f") for p in order]
+        for note, pitch in zip(notes, order):
+            note.pitch = pitch
+        allocate_voices(notes, 2)  # sorts in place
+        # Among notes starting together, the last one on a voice keeps it.
+        last = {}
+        for note in notes:
+            last[note.voice] = note.pitch
+        return sorted(last.values())
+
+    low_high = audible_for(pitches)
+    high_low = audible_for(list(reversed(pitches)))
+    scrambled = audible_for([60, 48, 67, 55, 64])
+
+    assert low_high == high_low == scrambled, "file order still decides the mix"
+    # And the top note is one of the survivors -- it is the one a listener
+    # would miss, so it must not be the one that gets stolen from.
+    assert 67 in low_high
