@@ -27,6 +27,7 @@ class NoteExpression:
     velocity: int
     root_pitch: float | None
     pitch_offset: int
+    pitch_semitones: int | None
     volume_trim_db: int
     note_volume_db: int
     master_volume_db: int
@@ -88,6 +89,7 @@ def expression_for(
     velocity: int,
     root_pitch: float | None,
     pitch_offset: int = 0,
+    pitch_semitones: int | None = None,
     volume_trim_db: int = 0,
     note_volume_db: int | None = None,
     master_volume_db: int = 0,
@@ -95,10 +97,12 @@ def expression_for(
     """Resolve one note to the exact integral values SnapMap will receive.
 
     The source MIDI pitch never moves. With a trusted or manually calibrated
-    root, the automatic modifier makes the sound follow that MIDI note and
-    ``pitch_offset`` is added afterward. Without that basis,
-    the sound keeps its natural playback pitch and ``pitch_offset`` is the only
-    modifier.
+    playback reference, the automatic modifier makes the sound follow that
+    MIDI note. A legacy pitch_offset is added afterward; an absolute
+    pitch_semitones value instead replaces the automatic result so the note
+    control always represents the exact SnapMap modifier it will export.
+    Without a playback reference, natural playback is zero and either kind of
+    note edit remains playback-only.
 
     MIDI velocity supplies the initial note volume. An absolute
     ``note_volume_db`` replaces that initial value, while master volume is
@@ -109,6 +113,8 @@ def expression_for(
 
     source_pitch = int(clamp(int(source_pitch), MIDI_MIN, MIDI_MAX))
     pitch_offset = int(clamp(int(pitch_offset), PITCH_MIN, PITCH_MAX))
+    if pitch_semitones is not None:
+        pitch_semitones = int(clamp(int(pitch_semitones), PITCH_MIN, PITCH_MAX))
     volume_trim_db = int(clamp(int(volume_trim_db), VOLUME_MIN, VOLUME_MAX))
     master_volume_db = int(clamp(int(master_volume_db), VOLUME_MIN, VOLUME_MAX))
     target_pitch = source_pitch
@@ -119,6 +125,8 @@ def expression_for(
     else:
         automatic_pitch = nearest_int(source_pitch - float(root_pitch))
         requested_pitch = automatic_pitch + pitch_offset
+    if pitch_semitones is not None:
+        requested_pitch = pitch_semitones
     pitch_modifier = int(clamp(requested_pitch, PITCH_MIN, PITCH_MAX))
     playback_rate = pitch_playback_rate(pitch_modifier)
 
@@ -140,6 +148,7 @@ def expression_for(
         velocity=velocity,
         root_pitch=None if root_pitch is None else float(root_pitch),
         pitch_offset=pitch_offset,
+        pitch_semitones=pitch_semitones,
         volume_trim_db=volume_trim_db,
         note_volume_db=note_volume,
         master_volume_db=master_volume_db,

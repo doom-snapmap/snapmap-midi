@@ -160,15 +160,29 @@ There is one Play/Pause control for the whole converted song. Its playhead sweep
 entire note surface and can be dragged to seek, as can the transport scrubber. The note under the
 pointer brightens whether playback is running or paused; playback itself does not change note
 colors. Clicking a note pauses playback and opens the Note expression inspector. It shows the
-immutable MIDI note, selected event, pitch adjustment, and current note volume. Automatic pitch
-calibration stays internal. Pitch adjustment changes playback without moving the block, changing its
+immutable MIDI note, selected event, exact SnapMap pitch, and current note volume. Automatic pitch
+resolution stays internal. Pitch changes playback without moving the block, changing its
 channel, or selecting another sample. Note volume starts at the level derived from the imported
 MIDI velocity and can be set directly, including back to 0 dB. The bottom-panel Volume control
 offsets the whole arrangement without rewriting any note level. Exact sounds with a stable root
-follow MIDI automatically. Rootless effects play unchanged, with no calibration prompt or guessed
-reference. Channel settings shows the resulting pitch mode, while the Note expression inspector
-remains strictly per-note. Clicking or dragging
-empty roll space continues to seek.
+follow MIDI automatically. Other exact effects play unchanged by default, but their Channel settings
+can explicitly enable Follow MIDI note from a fixed neutral C4 reference. That opt-in reference never
+comes from the first note or the channel range and does not claim to identify the sound's acoustic
+root. The Pitch control always shows the value used by preview and export in the active mode. With
+Follow MIDI note enabled, an unedited note shows its automatic modifier; with it disabled, the note
+shows its preserved manual value, initially zero. Moving the slider saves only the active mode's
+value. Enabling Follow MIDI therefore leaves every manual edit intact, and disabling it restores
+those edits instead of resetting the channel's notes to zero. A separately adjusted Follow MIDI
+value is restored when that mode is enabled again. Channel settings shows the resulting pitch mode,
+while the Note expression inspector remains strictly per-note. Clicking or dragging empty roll space
+continues to seek.
+
+Changing a channel's sound is non-destructive. Choosing another exact sound, pitched family, or
+Automatic mapping preserves every sparse note pitch/volume edit plus the channel's mute, solo,
+and user-selected Follow MIDI note preference. Only acoustic metadata belonging to the old exact
+sound is replaced: the new event receives its own detected root and capability result. Settings
+changes are applied in order, so quickly moving a note slider and immediately choosing a sound
+cannot lose the slider edit.
 
 The piano roll defaults to scientific pitch notation (middle C = C4). **View > Octave labels**
 can switch the display to middle C = C3 for DAWs that number octaves one lower. This changes
@@ -251,14 +265,17 @@ A manually chosen full-game event still triggers that exact event string for eve
 channel. When its media has a stable musical root, snapmap-midi detects and caches that numeric
 profile and preserves the measured octave. Tonal media whose fundamental is ambiguous, such as a
 bell dominated by upper partials, plays naturally instead of accepting a false detected root.
-Clearly nonmusical effects also play naturally by default. The normal UI does not ask users to
-calibrate arbitrary effects or guess a note for them. Notes beyond SnapMap's -24 through +24 range
-clamp with a warning rather than silently shifting the whole channel by an octave.
+Clearly nonmusical effects also play naturally by default. Follow MIDI note remains available as an
+explicit creative choice for either kind of rootless event; it uses the same neutral C4 operational
+reference for every channel rather than inventing acoustic evidence. Notes beyond SnapMap's -24
+through +24 range clamp with a warning rather than silently shifting the whole channel by an octave.
 
 MIDI velocity becomes each note's initial integral dB level. A per-note edit replaces that
 starting level directly; the global volume offset is then added without changing the stored note
-level, and only the output sent to SnapMap is clamped. Per-note Pitch adjustment is resolved
-independently and never changes the MIDI row or curated sample choice.
+level, and only the output sent to SnapMap is clamped. An unedited Pitch control displays the
+resolved automatic modifier in Follow MIDI mode and the preserved manual value otherwise. Editing
+stores the active mode's exact per-note SnapMap value without overwriting the other mode,
+independently of the MIDI row and curated sample choice.
 SnapMap receives pitch in semitones (-24 through 24) and volume in dB (-60 through 20). The
 preview uses the matching resampling rate: +12 semitones plays twice as fast and -12 plays at
 half speed. One-shot speaker reservations use that pitch-adjusted duration, keeping preview and

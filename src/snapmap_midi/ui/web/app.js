@@ -76,8 +76,9 @@
   // has an interval to measure from. C4 is the sampler convention: the sample
   // plays untouched on middle C and shifts by the interval everywhere else.
   // Nothing measured this -- a door slam is not in any key -- so it is stored
-  // as root_source "assumed" and the window says so.
-  var ASSUMED_ROOT_MIDI = 60;
+  // as root_source "neutral" and the window says so. Same value and same name
+  // as settings.NEUTRAL_PITCH_REFERENCE, which validates it.
+  var NEUTRAL_ROOT_MIDI = 60;
 
   // The focused part, as its "track:channel" key, or null for "show all".
   var SELECTED_PART = null;
@@ -96,6 +97,9 @@
   var TRACKS_PREFERRED_WIDTH = TRACKS_DEFAULT_WIDTH;
   var CANVAS_RESIZE_QUEUED = false;
   var PLAY_TOKEN = 0;
+  var PATCH_QUEUE = Promise.resolve();
+  var PATCH_PENDING = 0;
+  var PATCH_RESUME = false;
 
   var SOUND_BROWSER = {
     open: false,
@@ -887,6 +891,15 @@
     return !!candidate && candidate.kind === kind && String(candidate.value || "") === String(value || "");
   }
 
+  function soundCandidateChanged() {
+    var candidate = SOUND_BROWSER.candidate;
+    var channel = partByKey(SOUND_BROWSER.part);
+    if (!candidate || !channel) { return false; }
+    var current = candidateForChannel(channel);
+    return candidate.kind !== current.kind ||
+      String(candidate.value || "") !== String(current.value || "");
+  }
+
   function updateSoundSelection() {
     var rows = el("soundResultList").querySelectorAll(".sound-result-row");
     for (var index = 0; index < rows.length; index += 1) {
@@ -914,12 +927,15 @@
     } else {
       summary.appendChild(document.createTextNode("  \u00b7  Follows the MIDI channel"));
     }
-    el("soundBrowserUse").disabled = false;
     if (inDrumKeyMode()) {
+      // A drum key's Use is never "unchanged": the same sound can be sent to a
+      // different scope, so there is no previous pick to compare against.
+      el("soundBrowserUse").disabled = false;
       el("soundBrowserUse").textContent = drumScope() === "default"
         ? "Save as my default"
         : "Use for this song";
     } else {
+      el("soundBrowserUse").disabled = !soundCandidateChanged();
       el("soundBrowserUse").textContent = "Use sound";
     }
   }
@@ -1561,6 +1577,14 @@
       else { setDrumKeySound(drumKey, chosen); }
       return;
     }
+    if (!soundCandidateChanged()) { return; }
+    // The user's OWN Follow-MIDI choice, carried across a sound change. null
+    // means they never said, and then the incoming sound's own plan decides.
+    var savedPart = partEntry(partByKey(partKey));
+    var pitchPreference = Object.prototype.hasOwnProperty.call(
+      savedPart,
+      "pitch_follow_preference"
+    ) ? !!savedPart.pitch_follow_preference : null;
     var body = { family: null, sound: null };
     if (candidate.kind === "family") { body.family = candidate.value; }
     function commit() {
@@ -1586,9 +1610,10 @@
       setBusy(false);
       if (response && response.ok && response.profile && response.pitch_plan) {
         var plan = response.pitch_plan;
-        body.pitch_follow = !!plan.pitch_follow;
         body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined &&
           isFinite(Number(plan.root_midi)) ? Number(plan.root_midi) : null;
+        body.pitch_follow = body.root_midi !== null &&
+          (pitchPreference === null ? !!plan.pitch_follow : pitchPreference);
         body.root_confidence = Number(plan.root_confidence || 0);
         body.root_source = plan.root_source || null;
         if (!body.pitch_follow && body.root_midi === null) {
@@ -3480,7 +3505,7 @@
     renderDrumKeys(channel);
 
     // Available for every exact sound. A detected root makes following
-    // musically faithful; without one it still works, against an assumed
+    // musically faithful; without one it still works, against a neutral
     // reference. Refusing it removed the whole point of pitching an
     // unmusical effect across the keyboard.
     follow.disabled = !exact;
@@ -3495,9 +3520,9 @@
     }
 
     if (entry.pitch_follow) {
-      el("channelPitchModeHelp").textContent = entry.root_source === "assumed"
+      el("channelPitchModeHelp").textContent = entry.root_source === "neutral"
         ? "This sound follows the imported MIDI notes, treating " +
-          noteName(ASSUMED_ROOT_MIDI) + " as its own pitch. No musical root was "
+          noteName(NEUTRAL_ROOT_MIDI) + " as its own pitch. No musical root was "
           + "detected for it, so that reference is assumed rather than measured."
         : "This sound follows the imported MIDI notes.";
       return;
@@ -3505,8 +3530,8 @@
     el("channelPitchModeHelp").textContent = canFollow
       ? "This sound plays unchanged on every note."
       : "This sound plays unchanged. No musical root was detected for it, so "
-        + "following MIDI will pitch it against an assumed " +
-        noteName(ASSUMED_ROOT_MIDI) + ".";
+        + "Follow MIDI note will make it rise and fall against a neutral " +
+        noteName(NEUTRAL_ROOT_MIDI) + ".";
   }
 
   function openChannelInspector(partKey) {
@@ -3539,16 +3564,18 @@
     var channel = partByKey(SELECTED_PART);
     if (!channel) { return; }
     var saved = partEntry(channel);
-    var body = { pitch_follow: !!enabled };
+    // pitch_follow_preference records that the USER asked for this, so a later
+    // sound change can honour the choice instead of re-deciding from scratch.
+    var body = { pitch_follow: !!enabled, pitch_follow_preference: !!enabled };
     var usable = saved.root_midi !== null && saved.root_midi !== undefined &&
       saved.root_source !== "detected_octave_pending";
     if (enabled && !usable) {
       // Following needs a reference. Supplying the convention is what makes
       // the switch usable on sounds nothing could measure a root for; the
       // settings document requires a root whenever pitch_follow is on.
-      body.root_midi = ASSUMED_ROOT_MIDI;
+      body.root_midi = NEUTRAL_ROOT_MIDI;
       body.root_confidence = 0;
-      body.root_source = "assumed";
+      body.root_source = "neutral";
     }
     applyPatch(partPatch(channel, body), true);
   }
@@ -3573,12 +3600,22 @@
     });
   }
 
-  function selectedNoteEvent() {
+  function noteEventById(noteId) {
     var events = previewDisplayEvents();
     for (var index = 0; index < events.length; index += 1) {
-      if (String(events[index].id || "") === SELECTED_NOTE_ID) { return events[index]; }
+      if (String(events[index].id || "") === String(noteId || "")) { return events[index]; }
     }
     return null;
+  }
+
+  function selectedNoteEvent() {
+    return noteEventById(SELECTED_NOTE_ID);
+  }
+
+  function notePitchOverrideKey(noteId) {
+    var note = noteEventById(noteId);
+    if (!note) { return null; }
+    return note.pitch_follow ? "follow_pitch_semitones" : "pitch_semitones";
   }
 
   function signed(value) {
@@ -3628,7 +3665,9 @@
     el("noteSourcePitch").textContent =
       noteName(note.source_pitch) + " (" + note.source_pitch + ")";
     el("noteSound").textContent = String(note.sound || "");
-    syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_offset || 0));
+    syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_modifier || 0));
+    el("notePitchMode").textContent =
+      (note.pitch_follow ? "Follow MIDI" : "Manual") + " / semitones";
     syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.note_volume_db || 0));
     el("noteVolumeReadout").textContent =
       "Global " + signed(note.master_volume_db) +
@@ -3670,40 +3709,44 @@
   }
 
   function updateNoteOverride(noteId, key, rawValue) {
-    if (!STATE.settings || !noteId) { return; }
-    var limits = key === "pitch_offset" ? [-24, 24] : [-60, 20];
+    if (!STATE.settings || !noteId || !key) { return; }
+    var pitchKey = key === "pitch_semitones" || key === "follow_pitch_semitones";
+    var limits = pitchKey ? [-24, 24] : [-60, 20];
     var value = clamp(Math.round(Number(rawValue) || 0), limits[0], limits[1]);
-    var next = Object.assign({}, STATE.settings.notes || {});
-    var entry = Object.assign({}, next[noteId] || {});
-    if (key === "volume_db") {
+    var notePatch = {};
+    var entry = {};
+    if (pitchKey) {
+      entry[key] = value;
+    } else if (key === "volume_db") {
       // Zero is a meaningful absolute note level, not an empty relative trim.
       entry[key] = value;
-      delete entry.volume_trim_db;
-    } else if (value === 0) {
-      delete entry[key];
+      entry.volume_trim_db = null;
     } else {
-      entry[key] = value;
+      entry[key] = value === 0 ? null : value;
     }
-    if (Object.keys(entry).length) { next[noteId] = entry; }
-    else { delete next[noteId]; }
-    applyPatch({ notes: next }, true);
+    notePatch[noteId] = entry;
+    applyPatch({ notes: notePatch }, true);
   }
 
   function initNoteInspector() {
     el("closeNoteInspector").addEventListener("click", closeNoteInspector);
-    var sendPitch = debounce(function (value, noteId) {
-      updateNoteOverride(noteId, "pitch_offset", value);
+    var sendPitch = debounce(function (value, noteId, key) {
+      updateNoteOverride(noteId, key, value);
     }, 180);
     var sendVolume = debounce(function (value, noteId) {
       updateNoteOverride(noteId, "volume_db", value);
     }, 180);
     el("notePitchRange").addEventListener("input", function () {
       el("notePitchNumber").value = this.value;
-      sendPitch(this.value, SELECTED_NOTE_ID);
+      sendPitch(this.value, SELECTED_NOTE_ID, notePitchOverrideKey(SELECTED_NOTE_ID));
     });
     el("notePitchNumber").addEventListener("change", function () {
       el("notePitchRange").value = this.value;
-      updateNoteOverride(SELECTED_NOTE_ID, "pitch_offset", this.value);
+      updateNoteOverride(
+        SELECTED_NOTE_ID,
+        notePitchOverrideKey(SELECTED_NOTE_ID),
+        this.value
+      );
     });
     el("noteVolumeRange").addEventListener("input", function () {
       el("noteVolumeNumber").value = this.value;
@@ -3715,9 +3758,9 @@
     });
     el("resetNoteExpression").addEventListener("click", function () {
       if (!STATE.settings || !SELECTED_NOTE_ID) { return; }
-      var next = Object.assign({}, STATE.settings.notes || {});
-      delete next[SELECTED_NOTE_ID];
-      applyPatch({ notes: next }, true);
+      var notePatch = {};
+      notePatch[SELECTED_NOTE_ID] = null;
+      applyPatch({ notes: notePatch }, true);
     });
   }
 
@@ -3868,21 +3911,45 @@
   }
 
   function applyPatch(body, resumePlayback) {
-    if (!api()) { return; }
-    var wasPlaying = !!resumePlayback && AUDIO.playing;
+    if (!api()) { return Promise.resolve(); }
+    var patch = JSON.parse(JSON.stringify(body || {}));
+    if (!resumePlayback) { PATCH_RESUME = false; }
+    else if (AUDIO.playing) { PATCH_RESUME = true; }
     pausePlayback();
-    var sequence = nextRequest();
-    setBusy(true, 'Updating conversion...');
-    api().apply_settings(body).then(function (response) {
-      setBusy(false);
-      if (!response || !response.ok) { fail(response); render(); return; }
-      adopt(response, sequence);
-      invalidateAudio(false);
-      AUDIO.position = clamp(AUDIO.position, 0, (STATE.preview && STATE.preview.duration_ms) || 0);
-      render();
-      prepareSongAudio();
-      if (wasPlaying) { startPlayback(); }
-    }, function (error) { setBusy(false); fail(error); render(); });
+    PATCH_PENDING += 1;
+
+    function runPatch() {
+      var sequence = nextRequest();
+      setBusy(true, 'Updating conversion...');
+      return api().apply_settings(patch).then(function (response) {
+        setBusy(false);
+        if (!response || !response.ok) { fail(response); render(); return; }
+        adopt(response, sequence);
+        invalidateAudio(false);
+        AUDIO.position = clamp(
+          AUDIO.position,
+          0,
+          (STATE.preview && STATE.preview.duration_ms) || 0
+        );
+        render();
+        prepareSongAudio();
+      }, function (error) {
+        setBusy(false);
+        fail(error);
+        render();
+      });
+    }
+
+    var operation = PATCH_QUEUE.then(runPatch, runPatch).finally(function () {
+      PATCH_PENDING = Math.max(0, PATCH_PENDING - 1);
+      if (PATCH_PENDING === 0) {
+        var shouldResume = PATCH_RESUME;
+        PATCH_RESUME = false;
+        if (shouldResume) { startPlayback(); }
+      }
+    });
+    PATCH_QUEUE = operation.catch(function () { /* keep later edits live */ });
+    return operation;
   }
 
   function boot() {

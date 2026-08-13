@@ -139,9 +139,9 @@ so the window shows its empty state rather than throwing — that is deliberate,
 opening the file directly is how anybody iterating on the markup will look at it.
 
 Everything that changes the conversion is decided in Python. The preview manifest contains
-stable note id, immutable source pitch, velocity, resolved sound, playback-basis evidence,
-nullable automatic pitch, playback-only pitch adjustment, initial/current/global/final dB, clamp
-state, effective start/end, sustain behavior, speaker-reuse cutoffs, and audible/muted/solo
+stable note id, immutable source pitch, velocity, resolved sound, playback-basis evidence, nullable
+automatic pitch, exact SnapMap pitch modifier, sparse absolute override, initial/current/global/final
+dB, clamp state, effective start/end, sustain behavior, speaker-reuse cutoffs, and audible/muted/solo
 flags. `events` is the audible conversion; `display_events` retains inaudible notes for the
 piano roll. Compiler and preview share `prepare_voice_layers`.
 JavaScript may choose the display list and convert Python's facts to canvas coordinates, Web

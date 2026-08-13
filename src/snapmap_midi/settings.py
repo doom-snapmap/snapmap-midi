@@ -41,7 +41,13 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 7
+SETTINGS_VERSION = 10
+
+
+#: Stable operational pitch basis for rootless exact sounds. This is not an
+#: acoustic claim and must never be inferred from the imported channel.
+NEUTRAL_PITCH_REFERENCE = 60.0
+
 
 #: Mirrors `compile_to_rawmap`'s own default. Named here rather than imported,
 #: because `compile` sits alongside this module rather than under it -- the byte
@@ -71,20 +77,23 @@ _CHANNEL_KEYS = frozenset(
         "muted",
         "percussion",
         "pitch_follow",
+        "pitch_follow_preference",
         "soloed",
         "root_midi",
         "root_confidence",
         "root_source",
     }
 )
-#: Whether a part is a drum kit. `auto` keeps the channel-10 heuristic, which
+#: Whether a track is a drum kit. `auto` keeps the channel-10 heuristic, which
 #: is right for nearly every file. The other two are the user saying so, and
 #: they exist because the heuristic cannot be extended safely: `DRUM_MAP`'s
 #: keys span B1 to F5, exactly where bass lines live, so guessing on other
 #: channels would silently turn a bass part into drums.
 _PERCUSSION_MODES = ("auto", "kit", "melodic")
 
-_NOTE_KEYS = frozenset({"pitch_offset", "volume_db", "volume_trim_db"})
+_NOTE_KEYS = frozenset(
+    {"pitch_offset", "pitch_semitones", "follow_pitch_semitones", "volume_db", "volume_trim_db"}
+)
 _ROOT_SOURCES = frozenset(
     {
         "palette_name",
@@ -95,9 +104,10 @@ _ROOT_SOURCES = frozenset(
         # the sound's own, and a sound with no musical root has none to find --
         # a door slam is not in any key. The engine will pitch it regardless, so
         # the choice is between refusing the effect and naming a convention.
-        # This names it, and is labelled so the window can say the reference was
-        # assumed rather than heard.
-        "assumed",
+        # This names it, pinned to NEUTRAL_PITCH_REFERENCE and validated there,
+        # and it is labelled so the window can say the reference was assumed
+        # rather than heard.
+        "neutral",
     }
 )
 
@@ -353,9 +363,20 @@ def _channels(section, families, sounds) -> dict:
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
             "soloed": _flag(entry.get("soloed", False), "channel %s: soloed" % channel),
         }
+        if "pitch_follow_preference" in entry:
+            normalized["pitch_follow_preference"] = _flag(
+                entry["pitch_follow_preference"],
+                "channel %s: pitch_follow_preference" % channel,
+            )
         if sound is not None:
             normalized["sound"] = sound
-            expression_fields = _CHANNEL_KEYS - {"family", "sound", "muted", "soloed"}
+            expression_fields = _CHANNEL_KEYS - {
+                "family",
+                "sound",
+                "muted",
+                "soloed",
+                "pitch_follow_preference",
+            }
             if any(key in entry for key in expression_fields):
                 pitch_follow = _flag(
                     entry.get("pitch_follow", False),
@@ -385,6 +406,10 @@ def _channels(section, families, sounds) -> dict:
                         raise SettingsError(
                             "channel %s: root_source is %r; it has to be one of %s"
                             % (channel, root_source, ", ".join(sorted(_ROOT_SOURCES)))
+                        )
+                    if root_source == "neutral" and root_midi != NEUTRAL_PITCH_REFERENCE:
+                        raise SettingsError(
+                            "channel %s: a neutral root_midi must be 60 (C4)" % channel
                         )
                     if pitch_follow and root_source == "detected_octave_pending":
                         raise SettingsError(
@@ -418,10 +443,14 @@ def _notes(section) -> dict:
 
     The key is generated from source MIDI identity, not conversion output, so
     changing an instrument or root profile cannot move an edit to another note.
-    volume_db is the absolute note level before global volume and therefore
-    preserves an explicit zero. volume_trim_db is retained only so migrated
-    version-4 sidecars keep their exact sound until that note is edited.
-    Empty/default records are otherwise dropped to keep sidecars compact.
+    pitch_semitones is the user's absolute manual-mode value, while
+    follow_pitch_semitones optionally overrides the automatic value only while
+    Follow MIDI note is enabled. pitch_offset remains a backward-compatible
+    fallback for either mode. volume_db is the absolute note level before
+    global volume and preserves an
+    explicit zero. volume_trim_db is retained only so migrated version-4
+    sidecars keep their exact sound until that note is edited. Empty/default
+    records are otherwise dropped to keep sidecars compact.
     """
     section = _mapping(section, "notes")
     out = {}
@@ -441,6 +470,20 @@ def _notes(section) -> dict:
         normalized = {}
         if pitch_offset:
             normalized["pitch_offset"] = pitch_offset
+        if "pitch_semitones" in entry:
+            normalized["pitch_semitones"] = _whole(
+                entry["pitch_semitones"],
+                "note %s: pitch_semitones" % note_id,
+                -24,
+                24,
+            )
+        if "follow_pitch_semitones" in entry:
+            normalized["follow_pitch_semitones"] = _whole(
+                entry["follow_pitch_semitones"],
+                "note %s: follow_pitch_semitones" % note_id,
+                -24,
+                24,
+            )
         if "volume_db" in entry:
             volume_db = _whole(
                 entry["volume_db"],
@@ -566,6 +609,21 @@ def _release(value) -> float:
 def _migrate(doc: dict) -> dict:
     """Upgrade older sidecars while preserving their stored user choices.
 
+    Version 9 separates each note's preserved manual pitch from its optional
+    Follow MIDI override. Version-8 pitch_semitones values become the manual
+    state; when Follow MIDI is active and no mode-specific override exists,
+    the displayed and exported value is derived automatically.
+
+
+    Version 8 lets any exact sound opt into MIDI following from a stable C4
+    reference and stores user-facing note pitch as an absolute SnapMap value.
+    Existing relative pitch offsets remain valid and keep their original
+    playback behavior.
+
+    Version 7 separates the user's channel-wide Follow MIDI note preference
+    from the effective pitch plan of one selected sound. A version-6 choice is
+    retained as that preference so choosing another sound cannot reverse it.
+
     Version 6 removes two pitch references that could preserve intervals while
     shifting absolute playback by an octave. A legacy channel-centered
     relative reference returns to natural playback. An enabled octave-fitted
@@ -586,7 +644,7 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5, 6):
+    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
         return doc
 
     migrated = copy.deepcopy(doc)
@@ -642,6 +700,12 @@ def _migrate(doc: dict) -> dict:
                         entry.pop("root_midi", None)
                         entry.pop("root_confidence", None)
                         entry.pop("root_source", None)
+                if version <= 6 and "pitch_follow" in entry:
+                    # Version 6 could not distinguish an automatic result from
+                    # a user's channel-wide Follow MIDI note choice. Preserve
+                    # the visible choice as the preference so retimbring a
+                    # channel cannot silently reverse it.
+                    entry["pitch_follow_preference"] = entry["pitch_follow"]
                 rewritten_channels[channel] = entry
             else:
                 rewritten_channels[channel] = raw_entry
@@ -708,10 +772,13 @@ def validate(doc) -> dict:
 def merge(base, patch) -> dict:
     """Apply a patch to a document and validate the result.
 
-    `channels` and `tuning` deep-merge, one channel and one lever at a time,
+    `channels`, `notes`, and `tuning` deep-merge, one record or lever at a time,
     because the window sends what changed and nothing else. "Mute channel 1"
     arrives as `{"channels": {"1": {"muted": true}}}` and must not take channel
-    1's instrument with it; capping the sustain must not reset the release.
+    1's instrument with it; changing one note's pitch must not replace another
+    note's volume; capping the sustain must not reset the release. A null note
+    entry removes that note override, and a null note field removes only that
+    field. Nulls are patch operations and never survive into a saved document.
 
     `drum_keys` and `family_caps` replace wholesale: the caller sends the
     complete map, and an entry absent from it is gone. They are values rather
@@ -744,6 +811,29 @@ def merge(base, patch) -> dict:
                 existing.update(_mapping(entry, "channel %s" % channel))
                 channels[channel] = existing
             merged["channels"] = channels
+        elif key == "notes":
+            # Note controls are sparse records, just like channels. Merging a
+            # whole browser snapshot here made two quick edits race: a later
+            # pitch or sound change could replace notes saved by the earlier
+            # request. A null note removes that one override; a null field
+            # restores only that field to its imported default.
+            notes = dict(_mapping(merged.get("notes", {}), "notes"))
+            for raw_note_id, raw_entry in _mapping(value, "notes").items():
+                note_id = _note_id(raw_note_id)
+                if raw_entry is None:
+                    notes.pop(note_id, None)
+                    continue
+                existing = _mapping(notes.get(note_id, {}), "note %s" % note_id)
+                for field, field_value in _mapping(raw_entry, "note %s" % note_id).items():
+                    if field_value is None:
+                        existing.pop(field, None)
+                    else:
+                        existing[field] = field_value
+                if existing:
+                    notes[note_id] = existing
+                else:
+                    notes.pop(note_id, None)
+            merged["notes"] = notes
         elif key == "tuning":
             tuning = _mapping(merged.get("tuning", {}), "tuning")
             tuning.update(_mapping(value, "tuning"))

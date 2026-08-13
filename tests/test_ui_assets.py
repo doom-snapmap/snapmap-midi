@@ -202,10 +202,15 @@ def test_the_shared_snapmap_plus_shell_primitives_do_not_drift():
             "background:var(--chrome); border-bottom:1px solid var(--border); "
             "padding:0 6px; gap:8px; flex-shrink:0; user-select:none; }"
         ),
-        ".win-controls { display:flex; margin-left:8px; }",
         (
-            ".win-btn { width:30px; height:30px; display:flex; align-items:center; "
-            "justify-content:center; color:var(--muted); font-size:12px; cursor:default; }"
+            ".win-controls { display:flex; align-items:stretch; align-self:stretch; gap:0; "
+            "margin-left:8px; margin-right:-6px; padding:0; }"
+        ),
+        (
+            ".win-btn { width:38px; height:30px; display:flex; align-items:center; "
+            "justify-content:center; padding:0 12px; border-radius:0; "
+            "color:var(--muted); font-size:12px; "
+            "cursor:default; }"
         ),
         ".win-btn:hover { background:var(--panel2); color:var(--text); }",
         ".panel-body.pad { padding:10px; }",
@@ -518,6 +523,7 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
         "noteSourcePitch",
         "noteSound",
         "notePitchRange",
+        "notePitchMode",
         "notePitchNumber",
         "noteVolumeRange",
         "noteVolumeNumber",
@@ -533,15 +539,15 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
     assert "pausePlayback();\n      openNoteInspector(hit.record.id)" in _JS
     assert "SEEK_DRAG = {" in _JS
     assert "setPosition(positionFromCanvas(event), false)" in _JS
-    assert "applyPatch({ notes: next }, true)" in _JS
-    assert "delete next[SELECTED_NOTE_ID]" in _JS
-    assert ">Pitch adjustment</label>" in _HTML
+    assert "applyPatch({ notes: notePatch }, true)" in _JS
+    assert "notePatch[SELECTED_NOTE_ID] = null" in _JS
+    assert ">Pitch</label>" in _HTML
     assert 'id="notePitchReadout"' not in _HTML
     assert 'MIDI " + noteName(note.source_pitch) + " - "' not in _JS
     assert ">Note volume</label>" in _HTML
     assert "Number(note.note_volume_db || 0)" in _JS
     assert "entry[key] = value;" in _JS
-    assert "delete entry.volume_trim_db;" in _JS
+    assert "entry.volume_trim_db = null;" in _JS
     assert "noteVelocity" not in _HTML
     assert "Velocity " not in _JS
     assert "context.strokeStyle = palette.accent" in _JS
@@ -602,10 +608,19 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     # musical root for. Pitching an unmusical effect across the keyboard is
     # the point of the switch, and gating it on a detected root removed it.
     assert "follow.disabled = !exact;" in _JS
-    assert "var ASSUMED_ROOT_MIDI = 60;" in _JS
-    assert 'body.root_source = "assumed"' in _JS
+    assert "var NEUTRAL_ROOT_MIDI = 60;" in _JS
     assert "follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums" in _JS
+    # The rootless reference is written through the part key, not a bare channel
+    # number -- two tracks can share a channel, so the number is not an address.
+    assert "body.root_midi = NEUTRAL_ROOT_MIDI;" in _JS
+    assert "body.root_confidence = 0;" in _JS
+    assert 'body.root_source = "neutral";' in _JS
+    # The user's own Follow-MIDI choice survives a sound change.
+    assert "pitch_follow_preference: !!enabled" in _JS
+    assert 'savedPart.pitch_follow_preference' in _JS
     assert "Automatic percussion selects a dedicated sound for each MIDI key" in _JS
+    assert "make it rise and fall against a neutral" in _JS
+    assert "neutral C4 reference" not in _JS
     assert 'id="notePitchFollow"' not in _HTML
     assert 'id="noteRootNumber"' not in _HTML
     assert "Advanced sound calibration" not in _HTML
@@ -647,12 +662,48 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
     assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
     assert "api().sound_profile(candidate.value, partKey)" in _JS
     assert "body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined" in _JS
-    assert "body.pitch_follow = !!plan.pitch_follow" in _JS
+    assert "pitchPreference === null ? !!plan.pitch_follow : pitchPreference" in _JS
     assert "body.root_source = plan.root_source || null" in _JS
     assert "response.pitch_plan" in _JS
     assert "This sound will play unchanged at its natural pitch." in _JS
-    assert "Number(note.pitch_offset || 0)" in _JS
-    assert 'updateNoteOverride(noteId, "pitch_offset", value)' in _JS
+    assert "Number(note.pitch_modifier || 0)" in _JS
+    assert "function notePitchOverrideKey(noteId)" in _JS
+    assert 'return note.pitch_follow ? "follow_pitch_semitones" : "pitch_semitones"' in _JS
+    assert 'key === "pitch_semitones" || key === "follow_pitch_semitones"' in _JS
+    assert "entry[key] = value" in _JS
+    assert "entry.pitch_offset = null" not in _JS
+    assert '(note.pitch_follow ? "Follow MIDI" : "Manual") + " / semitones"' in _JS
+    assert "notePitchOverrideKey(SELECTED_NOTE_ID)" in _JS
+
+
+def test_settings_edits_are_serialized_and_chrome_controls_use_expected_hover_states():
+    assert "var PATCH_QUEUE = Promise.resolve();" in _JS
+    assert "PATCH_QUEUE.then(runPatch, runPatch)" in _JS
+    assert "pitch_follow_preference: !!enabled" in _JS
+    assert ".menu-label { min-width: 36px; height: 24px;" in _CSS
+    assert "border-radius: 5px; background: transparent" in _CSS
+    assert ".close-button { width: 27px; height: 27px;" in _CSS
+    assert "#winClose:hover { background:var(--danger); color:#fff; }" in _CSS
+    assert ".tool-button.primary:hover:not(:disabled) { filter: brightness(1.16); }" in _CSS
+
+
+def test_sound_browser_only_enables_use_for_a_new_selection():
+    assert "function soundCandidateChanged()" in _JS
+    assert 'el("soundBrowserUse").disabled = !soundCandidateChanged();' in _JS
+    assert "if (!soundCandidateChanged()) { return; }" in _JS
+    assert ".btn.primary:hover:not(:disabled) { filter: brightness(1.16); }" in _CSS
+
+
+def test_window_controls_are_flush_square_and_optically_balanced():
+    assert (
+        ".win-controls { display:flex; align-items:stretch; align-self:stretch; "
+        "gap:0; margin-left:8px; margin-right:-6px; padding:0; }"
+    ) in _CSS
+    assert (
+        ".win-btn { width:38px; height:30px; display:flex; align-items:center; "
+        "justify-content:center; padding:0 12px; border-radius:0;"
+    ) in _CSS
+    assert "#winClose .ui-icon { width: 18px; height: 18px; }" in _CSS
 
 
 def test_natural_song_completion_does_not_hard_stop_finite_audio_tails():

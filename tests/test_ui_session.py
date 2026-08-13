@@ -421,6 +421,35 @@ def test_rootless_exact_sound_preserves_natural_playback_until_follow_is_enabled
     assert [event["pitch"] for event in events] == [60, 72]
 
 
+def test_rootless_exact_sound_can_follow_midi_from_the_neutral_reference(tmp_path):
+    midi = _midi(
+        tmp_path,
+        _hits(0, 60, program=0) + _hits(0, 72),
+        name="rootless-follow.mid",
+    )
+    session = Session(midi=midi)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "neutral",
+                }
+            }
+        }
+    )
+    events = sorted(session.preview_manifest()["events"], key=lambda event: event["source_pitch"])
+
+    assert [event["automatic_pitch"] for event in events] == [0, 12]
+    assert [event["pitch_modifier"] for event in events] == [0, 12]
+    assert all(event["pitch_semitones"] is None for event in events)
+    assert all(event["pitch_follow"] for event in events)
+
+
 def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
     session = Session(midi=_dense(tmp_path))
     session.apply({"tuning": {"max_speakers": 1}})
@@ -528,7 +557,7 @@ def test_muting_one_part_leaves_the_other_audible(tmp_path):
     assert "Nothing will play" not in " ".join(session.stats()["warnings"])
 
 
-def test_an_assumed_root_makes_a_rootless_sound_follow_the_midi_notes(tmp_path):
+def test_a_neutral_root_makes_a_rootless_sound_follow_the_midi_notes(tmp_path):
     """A sound with no musical root can still be played musically.
 
     The engine will pitch anything; it has no notion of a root. Following MIDI
@@ -561,7 +590,7 @@ def test_an_assumed_root_makes_a_rootless_sound_follow_the_midi_notes(tmp_path):
                     "pitch_follow": True,
                     "root_midi": 60,
                     "root_confidence": 0,
-                    "root_source": "assumed",
+                    "root_source": "neutral",
                 }
             }
         }
@@ -593,7 +622,7 @@ def test_a_followed_rootless_sound_reaches_the_exported_map(tmp_path):
                     "pitch_follow": True,
                     "root_midi": 60,
                     "root_confidence": 0,
-                    "root_source": "assumed",
+                    "root_source": "neutral",
                 }
             }
         }
@@ -606,7 +635,7 @@ def test_a_followed_rootless_sound_reaches_the_exported_map(tmp_path):
 
 
 def test_two_parts_on_one_channel_follow_midi_independently(tmp_path):
-    """Answers both halves at once: an assumed root is a per-PART setting, so
+    """Answers both halves at once: a neutral root is a per-PART setting, so
     one part can follow while the other stays fixed, and it exports that way."""
     sound = palette.sounds_in_category("ins_noise")[0]
     session = Session(midi=_two_parts_one_channel(tmp_path))
@@ -618,7 +647,7 @@ def test_two_parts_on_one_channel_follow_midi_independently(tmp_path):
                     "pitch_follow": True,
                     "root_midi": 60,
                     "root_confidence": 0,
-                    "root_source": "assumed",
+                    "root_source": "neutral",
                 },
                 "2:0": {"sound": sound},
             }
@@ -1172,6 +1201,95 @@ def test_per_note_offset_changes_playback_without_moving_the_midi_note(tmp_path)
     assert events[1]["pitch_modifier"] == 1
     assert events[1]["note_volume_db"] == 5
     assert events[1]["volume_db"] == 5
+
+
+def test_absolute_note_pitch_replaces_the_automatic_follow_value(tmp_path):
+    song = _midi(
+        tmp_path,
+        _hits(0, 64, program=0),
+        name="absolute-note-pitch.mid",
+    )
+    session = Session(midi=song)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "neutral",
+                }
+            },
+            "notes": {"0:64:1": {"follow_pitch_semitones": -2}},
+        }
+    )
+
+    event = session.preview_manifest()["events"][0]
+    assert event["pitch"] == 64
+    assert event["automatic_pitch"] == 4
+    assert event["pitch_semitones"] == -2
+    assert event["manual_pitch_semitones"] is None
+    assert event["follow_pitch_semitones"] == -2
+    assert event["requested_pitch"] == -2
+    assert event["pitch_modifier"] == -2
+
+
+def test_follow_toggle_restores_each_modes_preserved_note_pitch(tmp_path):
+    song = _midi(
+        tmp_path,
+        _hits(0, 64, program=0),
+        name="pitch-mode-restore.mid",
+    )
+    session = Session(midi=song)
+    sound = palette.sounds_in_category("amb_air")[0]
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": False,
+                    "pitch_follow_preference": False,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "neutral",
+                }
+            },
+            "notes": {"0:64:1": {"pitch_semitones": 7}},
+        }
+    )
+
+    manual = session.preview_manifest()["events"][0]
+    assert manual["pitch_follow"] is False
+    assert manual["automatic_pitch"] is None
+    assert manual["pitch_modifier"] == 7
+    assert manual["manual_pitch_semitones"] == 7
+    assert manual["follow_pitch_semitones"] is None
+
+    session.apply({"channels": {"0": {"pitch_follow": True, "pitch_follow_preference": True}}})
+    automatic = session.preview_manifest()["events"][0]
+    assert automatic["pitch_follow"] is True
+    assert automatic["automatic_pitch"] == 4
+    assert automatic["pitch_modifier"] == 4
+    assert automatic["pitch_semitones"] is None
+    assert automatic["manual_pitch_semitones"] == 7
+
+    session.apply({"notes": {"0:64:1": {"follow_pitch_semitones": -2}}})
+    followed = session.preview_manifest()["events"][0]
+    assert followed["pitch_modifier"] == -2
+    assert followed["manual_pitch_semitones"] == 7
+    assert followed["follow_pitch_semitones"] == -2
+
+    session.apply({"channels": {"0": {"pitch_follow": False, "pitch_follow_preference": False}}})
+    restored_manual = session.preview_manifest()["events"][0]
+    assert restored_manual["pitch_follow"] is False
+    assert restored_manual["pitch_modifier"] == 7
+
+    session.apply({"channels": {"0": {"pitch_follow": True, "pitch_follow_preference": True}}})
+    restored_follow = session.preview_manifest()["events"][0]
+    assert restored_follow["pitch_follow"] is True
+    assert restored_follow["pitch_modifier"] == -2
 
 
 def test_note_volume_can_explicitly_replace_imported_velocity_with_zero(tmp_path):
