@@ -554,9 +554,12 @@ def test_channel_strip_separates_focus_from_multi_solo_and_mute():
     assert 'iconElement(kind === "mute" ? "volume-2" : "headphones")' in _JS
     assert 'id="icon-volume-x"' in _HTML
     assert 'id="icon-headphones"' in _HTML
-    assert "openChannelInspector(channel.channel)" in _JS
-    assert "SELECTED_CHANNEL = null;\n          closeChannelInspector();" in _JS
-    assert "SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== candidate.channel" in _JS
+    # Focus is a PART, not a channel: two tracks can share channel 0, and
+    # comparing channel numbers would select and dim both of them together.
+    assert "openChannelInspector(channel.key)" in _JS
+    assert "SELECTED_PART = null;\n          closeChannelInspector();" in _JS
+    assert "SELECTED_PART !== null && SELECTED_PART !== candidate.part" in _JS
+    assert "SELECTED_PART !== null && SELECTED_PART !== record.part" in _JS
     assert "STATE.preview.display_events" in _JS
     assert "record.muted || record.soloExcluded || !record.audible || !record.converted" in _JS
     assert ".track-row.muted-track .track-channel" in _CSS
@@ -579,7 +582,7 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
 
     assert 'aria-label="Channel settings"' in _HTML
     assert "function syncChannelInspector()" in _JS
-    assert "function openChannelInspector(channelNumber)" in _JS
+    assert "function openChannelInspector(partKey)" in _JS
     assert "function updateSelectedChannelPitchFollow(enabled)" in _JS
     assert "updateSelectedChannelPitchFollow(this.checked)" in _JS
     assert "follow.disabled = !exact || !canFollow" in _JS
@@ -601,7 +604,7 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     assert "function closeChannelInspectorAndClearSelection()" in _JS
     assert re.search(
         r"function closeChannelInspectorAndClearSelection\(\)\s*\{\s*"
-        r"SELECTED_CHANNEL = null;\s*closeChannelInspector\(\);",
+        r"SELECTED_PART = null;\s*closeChannelInspector\(\);",
         _JS,
     )
     assert re.search(
@@ -624,7 +627,7 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
     assert "var naturalDuration = buffer.duration / playbackRate" in _JS
     assert "if (wallOffset >= total) { return; }" in _JS
     assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
-    assert "api().sound_profile(candidate.value, channel)" in _JS
+    assert "api().sound_profile(candidate.value, partKey)" in _JS
     assert "body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined" in _JS
     assert "body.pitch_follow = !!plan.pitch_follow" in _JS
     assert "body.root_source = plan.root_source || null" in _JS

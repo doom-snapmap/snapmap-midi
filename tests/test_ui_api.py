@@ -155,7 +155,7 @@ def test_startup_answers_in_one_call():
         "window",
     }
     assert [c["channel"] for c in payload["analysis"]["channels"]] == [0, 1, 9]
-    assert payload["rulers"]["9"] is None
+    assert payload["rulers"]["0:9"] is None
     assert payload["stats"]["notes"]
 
 
@@ -259,7 +259,7 @@ def test_loading_a_song_returns_the_analysis_the_settings_and_the_rulers():
     assert payload["ok"] is True
     assert payload["settings"]["midi"] == TINY_MIDI
     assert _channel(payload, 9)["is_drums"] is True
-    assert payload["rulers"]["0"]["cells"][0]["note"] == 60
+    assert payload["rulers"]["0:0"]["cells"][0]["note"] == 60
 
 
 def test_a_song_that_is_not_there_is_an_answer_that_names_it(tmp_path):
@@ -864,7 +864,7 @@ def test_applying_answers_with_the_analysis_and_the_rulers_as_well():
     assert payload["ok"] is True
     assert _channel(payload, 9)["is_drums"] is False
     assert _channel(payload, 9)["drum_keys"] == {}
-    assert payload["rulers"]["9"] is not None
+    assert payload["rulers"]["0:9"] is not None
 
 
 # ---- compiling ----

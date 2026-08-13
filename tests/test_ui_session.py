@@ -492,6 +492,42 @@ def test_naming_one_part_beats_the_wildcard_for_that_part_only(tmp_path):
     assert not any(event["muted"] for event in pad)
 
 
+def test_every_note_says_which_part_it_belongs_to(tmp_path):
+    """The roll cannot select, dim, or mute one part of a shared channel unless
+    each note names its part. With only a channel, three parts on channel 0 are
+    one undifferentiated mass."""
+    manifest = Session(midi=_two_parts_one_channel(tmp_path)).preview_manifest()
+    events = manifest["display_events"]
+
+    assert {e["part"] for e in events} == {"1:0", "2:0"}
+    assert {e["channel"] for e in events} == {0}
+    assert all(e["part"] == "%d:%d" % (e["track"], e["channel"]) for e in events)
+
+
+def test_each_part_gets_its_own_ruler_row(tmp_path):
+    """Rulers are keyed by part, so two parts on one channel are two rows
+    rather than one overwriting the other."""
+    rulers = Session(midi=_two_parts_one_channel(tmp_path)).rulers()
+
+    assert set(rulers) == {"1:0", "2:0"}
+
+
+def test_muting_one_part_leaves_the_other_audible(tmp_path):
+    """The warnings read the document the same way the parser does, so a part
+    key silences a part rather than its whole channel."""
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"1:0": {"muted": True}}})
+
+    events = session.preview_manifest()["display_events"]
+    lead = [e for e in events if e["part"] == "1:0"]
+    pad = [e for e in events if e["part"] == "2:0"]
+
+    assert lead and pad
+    assert all(e["muted"] for e in lead)
+    assert not any(e["muted"] for e in pad)
+    assert "Nothing will play" not in " ".join(session.stats()["warnings"])
+
+
 def test_a_cut_note_keeps_its_written_length_for_the_roll(tmp_path):
     """A tuning lever shades a note; it must not redraw the composition.
 
@@ -666,7 +702,7 @@ def test_turning_the_drums_off_re_reads_the_file():
     assert kit["is_drums"] is False
     assert kit["drum_keys"] == {}
     assert kit["auto_family"] is not None
-    assert session.rulers()["9"] is not None
+    assert session.rulers()["0:9"] is not None
 
 
 def test_changes_from_several_threads_all_land():
@@ -750,9 +786,11 @@ def test_asking_for_numbers_before_a_song_is_open_says_so():
 def test_the_drum_channel_gets_no_ruler_and_every_other_channel_does():
     session = Session(midi=TINY_MIDI)
     rulers = session.rulers()
-    assert set(rulers) == {"0", "1", "9"}
-    assert rulers["9"] is None
-    assert [cell["note"] for cell in rulers["0"]["cells"]] == [60]
+    # Keyed by part, not channel. `tiny.mid` is a single track carrying three
+    # channels, so every part is on track 0 and the keys read "0:<channel>".
+    assert set(rulers) == {"0:0", "0:1", "0:9"}
+    assert rulers["0:9"] is None
+    assert [cell["note"] for cell in rulers["0:0"]["cells"]] == [60]
 
 
 def test_every_row_is_drawn_against_the_same_axis():
@@ -762,15 +800,15 @@ def test_every_row_is_drawn_against_the_same_axis():
     else on the strip for a reason that has nothing to do with it."""
     session = Session(midi=TINY_MIDI)
     rulers = session.rulers()
-    assert rulers["0"]["cell_width"] == rulers["1"]["cell_width"]
-    assert rulers["1"]["cells"][0]["left"] == pytest.approx(48 / 127 * 100)
+    assert rulers["0:0"]["cell_width"] == rulers["0:1"]["cell_width"]
+    assert rulers["0:1"]["cells"][0]["left"] == pytest.approx(48 / 127 * 100)
 
 
 def test_the_ruler_tracks_the_family_and_its_pitch_adjustment_reach():
     session = Session(midi=TINY_MIDI)
-    automatic = session.rulers()["0"]["instrument"]
+    automatic = session.rulers()["0:0"]["instrument"]
     session.apply({"channels": {"0": {"family": "ins_brass_bells"}}})
-    chosen = session.rulers()["0"]
+    chosen = session.rulers()["0:0"]
     assert chosen["instrument"]["left"] > automatic["left"]
     assert chosen["disjoint"] is False
     assert chosen["outside"] == 0
@@ -841,13 +879,13 @@ def test_automatic_family_pitch_follows_the_low_note_without_a_range_warning():
 def test_family_ruler_shows_sample_range_plus_snapmap_pitch_reach():
     session = Session(midi=TINY_MIDI)
     sample_low, sample_high = palette.family_range("ins_violin", palette.build_note_index())
-    instrument = session.rulers()["1"]["instrument"]
+    instrument = session.rulers()["0:1"]["instrument"]
 
     effective_low = max(0, sample_low - 24)
     effective_high = min(127, sample_high + 24)
     assert instrument["left"] == pytest.approx(effective_low / 127 * 100)
     assert instrument["width"] == pytest.approx((effective_high - effective_low) / 127 * 100)
-    assert session.rulers()["1"]["outside"] == 0
+    assert session.rulers()["0:1"]["outside"] == 0
 
 
 def test_muting_everything_says_nothing_will_play():

@@ -272,25 +272,39 @@ class Session:
             return None if self._analysis is None else analysis.as_dict(self._analysis)
 
     def channel_info(self, channel):
-        """The analyzed channel record after validating its public number."""
+        """The analyzed part, named either by its key or by a bare channel.
 
-        if isinstance(channel, bool):
-            raise ValueError("a MIDI channel from 0 to 15 is required")
-        try:
-            number = int(channel)
-            valid = float(channel) == number and 0 <= number <= 15
-        except (TypeError, ValueError):
-            valid = False
-        if not valid:
-            raise ValueError("a MIDI channel from 0 to 15 is required")
+        A part key -- "1:0" -- names exactly one part. A bare channel number is
+        still accepted because it is what every existing caller sends and what a
+        user means on the ordinary file where a channel holds one part; it
+        resolves to the first part on that channel, which on such a file is the
+        only one.
+        """
+
         if self._analysis is None:
             raise ValueError("no song is open -- open a MIDI file first")
-        info = next(
-            (item for item in self._analysis.channels if item.channel == number),
-            None,
-        )
-        if info is None or info.lowest is None or info.highest is None:
-            raise ValueError("channel %d has no notes to anchor" % number)
+
+        info = None
+        if isinstance(channel, str) and ":" in channel:
+            info = next((c for c in self._analysis.channels if c.key == channel), None)
+            if info is None:
+                raise ValueError("no part %s in this song" % channel)
+        else:
+            if isinstance(channel, bool):
+                raise ValueError("a MIDI channel from 0 to 15 is required")
+            try:
+                number = int(channel)
+                valid = float(channel) == number and 0 <= number <= 15
+            except (TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise ValueError("a MIDI channel from 0 to 15 is required")
+            info = next((c for c in self._analysis.channels if c.channel == number), None)
+            if info is None:
+                raise ValueError("channel %d has no notes to anchor" % number)
+
+        if info.lowest is None or info.highest is None:
+            raise ValueError("%s has no notes to anchor" % info.key)
         return info
 
     # ---- the document ----
@@ -465,6 +479,12 @@ class Session:
                     "midi_end": max(note.start, getattr(note, "midi_end", note.end)),
                     "sound": note.shader,
                     "channel": note.chan,
+                    # The part this note belongs to, matching `ChannelInfo.key`.
+                    # Without it the roll sees only a channel, so three parts
+                    # written to channel 0 are one undifferentiated mass and
+                    # nothing can select, dim, or mute one of them.
+                    "part": "%d:%d" % (getattr(note, "track", 0), note.chan),
+                    "track": getattr(note, "track", 0),
                     "source_pitch": note.source_pitch,
                     "pitch": note.source_pitch,
                     "velocity": note.velocity,
@@ -563,10 +583,10 @@ class Session:
         all about a file nobody had touched yet, which is every file at the
         moment it opens.
         """
-        entry = self._doc["channels"].get(str(channel.channel))
+        entry = self._entry_for(channel)
         if entry and entry.get("sound") is not None:
             return None
-        chosen = entry.get("family") if entry else None
+        chosen = entry.get("family")
         return chosen or channel.auto_family
 
     def rulers(self) -> dict:
@@ -592,24 +612,42 @@ class Session:
                     if sample_span is None
                     else (max(_AXIS[0], sample_span[0] - 24), min(_AXIS[1], sample_span[1] + 24))
                 )
-                rulers[str(channel.channel)] = analysis.ruler_segments(channel, span, _AXIS)
+                rulers[channel.key] = analysis.ruler_segments(channel, span, _AXIS)
             return rulers
 
     # ---- warnings ----
 
+    def _parts(self) -> list:
+        return list(self._analysis.channels) if self._analysis is not None else []
+
+    def _entry_for(self, info) -> dict:
+        """The settings entry governing one part: its own, else its channel's.
+
+        The same precedence the parser applies, restated here because the
+        warnings have to describe the arrangement the compile actually
+        produces. A bare channel entry is the wildcard covering every part on
+        that channel; a part key names one and beats it.
+        """
+        channels = self._doc["channels"]
+        entry = channels.get(info.key)
+        if entry is None:
+            entry = channels.get(str(info.channel))
+        return entry or {}
+
     def _muted(self) -> set:
-        return {int(c) for c, entry in self._doc["channels"].items() if entry["muted"]}
+        """The keys of parts a mute silences. Keys, not channel numbers: two
+        parts can share a channel and only one of them be muted."""
+        return {p.key for p in self._parts() if self._entry_for(p).get("muted")}
 
     def _soloed(self) -> set:
-        return {int(c) for c, entry in self._doc["channels"].items() if entry["soloed"]}
+        return {p.key for p in self._parts() if self._entry_for(p).get("soloed")}
 
     def _inaudible(self) -> set:
         muted = self._muted()
         soloed = self._soloed()
-        if not soloed or self._analysis is None:
+        if not soloed:
             return muted
-        channels = {channel.channel for channel in self._analysis.channels}
-        return muted | (channels - soloed)
+        return muted | ({p.key for p in self._parts()} - soloed)
 
     def _who(self, channel: int) -> str:
         """A channel named the way every sentence here names it.
@@ -706,7 +744,7 @@ class Session:
         keys = set()
         inaudible = self._inaudible()
         for channel in self._analysis.channels:
-            if channel.channel in inaudible:
+            if channel.key in inaudible:
                 continue
             keys.update(
                 key
@@ -774,9 +812,9 @@ class Session:
         inaudible = self._inaudible()
         warnings = []
 
-        if channels and all(channel.channel in muted for channel in channels):
+        if channels and all(channel.key in muted for channel in channels):
             warnings.append("Nothing will play: all %d channels are muted." % len(channels))
-        elif channels and all(channel.channel in inaudible for channel in channels):
+        elif channels and all(channel.key in inaudible for channel in channels):
             warnings.append(
                 "Nothing will play: mute and solo settings exclude all %d channels." % len(channels)
             )

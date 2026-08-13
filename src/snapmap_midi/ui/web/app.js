@@ -72,7 +72,8 @@
   var APPLIED = {};
   var BUSY = 0;
   var BOOTED = false;
-  var SELECTED_CHANNEL = null;
+  // The focused part, as its "track:channel" key, or null for "show all".
+  var SELECTED_PART = null;
   var TRACK_KEY = '';
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
@@ -365,25 +366,68 @@
 
   /* --------------------------------------------------------------- tracks */
 
-  function channelEntry(channel) {
-    return (STATE.settings && STATE.settings.channels && STATE.settings.channels[String(channel)]) || {};
+  // A part's settings: its own entry, else its channel's. The channel-wide
+  // entry is the wildcard every document written before parts existed uses,
+  // and it still means "every part on this channel" -- the same precedence the
+  // parser applies, so the row shows what the compile will do.
+  function partEntry(part) {
+    var all = (STATE.settings && STATE.settings.channels) || {};
+    if (!part) { return {}; }
+    return all[part.key] || all[String(part.channel)] || {};
   }
 
+  // Writes always name the part. A write through the wildcard would change
+  // every part on the channel, which is the merge this whole feature removes.
+  function partPatch(part, values) {
+    var patch = { channels: {} };
+    patch.channels[part.key] = values;
+    return patch;
+  }
 
   function anySoloedChannel() {
     var list = channels();
     for (var index = 0; index < list.length; index += 1) {
-      if (channelEntry(list[index].channel).soloed) { return true; }
+      if (partEntry(list[index]).soloed) { return true; }
     }
     return false;
   }
 
-  function channelByNumber(channel) {
+  function partByKey(key) {
+    if (key === null || key === undefined) { return null; }
     var list = channels();
     for (var index = 0; index < list.length; index += 1) {
-      if (Number(list[index].channel) === Number(channel)) { return list[index]; }
+      if (list[index].key === String(key)) { return list[index]; }
+    }
+    // A bare channel number still resolves, for callers that have only that.
+    for (var fallback = 0; fallback < list.length; fallback += 1) {
+      if (Number(list[fallback].channel) === Number(key)) { return list[fallback]; }
     }
     return null;
+  }
+
+  // Colour identifies a ROW, so it follows the part's position in the list.
+  // Colouring by channel number would paint three parts sharing channel 0 the
+  // same colour, which is exactly the distinction the row is there to make.
+  function partColorForKey(key) {
+    var list = channels();
+    for (var index = 0; index < list.length; index += 1) {
+      if (list[index].key === key) { return channelColor(index); }
+    }
+    return channelColor(Number(String(key).split(":").pop()) || 0);
+  }
+
+  function partColor(part) {
+    if (!part) { return channelColor(0); }
+    var list = channels();
+    for (var index = 0; index < list.length; index += 1) {
+      if (list[index].key === part.key) { return channelColor(index); }
+    }
+    return channelColor(part.channel);
+  }
+
+  function partLabel(part) {
+    if (!part) { return ""; }
+    return part.track_name || part.program_name;
   }
 
   function humanSoundName(name) {
@@ -416,7 +460,7 @@
   }
 
   function assignmentLabel(channel) {
-    var entry = channelEntry(channel.channel);
+    var entry = partEntry(channel);
     if (entry.sound) { return exactSoundLabel(entry.sound); }
     if (entry.family) { return humanCategory(entry.family); }
     return channel.is_drums
@@ -425,7 +469,7 @@
   }
 
   function assignmentTitle(channel) {
-    var entry = channelEntry(channel.channel);
+    var entry = partEntry(channel);
     if (entry.sound) { return assignmentLabel(channel) + "\n" + entry.sound; }
     if (entry.family) { return "Pitched family: " + entry.family; }
     return assignmentLabel(channel);
@@ -434,7 +478,7 @@
   function trackShapeKey() {
     var families = (STATE.catalog && STATE.catalog.families) || [];
     return channels().map(function (channel) {
-      return channel.channel + ":" + channel.program;
+      return channel.key + ":" + channel.program;
     }).join("|") + "#" + families.length;
   }
 
@@ -444,9 +488,9 @@
     channels().forEach(function (channel) {
       var row = document.createElement("div");
       row.className = "track-row";
-      row.dataset.channel = String(channel.channel);
-      row.style.setProperty("--track-color", channelColor(channel.channel));
-      row.title = "Click to focus this channel and open its settings; click again to show all channels";
+      row.dataset.part = channel.key;
+      row.style.setProperty("--track-color", partColor(channel));
+      row.title = "Click to focus this part and open its settings; click again to show all parts";
 
       var number = document.createElement("div");
       number.className = "track-channel";
@@ -459,8 +503,12 @@
 
       var name = document.createElement("div");
       name.className = "track-name";
-      name.textContent = channel.program_name + (channel.is_drums ? " \u00b7 Percussion" : "");
-      name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest);
+      // The track's own name when the file gave it one. A format 0 file has
+      // none by definition, and a type 1 conductor's name is the song's, so
+      // both fall back to the General MIDI instrument, as before parts existed.
+      name.textContent = partLabel(channel) + (channel.is_drums ? " \u00b7 Percussion" : "");
+      name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest) +
+        " \u00b7 MIDI channel " + (channel.channel + 1);
       heading.appendChild(name);
 
       var actions = document.createElement("div");
@@ -472,11 +520,9 @@
         button.className = "track-toggle track-" + kind + "-toggle";
         button.appendChild(iconElement(kind === "mute" ? "volume-2" : "headphones"));
         button.addEventListener("click", function () {
-          var patch = { channels: {} };
-          patch.channels[String(channel.channel)] = {};
-          patch.channels[String(channel.channel)][setting] =
-            !channelEntry(channel.channel)[setting];
-          applyPatch(patch, true);
+          var values = {};
+          values[setting] = !partEntry(channel)[setting];
+          applyPatch(partPatch(channel, values), true);
         });
         return button;
       }
@@ -490,21 +536,21 @@
       picker.type = "button";
       picker.className = "track-sound-picker";
       picker.setAttribute("aria-haspopup", "dialog");
-      picker.setAttribute("aria-label", "Choose sound for MIDI channel " + (channel.channel + 1));
+      picker.setAttribute("aria-label", "Choose sound for " + partLabel(channel));
       var pickerCopy = document.createElement("span");
       pickerCopy.className = "track-sound-copy";
       picker.appendChild(pickerCopy);
       picker.appendChild(iconElement("chevron-down"));
-      picker.addEventListener("click", function () { openSoundBrowser(channel.channel); });
+      picker.addEventListener("click", function () { openSoundBrowser(channel.key); });
       row.appendChild(picker);
 
       row.addEventListener("click", function (event) {
         if (event.target.closest("button, input, label")) { return; }
-        if (SELECTED_CHANNEL === channel.channel && CHANNEL_INSPECTOR_OPEN) {
-          SELECTED_CHANNEL = null;
+        if (SELECTED_PART === channel.key && CHANNEL_INSPECTOR_OPEN) {
+          SELECTED_PART = null;
           closeChannelInspector();
         } else {
-          openChannelInspector(channel.channel);
+          openChannelInspector(channel.key);
         }
         patchTracks();
         invalidateRollSurface();
@@ -519,10 +565,10 @@
     var soloActive = anySoloedChannel();
     for (var index = 0; index < rows.length; index += 1) {
       var row = rows[index];
-      var channelNumber = Number(row.dataset.channel);
-      var channel = channelByNumber(channelNumber);
-      var entry = channelEntry(channelNumber);
-      var selected = SELECTED_CHANNEL === channelNumber;
+      var partKey = row.dataset.part;
+      var channel = partByKey(partKey);
+      var entry = partEntry(channel);
+      var selected = SELECTED_PART === partKey;
       row.classList.toggle("selected", selected);
       row.setAttribute("aria-selected", selected ? "true" : "false");
       row.setAttribute(
@@ -655,7 +701,7 @@
   }
 
   function candidateForChannel(channel) {
-    var entry = channelEntry(channel.channel);
+    var entry = partEntry(channel);
     if (entry.sound) {
       return { kind: "sound", value: entry.sound, label: exactSoundLabel(entry.sound) };
     }
@@ -926,7 +972,7 @@
     var pageCount = 1;
 
     if (SOUND_BROWSER.mode === "automatic") {
-      var channel = channelByNumber(SOUND_BROWSER.channel);
+      var channel = partByKey(SOUND_BROWSER.part);
       breadcrumb.textContent = "Automatic MIDI mapping";
       count.textContent = "1 choice";
       if (channel) {
@@ -1118,8 +1164,8 @@
     });
   }
 
-  function openSoundBrowser(channelNumber) {
-    var channel = channelByNumber(channelNumber);
+  function openSoundBrowser(partKey) {
+    var channel = partByKey(partKey);
     if (!channel) { return; }
     closeMenus();
     closeInspector();
@@ -1128,7 +1174,7 @@
     closeChannelInspector();
     pausePlayback();
     SOUND_BROWSER.open = true;
-    SOUND_BROWSER.channel = channelNumber;
+    SOUND_BROWSER.part = channel.key;
     SOUND_BROWSER.candidate = candidateForChannel(channel);
     SOUND_BROWSER.page = 0;
     SOUND_BROWSER.path = "";
@@ -1137,7 +1183,7 @@
       : (SOUND_BROWSER.candidate.kind === "automatic" ? "automatic" : "events");
     el("soundBrowserSearch").value = "";
     el("soundBrowserSubtitle").textContent =
-      "MIDI channel " + (channelNumber + 1) + " \u00b7 " + channel.program_name;
+      partLabel(channel) + " \u00b7 MIDI channel " + (channel.channel + 1);
     el("soundBrowserOverlay").hidden = false;
     if (SOUND_BROWSER.candidate.kind === "sound") {
       var event = browserSoundEvent(SOUND_BROWSER.candidate.value);
@@ -1155,21 +1201,21 @@
     if (!SOUND_BROWSER.open) { return; }
     stopSoundAudition();
     SOUND_BROWSER.open = false;
-    SOUND_BROWSER.channel = null;
+    SOUND_BROWSER.part = null;
     el("soundBrowserOverlay").hidden = true;
   }
 
   function useSoundBrowserSelection() {
     var candidate = SOUND_BROWSER.candidate;
-    var channel = SOUND_BROWSER.channel;
-    if (!candidate || channel === null || channel === undefined) { return; }
+    var partKey = SOUND_BROWSER.part;
+    if (!candidate || partKey === null || partKey === undefined) { return; }
     var body = { family: null, sound: null };
     if (candidate.kind === "family") { body.family = candidate.value; }
     function commit() {
       var patch = { channels: {} };
-      patch.channels[String(channel)] = body;
+      patch.channels[partKey] = body;
       closeSoundBrowser();
-      openChannelInspector(channel);
+      openChannelInspector(partKey);
       applyPatch(patch, false);
     }
     if (candidate.kind !== "sound") {
@@ -1184,7 +1230,7 @@
     useButton.disabled = true;
     el("soundSelection").textContent = "Analyzing musical pitch...";
     setBusy(true, "Resolving sound pitch...");
-    api().sound_profile(candidate.value, channel).then(function (response) {
+    api().sound_profile(candidate.value, partKey).then(function (response) {
       setBusy(false);
       if (response && response.ok && response.profile && response.pitch_plan) {
         var plan = response.pitch_plan;
@@ -1374,7 +1420,10 @@
         ),
         playedEnd: Math.max(eventStart, Number(event.end) || eventStart),
         channel: Number(event.channel) || 0,
-        color: channelColor(Number(event.channel) || 0),
+        // Falls back to the channel so a manifest from an older build,
+        // which had no part, still renders instead of collapsing to one row.
+        part: String(event.part || (Number(event.channel) || 0)),
+        color: partColorForKey(String(event.part || (Number(event.channel) || 0))),
         audible: event.audible !== false,
         muted: !!event.muted,
         soloExcluded: !!event.solo_excluded,
@@ -2036,7 +2085,7 @@
 
 
   function noteVisual(record, palette) {
-    var focusedOut = SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== record.channel;
+    var focusedOut = SELECTED_PART !== null && SELECTED_PART !== record.part;
     var inactive = record.muted || record.soloExcluded || !record.audible || !record.converted;
     var alpha = inactive ? 0.38 : 0.88;
     var labelAlpha = inactive ? 0.72 : 1;
@@ -2196,7 +2245,7 @@
     recordsOverlapping(eventRenderIndex().buckets[127 - row], time - tolerance, time + tolerance, candidates);
     for (var index = candidates.length - 1; index >= 0; index -= 1) {
       var candidate = candidates[index];
-      if (SELECTED_CHANNEL !== null && SELECTED_CHANNEL !== candidate.channel) { continue; }
+      if (SELECTED_PART !== null && SELECTED_PART !== candidate.part) { continue; }
       var geometry = eventGeometry(
         candidate, viewport.scrollLeft, viewport.scrollTop, duration);
       if (point.x >= geometry.x && point.x <= geometry.x + geometry.width &&
@@ -2954,19 +3003,19 @@
 
   function syncChannelInspector() {
     if (!CHANNEL_INSPECTOR_OPEN) { return; }
-    var channel = channelByNumber(SELECTED_CHANNEL);
+    var channel = partByKey(SELECTED_PART);
     if (!channel) {
       closeChannelInspector();
       return;
     }
-    var entry = channelEntry(channel.channel);
+    var entry = partEntry(channel);
     var exact = !!entry.sound;
     var follow = el("channelPitchFollow");
     var root = entry.root_midi;
     var canFollow = root !== null && root !== undefined &&
       entry.root_source !== "detected_octave_pending";
     el("channelInspectorSubtitle").textContent =
-      "MIDI channel " + (channel.channel + 1) + " - " + channel.program_name;
+      partLabel(channel) + " - MIDI channel " + (channel.channel + 1);
     el("channelSound").textContent = assignmentLabel(channel);
     el("channelSound").title = assignmentTitle(channel);
     el("channelMidiRange").textContent =
@@ -2991,13 +3040,13 @@
         : "This sound plays unchanged; MIDI pitch matching is not available for it.");
   }
 
-  function openChannelInspector(channelNumber) {
-    var channel = channelByNumber(channelNumber);
+  function openChannelInspector(partKey) {
+    var channel = partByKey(partKey);
     if (!channel) { return; }
     closeInspector();
     closeNotifications();
     closeNoteInspector();
-    SELECTED_CHANNEL = Number(channelNumber);
+    SELECTED_PART = channel.key;
     CHANNEL_INSPECTOR_OPEN = true;
     el("channelInspector").hidden = false;
     syncChannelInspector();
@@ -3011,17 +3060,16 @@
   }
 
   function closeChannelInspectorAndClearSelection() {
-    SELECTED_CHANNEL = null;
+    SELECTED_PART = null;
     closeChannelInspector();
     invalidateRollSurface();
     queueDraw();
   }
 
   function updateSelectedChannelPitchFollow(enabled) {
-    if (SELECTED_CHANNEL === null) { return; }
-    var patch = { channels: {} };
-    patch.channels[String(SELECTED_CHANNEL)] = { pitch_follow: !!enabled };
-    applyPatch(patch, true);
+    var channel = partByKey(SELECTED_PART);
+    if (!channel) { return; }
+    applyPatch(partPatch(channel, { pitch_follow: !!enabled }), true);
   }
 
   function initChannelInspector() {
@@ -3030,7 +3078,7 @@
       closeChannelInspectorAndClearSelection
     );
     el("channelPitchFollow").addEventListener("change", function () {
-      var saved = channelEntry(SELECTED_CHANNEL);
+      var saved = partEntry(partByKey(SELECTED_PART));
       if (!saved.sound) {
         syncChannelInspector();
         return;
@@ -3096,10 +3144,10 @@
       closeNoteInspector();
       return;
     }
-    var channel = channelByNumber(Number(note.channel));
+    var channel = partByKey(note.part);
     el("noteInspectorSubtitle").textContent =
-      "Channel " + (Number(note.channel) + 1) +
-      (channel ? " - " + channel.program_name : "");
+      (channel ? partLabel(channel) + " - " : "") +
+      "MIDI channel " + (Number(note.channel) + 1);
     el("noteSourcePitch").textContent =
       noteName(note.source_pitch) + " (" + note.source_pitch + ")";
     el("noteSound").textContent = String(note.sound || "");
@@ -3258,7 +3306,7 @@
     AUDIO.position = 0;
     invalidateAudio(true);
     TRACK_KEY = '';
-    SELECTED_CHANNEL = null;
+    SELECTED_PART = null;
     closeChannelInspector();
     closeNoteInspector();
     adopt(response, sequence);
