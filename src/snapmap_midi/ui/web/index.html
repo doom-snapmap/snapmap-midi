@@ -109,14 +109,14 @@
   </div>
 
   <main class="workspace" id="workspace" hidden>
-    <section class="tracks-pane" id="tracksPane" aria-label="MIDI channels">
-      <div class="pane-head"><span>Channels</span><span class="badge" id="trackCount">0</span></div>
+    <section class="tracks-pane" id="tracksPane" aria-label="Song parts">
+      <div class="pane-head"><span>Parts</span><span class="badge" id="trackCount">0</span></div>
       <div class="track-list" id="trackList"></div>
     </section>
     <div class="pane-splitter" id="paneSplitter" role="separator" tabindex="0"
-         aria-label="Resize channels and piano roll" aria-orientation="vertical"
+         aria-label="Resize parts and piano roll" aria-orientation="vertical"
          aria-valuemin="220" aria-valuemax="720" aria-valuenow="314"
-         title="Drag to resize channels; double-click to reset"></div>
+         title="Drag to resize parts; double-click to reset"></div>
     <section class="roll-pane" aria-label="Converted song piano roll">
       <div class="roll-corner" aria-hidden="true"></div>
       <canvas class="time-ruler" id="timeRuler" aria-hidden="true"></canvas>
@@ -223,13 +223,13 @@
     </div>
   </aside>
 
-  <aside class="inspector channel-inspector" id="channelInspector" aria-label="Channel settings" hidden>
+  <aside class="inspector channel-inspector" id="channelInspector" aria-label="Part settings" hidden>
     <div class="inspector-head">
       <div>
-        <strong>Channel settings</strong>
-        <div class="muted" id="channelInspectorSubtitle">No channel selected</div>
+        <strong>Part settings</strong>
+        <div class="muted" id="channelInspectorSubtitle">No part selected</div>
       </div>
-      <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close channel settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
+      <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close part settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body" id="channelInspectorBody">
       <div class="control-group channel-pitch-group">

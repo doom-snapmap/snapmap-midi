@@ -432,6 +432,23 @@
     return channelColor(part.channel);
   }
 
+  // Whether any MIDI channel in this song carries more than one part.
+  // Decides what the row's number badge can usefully say: neither number
+  // identifies a row on its own. On a normal file the channel is unique and
+  // the track is not (one track often carries several channels); on a file
+  // that writes several tracks to one channel it is the other way round, and
+  // on a format 0 file every part shares track 0.
+  function anyChannelShared() {
+    var list = channels();
+    var seen = {};
+    for (var index = 0; index < list.length; index += 1) {
+      var key = String(list[index].channel);
+      if (seen[key]) { return true; }
+      seen[key] = true;
+    }
+    return false;
+  }
+
   function partLabel(part) {
     if (!part) { return ""; }
     return part.track_name || part.program_name;
@@ -492,7 +509,8 @@
   function buildTracks() {
     var list = el("trackList");
     list.textContent = "";
-    channels().forEach(function (channel) {
+    var shared = anyChannelShared();
+    channels().forEach(function (channel, position) {
       var row = document.createElement("div");
       row.className = "track-row";
       row.dataset.part = channel.key;
@@ -501,8 +519,14 @@
 
       var number = document.createElement("div");
       number.className = "track-channel";
-      number.textContent = String(channel.channel + 1);
-      number.title = "MIDI channel " + (channel.channel + 1);
+      // The badge exists to tell rows apart, so it shows whichever number
+      // actually does. Where every part has its own channel that is the
+      // channel, which is what this has always shown and what a file with one
+      // part per channel still shows. Where a channel is shared it would be
+      // the same digit on every row, so the part's position is shown instead.
+      number.textContent = String(shared ? position + 1 : channel.channel + 1);
+      number.title = "Part " + (position + 1) + " \u00b7 track " + channel.track +
+        " \u00b7 MIDI channel " + (channel.channel + 1);
       row.appendChild(number);
 
       var heading = document.createElement("div");
@@ -516,6 +540,16 @@
       name.textContent = partLabel(channel) + (channel.is_drums ? " \u00b7 Percussion" : "");
       name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest) +
         " \u00b7 MIDI channel " + (channel.channel + 1);
+      if (shared) {
+        // The badge is showing the part's position here, so the channel has
+        // nowhere else to be read at a glance. A MIDI composer needs it, and
+        // it is the number any future editing surface would speak in.
+        var chip = document.createElement("span");
+        chip.className = "track-channel-chip";
+        chip.textContent = "ch " + (channel.channel + 1);
+        chip.title = "MIDI channel " + (channel.channel + 1);
+        name.appendChild(chip);
+      }
       heading.appendChild(name);
 
       var actions = document.createElement("div");

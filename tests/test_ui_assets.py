@@ -593,7 +593,7 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     ):
         assert 'id="%s"' % control in _HTML
 
-    assert 'aria-label="Channel settings"' in _HTML
+    assert 'aria-label="Part settings"' in _HTML
     assert "function syncChannelInspector()" in _JS
     assert "function openChannelInspector(partKey)" in _JS
     assert "function updateSelectedChannelPitchFollow(enabled)" in _JS
