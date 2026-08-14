@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 840" width="700" height="840" role="img" aria-labelledby="t d">
+<title id="t">Voices compared with polyphony</title>
+<desc id="d">Four panels. Notes played one after another all play. On a chord both controls behave the same. They differ only when notes enter one at a time and overlap.</desc>
+<style>
+  .card{fill:#F7F7F4;stroke:#E2E0D9;stroke-width:1}
+  .same{fill:#F7F7F4;stroke:#B5D4F4;stroke-width:1.5}
+  .h{font:500 15px system-ui,-apple-system,Segoe UI,sans-serif;fill:#2C2C2A}
+  .s{font:13px system-ui,-apple-system,Segoe UI,sans-serif;fill:#5F5E5A}
+  .c{font:13px system-ui,-apple-system,Segoe UI,sans-serif;fill:#444441}
+  .k{font:11px ui-monospace,Consolas,monospace;fill:#888780}
+  .tag{font:11px system-ui,-apple-system,Segoe UI,sans-serif}
+  .bar{fill:#378ADD}
+  .ghost{fill:none;stroke:#B4B2A9;stroke-width:1.5;stroke-dasharray:5 4}
+  .rest{fill:#D6E6F7}
+</style>
+
+<g>
+  <rect class="card" x="0" y="0" width="700" height="190" rx="12"/>
+  <text class="h" x="20" y="30">Notes played one after another</text>
+  <text class="s" x="20" y="50">Voices set to 1 - all three play</text>
+  <text class="k" x="20" y="82">C5</text><rect class="bar" x="52" y="68" width="196" height="20" rx="4"/>
+  <text class="k" x="20" y="110">A4</text><rect class="bar" x="252" y="96" width="196" height="20" rx="4"/>
+  <text class="k" x="20" y="138">F4</text><rect class="bar" x="452" y="124" width="196" height="20" rx="4"/>
+  <text class="c" x="20" y="168">Nothing overlaps, so one sound at a time is enough. Each note takes over from the</text>
+  <text class="c" x="20" y="184">one before it. A low setting never stops a melody playing.</text>
+</g>
+
+<g transform="translate(0,210)">
+  <rect class="same" x="0" y="0" width="700" height="190" rx="12"/>
+  <text class="h" x="20" y="30">A chord - all three struck together</text>
+  <text class="s" x="20" y="50">Set to 2 - two play, one is silent. BOTH controls do this.</text>
+  <text class="k" x="20" y="82">C5</text><rect class="bar" x="52" y="68" width="596" height="20" rx="4"/>
+  <text class="k" x="20" y="110">A4</text><rect class="bar" x="52" y="96" width="596" height="20" rx="4"/>
+  <text class="k" x="20" y="138">F4</text><rect class="ghost" x="52" y="124" width="596" height="20" rx="4"/>
+  <text class="tag" x="330" y="138" fill="#888780">silent</text>
+  <text class="c" x="20" y="168">Two means two. The lowest note never sounds. On a chord like this, voices and</text>
+  <text class="c" x="20" y="184">polyphony give exactly the same result.</text>
+</g>
+
+<g transform="translate(0,420)">
+  <rect class="card" x="0" y="0" width="700" height="190" rx="12"/>
+  <text class="h" x="20" y="30">Notes entering one at a time, and held</text>
+  <text class="s" x="20" y="50">Voices set to 2 - all three play, the first stops early</text>
+  <text class="k" x="20" y="82">C5</text><rect class="bar" x="52" y="68" width="119" height="20" rx="4"/><rect class="rest" x="171" y="68" width="477" height="20" rx="4"/>
+  <text class="tag" x="180" y="82" fill="#854F0B">stops here</text>
+  <text class="k" x="20" y="110">A4</text><rect class="bar" x="112" y="96" width="536" height="20" rx="4"/>
+  <text class="k" x="20" y="138">F4</text><rect class="bar" x="171" y="124" width="477" height="20" rx="4"/>
+  <text class="c" x="20" y="168">Every note sounds. When the third arrives there is no free sound left, so the one</text>
+  <text class="c" x="20" y="184">nearest finishing gives way. Pale block = the part you no longer hear.</text>
+</g>
+
+<g transform="translate(0,630)">
+  <rect class="card" x="0" y="0" width="700" height="190" rx="12"/>
+  <text class="h" x="20" y="30">The same notes entering one at a time</text>
+  <text class="s" x="20" y="50">Polyphony set to 2 - only two play, one is silent</text>
+  <text class="k" x="20" y="82">C5</text><rect class="bar" x="52" y="68" width="596" height="20" rx="4"/>
+  <text class="k" x="20" y="110">A4</text><rect class="bar" x="112" y="96" width="536" height="20" rx="4"/>
+  <text class="k" x="20" y="138">F4</text><rect class="ghost" x="171" y="124" width="477" height="20" rx="4"/>
+  <text class="tag" x="380" y="138" fill="#888780">silent</text>
+  <text class="c" x="20" y="168">This is the only place the two differ. Polyphony refuses the third note outright, so</text>
+  <text class="c" x="20" y="184">the first keeps its full length instead of being cut.</text>
+</g>
+</svg>

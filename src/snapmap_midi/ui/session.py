@@ -492,11 +492,26 @@ class Session:
                 # the roll but not the export is worse than no slider.
                 voices = for_part(levers["part_voices"], *part_key, levers["max_speakers"])
                 poly = for_part(levers["part_polyphony"], *part_key, levers["max_poly"])
+                # Which lever silenced a note, recorded as it happens. The panel
+                # has one readout per lever, and "this note did not survive
+                # thinning" cannot fill either of them honestly -- both levers
+                # thin, and a count that mixed them would credit polyphony for
+                # notes the voice limit dropped.
                 if poly:
-                    layer = thin_polyphony(layer, poly)
+                    kept = thin_polyphony(layer, poly)
+                    surviving = {id(note) for note in kept}
+                    for note in layer:
+                        if id(note) not in surviving:
+                            note.limited_by = "polyphony"
+                    layer = kept
                 # Same order as the compile: cap the notes that start together,
                 # then allocate and let the rest be cut. See compile.py for why.
-                layer = thin_simultaneous(layer, voices)
+                kept = thin_simultaneous(layer, voices)
+                surviving = {id(note) for note in kept}
+                for note in layer:
+                    if id(note) not in surviving:
+                        note.limited_by = "voices"
+                layer = kept
                 allocate_voices(layer, voices)
 
                 # Starting a note on a stolen speaker cuts off the note that
@@ -548,6 +563,10 @@ class Session:
                     "family": note.fam,
                     "sustained": note.sustained,
                     "cut": bool(getattr(note, "preview_cut", False)),
+                    # Which limit silenced this note, or None if none did. The
+                    # roll draws it dimmed either way; the panel needs to know
+                    # whose fault it was to report each lever separately.
+                    "limited_by": getattr(note, "limited_by", None),
                     "audible": bool(note.audible),
                     "muted": bool(note.muted),
                     "solo_excluded": bool(note.solo_excluded),

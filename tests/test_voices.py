@@ -169,6 +169,32 @@ def test_allocate_voices_steals_the_earliest_free_voice_at_the_ceiling():
     assert sorted({n.voice for n in notes}) == [0, 1, 2]
 
 
+def test_a_tie_on_free_time_steals_the_oldest_sound():
+    """Notes written to end together end together, so the tie is the ordinary
+    case rather than a corner one, and slot order used to settle it.
+
+    Four notes entering 200 ms apart on two voices: the first gives way to the
+    third, then the second gives way to the fourth. Each note in turn is the
+    longest-running one when the next arrives.
+
+    Before this, slot 1 kept whatever landed on it for the whole song while slot
+    0 was recycled over and over -- so the SECOND note survived intact and the
+    THIRD was cut, which is neither the oldest nor the newest and answers to
+    nothing a listener could predict.
+    """
+    notes = [Note(step * 200, 2000, "play_piano%d" % step, True, 0, "p") for step in range(4)]
+    allocate_voices(notes, max_speakers=2)
+
+    def stops_at(note):
+        later = [o.start for o in notes if o.voice == note.voice and o.start > note.start]
+        return min(later) if later else note.end
+
+    assert stops_at(notes[0]) == 400  # oldest, gives way to the third
+    assert stops_at(notes[1]) == 600  # now oldest, gives way to the fourth
+    assert stops_at(notes[2]) == 2000
+    assert stops_at(notes[3]) == 2000
+
+
 def test_decaying_voice_reservation_controls_allocation_but_not_polyphony():
     """The sample's tail decides SPEAKERS. It must not decide POLYPHONY.
 

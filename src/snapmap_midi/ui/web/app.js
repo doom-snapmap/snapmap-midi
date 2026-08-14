@@ -3387,32 +3387,37 @@
     return partEntry(channel).percussion || "auto";
   }
 
-  // The most notes this track holds at the same instant, read off the notes the
-  // roll is already drawing. It is the number that says whether a limit will
-  // bite at all: a track that never holds more than one note is unaffected by
-  // any setting above one, and saying so stops a control that is correctly
-  // doing nothing from reading as a broken one.
-  function trackPeakNotes(part) {
-    if (!part) { return 0; }
-    var spans = [];
+  // What each limit actually DID to this track, counted off the notes the roll
+  // is already drawing. Predicting from written overlap was wrong twice over: it
+  // could not see sample tails, and it called a note shortened when only its
+  // ringing tail had been trimmed. On one real song that read 961 notes cut
+  // where the true answer was zero -- a control doing nothing harmful, described
+  // as though it were wrecking the arrangement.
+  //
+  // `midi_end` is the written note and `end` is when it stops being heard, so a
+  // block is genuinely shorter only when `end` falls before `midi_end`. Trimming
+  // the ring after a note moves neither, and is not reported.
+  function trackOutcomes(part) {
+    var out = { shortened: 0, lostToVoices: 0, lostToPolyphony: 0, notes: 0 };
+    if (!part) { return out; }
     previewDisplayEvents().forEach(function (event) {
       if (String(event.part) !== String(part.key)) { return; }
-      var start = Number(event.start) || 0;
-      var end = Math.max(start, Number(event.midi_end !== undefined && event.midi_end !== null
-        ? event.midi_end : event.end) || start);
-      spans.push([start, 1], [end, -1]);
+      out.notes += 1;
+      if (event.limited_by === "voices") { out.lostToVoices += 1; return; }
+      if (event.limited_by === "polyphony") { out.lostToPolyphony += 1; return; }
+      var written = Number(event.midi_end);
+      var heard = Number(event.end);
+      if (isFinite(written) && isFinite(heard) && heard < written) { out.shortened += 1; }
     });
-    spans.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
-    var live = 0, peak = 0;
-    for (var i = 0; i < spans.length; i += 1) {
-      live += spans[i][1];
-      if (live > peak) { peak = live; }
-    }
-    return peak;
+    return out;
   }
 
-  // One shape, two levers. `key` is the per-track settings key, `fallbackKey`
-  // the song-wide tuning value it inherits when the track has not overridden.
+  function count(n, one, many) {
+    return n + " " + (n === 1 ? one : many);
+  }
+
+  // One shape, two limits. `key` is the per-track settings key, `fallbackKey`
+  // the song-wide value it inherits when the track has not overridden.
   function syncChannelLimit(channel, key, fallbackKey, ids, describe) {
     var saved = partEntry(channel);
     var own = saved[key];
@@ -3421,26 +3426,25 @@
     el(ids.enabled).checked = on;
     setDependent(ids.controls, on);
     syncPair(ids.range, ids.number, on ? own : (songWide || 32));
-    el(ids.help).textContent = describe(on ? own : null, songWide, trackPeakNotes(channel));
+    el(ids.help).textContent = describe(on ? own : null, songWide, trackOutcomes(channel));
   }
 
   function syncChannelVoices(channel) {
     syncChannelLimit(channel, "voices", "max_speakers", {
       enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
       range: "channelVoicesRange", number: "channelVoicesNumber", help: "channelVoicesHelp"
-    }, function (own, songWide, peak) {
-      var limit = own === null ? songWide : own;
-      // One sentence, and only what the number MEANS. The slider already shows
-      // the value and the tickbox already shows where it came from, so a line
-      // that restated both read as "Song setting: 2. ... 2. ..." -- fragments
-      // full of numbers already on screen.
-      var sounds = peak === 1 ? "one sound" : peak + " sounds";
-      if (peak <= limit) {
-        return "This track never needs more than " + sounds
-          + " at once, so nothing is being cut short.";
+    }, function (own, songWide, seen) {
+      var said = [];
+      if (seen.lostToVoices) {
+        said.push(count(seen.lostToVoices, "note here never plays", "notes here never play")
+          + " because too many start at the same moment");
       }
-      return "This track wants " + sounds + " at once but has only " + limit
-        + ", so the older ones get cut short.";
+      if (seen.shortened) {
+        said.push(count(seen.shortened, "note here stops", "notes here stop")
+          + " before its written end");
+      }
+      if (!said.length) { return "Nothing on this track is being cut short."; }
+      return said.join(", and ") + ".";
     });
   }
 
@@ -3448,17 +3452,11 @@
     syncChannelLimit(channel, "polyphony", "max_poly", {
       enabled: "channelPolyEnabled", controls: "channelPolyControls",
       range: "channelPolyRange", number: "channelPolyNumber", help: "channelPolyHelp"
-    }, function (own, songWide, peak) {
-      var notes = peak === 1 ? "one note" : peak + " notes";
-      if (own === null && !songWide) {
-        return "Off, so every note plays.";
-      }
-      var limit = own === null ? songWide : own;
-      if (peak <= limit) {
-        return "This track never plays more than " + notes
-          + " together, so nothing is being muted.";
-      }
-      return "This track plays up to " + notes + " together, so the lowest ones are muted.";
+    }, function (own, songWide, seen) {
+      if (own === null && !songWide) { return "Off, so every note on this track plays."; }
+      if (!seen.lostToPolyphony) { return "Nothing on this track is being muted."; }
+      return count(seen.lostToPolyphony, "note here never plays", "notes here never play")
+        + ", because the chords go thicker than this.";
     });
   }
 

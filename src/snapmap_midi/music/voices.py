@@ -102,6 +102,16 @@ def allocate_voices(notes, max_speakers: int) -> int:
     truncated by the next. Ascending pitch therefore leaves the top note
     holding a speaker, which is the note a listener would miss.
 
+    When two voices would free at the SAME moment -- which is the ordinary case,
+    since notes written to end together end together -- the one carrying the
+    OLDEST sound gives way. Without that rule the winner was decided by slot
+    order, so a note could hold one voice for the whole song while every other
+    note took turns being chopped on the next: five notes entering 200 ms apart
+    kept the second one intact and cut the third, which is neither the oldest
+    nor the newest and answers to nothing musical. Oldest-first is what a
+    hardware synth does, and it is a sentence that can be put in front of a user:
+    the longest-running sound is the one that gives way.
+
     This makes the outcome deterministic and protects the melody. It does NOT
     make the model right for chords: see `docs/limits.md` -- a note that cannot
     get a speaker at its onset is truncated to zero length, so it is silent
@@ -109,16 +119,21 @@ def allocate_voices(notes, max_speakers: int) -> int:
     """
     notes.sort(key=lambda n: (n.start, _note_pitch(n)))
     free_at: list[int] = []
+    # When each voice's current sound began, so a tie on free time can be
+    # settled by age rather than by which slot happens to come first.
+    began: list[int] = []
     for note in notes:
         voice = next((i for i, t in enumerate(free_at) if t <= note.start), None)
         if voice is None:
             if len(free_at) < max_speakers:
                 voice = len(free_at)
                 free_at.append(0)
+                began.append(0)
             else:
-                voice = min(range(len(free_at)), key=lambda i: free_at[i])
+                voice = min(range(len(free_at)), key=lambda i: (free_at[i], began[i]))
         note.voice = voice
         free_at[voice] = getattr(note, "voice_end", note.end)
+        began[voice] = note.start
     return len(free_at)
 
 

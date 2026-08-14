@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="t d">
+<title id="t">How the limits should look in the app</title>
+<desc id="d">The track list, piano roll and Track settings panel, showing notes that play in full, notes cut short by the voice limit, and notes silenced by polyphony drawn differently from each other.</desc>
+<style>
+  .pane{fill:#F7F7F4}
+  .card{fill:#FFFFFF;stroke:#E2E0D9;stroke-width:1}
+  .roll{fill:#FFFFFF;stroke:#E2E0D9;stroke-width:1}
+  .h{font:500 14px system-ui,-apple-system,Segoe UI,sans-serif;fill:#2C2C2A}
+  .lbl{font:12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#2C2C2A}
+  .s{font:12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#5F5E5A}
+  .hint{font:10px system-ui,-apple-system,Segoe UI,sans-serif;fill:#888780}
+  .mono{font:11px ui-monospace,Consolas,monospace;fill:#5F5E5A}
+  .grid{stroke:#EFEEE9;stroke-width:1}
+  .plays{fill:#378ADD}
+  .lost{fill:#D6E6F7}
+  .silent{fill:none;stroke:#B4B2A9;stroke-width:1.5;stroke-dasharray:5 4}
+  .field{fill:#FFFFFF;stroke:#D3D1C7;stroke-width:1}
+</style>
+
+<rect class="pane" x="0" y="0" width="960" height="560"/>
+
+<text class="hint" x="14" y="24">Tracks</text>
+<text class="mono" x="20" y="52">1</text><text class="s" x="40" y="52">Piano</text>
+<rect x="8" y="62" width="128" height="26" rx="6" fill="#E6F1FB"/>
+<text class="mono" x="20" y="80" fill="#185FA5">2</text><text class="lbl" x="40" y="80" fill="#185FA5">Violin</text>
+<text class="mono" x="20" y="108">3</text><text class="s" x="40" y="108">Drums</text>
+
+<rect class="roll" x="150" y="14" width="470" height="330" rx="10"/>
+<text class="hint" x="164" y="34">Violin</text>
+<line class="grid" x1="150" y1="46" x2="620" y2="46"/>
+<line class="grid" x1="265" y1="46" x2="265" y2="344"/>
+<line class="grid" x1="380" y1="46" x2="380" y2="344"/>
+<line class="grid" x1="495" y1="46" x2="495" y2="344"/>
+
+<text class="mono" x="160" y="80">C5</text>
+<rect class="plays" x="196" y="66" width="92" height="18" rx="3"/><rect class="lost" x="288" y="66" width="322" height="18" rx="3"/>
+<text class="mono" x="160" y="112">A4</text>
+<rect class="plays" x="242" y="98" width="368" height="18" rx="3"/>
+<text class="mono" x="160" y="144">G4</text>
+<rect class="plays" x="288" y="130" width="46" height="18" rx="3"/><rect class="lost" x="334" y="130" width="276" height="18" rx="3"/>
+<text class="mono" x="160" y="176">E4</text>
+<rect class="plays" x="334" y="162" width="276" height="18" rx="3"/>
+<text class="mono" x="160" y="208">C4</text>
+<rect class="silent" x="380" y="194" width="230" height="18" rx="3"/>
+
+<text class="hint" x="164" y="252">What the shading means</text>
+<rect class="plays" x="164" y="264" width="26" height="14" rx="3"/><text class="s" x="198" y="276">plays in full</text>
+<rect class="plays" x="164" y="288" width="10" height="14" rx="3"/><rect class="lost" x="174" y="288" width="16" height="14" rx="3"/><text class="s" x="198" y="300">plays, then stops early - pale part is not heard</text>
+<rect class="silent" x="164" y="312" width="26" height="14" rx="3"/><text class="s" x="198" y="324">silent - never plays, and stays here so you can see it</text>
+
+<g transform="translate(630,14)">
+  <rect class="card" x="0" y="0" width="316" height="530" rx="10"/>
+  <text class="h" x="16" y="26">Track settings</text>
+  <text class="s" x="16" y="44">Track 2 - Violin - CH2</text>
+  <line x1="0" y1="58" x2="316" y2="58" stroke="#E2E0D9"/>
+
+  <text class="lbl" x="16" y="84">Voices</text><text class="hint" x="228" y="84">sounds at once</text>
+  <text class="s" x="16" y="104">How many sounds this track can play at</text>
+  <text class="s" x="16" y="120">the same time. Every note still plays -</text>
+  <text class="s" x="16" y="136">when more overlap than this, the one</text>
+  <text class="s" x="16" y="152">nearest finishing stops early.</text>
+  <rect class="field" x="16" y="164" width="12" height="12" rx="3" fill="#378ADD" stroke="#378ADD"/>
+  <path d="M19 170 l2.5 2.5 l4.5 -5" fill="none" stroke="#fff" stroke-width="1.6"/>
+  <text class="s" x="34" y="174">Set for this track</text>
+  <line x1="16" y1="196" x2="228" y2="196" stroke="#D3D1C7" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="20" cy="196" r="7" fill="#378ADD"/>
+  <rect class="field" x="244" y="185" width="52" height="22" rx="6"/><text class="s" x="266" y="201">2</text>
+  <text class="s" x="16" y="226" fill="#854F0B">2 notes stop early here.</text>
+
+  <line x1="0" y1="246" x2="316" y2="246" stroke="#E2E0D9"/>
+
+  <text class="lbl" x="16" y="272">Polyphony</text><text class="hint" x="234" y="272">notes at once</text>
+  <text class="s" x="16" y="292">How many notes may sound together.</text>
+  <text class="s" x="16" y="308">Any past this are silent - the lowest go</text>
+  <text class="s" x="16" y="324">first. The ones that play keep their</text>
+  <text class="s" x="16" y="340">full length.</text>
+  <rect class="field" x="16" y="352" width="12" height="12" rx="3" fill="#378ADD" stroke="#378ADD"/>
+  <path d="M19 358 l2.5 2.5 l4.5 -5" fill="none" stroke="#fff" stroke-width="1.6"/>
+  <text class="s" x="34" y="362">Set for this track</text>
+  <line x1="16" y1="384" x2="228" y2="384" stroke="#D3D1C7" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="46" cy="384" r="7" fill="#378ADD"/>
+  <rect class="field" x="244" y="373" width="52" height="22" rx="6"/><text class="s" x="266" y="389">4</text>
+  <text class="s" x="16" y="414">1 note is silent here.</text>
+
+  <line x1="0" y1="434" x2="316" y2="434" stroke="#E2E0D9"/>
+  <text class="s" x="16" y="458" fill="#444441">Voices is set lower than polyphony, so</text>
+  <text class="s" x="16" y="474" fill="#444441">voices is doing the work. Whichever</text>
+  <text class="s" x="16" y="490" fill="#444441">number is smaller decides how many</text>
+  <text class="s" x="16" y="506" fill="#444441">notes you hear together.</text>
+</g>
+</svg>
