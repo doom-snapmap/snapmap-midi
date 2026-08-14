@@ -255,7 +255,7 @@
 
       <div class="control-group">
         <div class="control-title"><label for="channelVoicesRange">Voices</label><span class="hint">sounds take turns</span></div>
-        <div class="expression-readout">Sets how many sounds can be ringing at the same time. When more notes overlap than that, they take turns: the one that has been ringing longest is cut off so the next can start. Every note still plays - some just stop sooner.</div>
+        <div class="expression-readout">Sets how many sounds can be ringing at the same time. Overlapping notes take turns: the one ringing longest is cut off so the next can start. Notes that begin at the very same instant cannot take turns, so any beyond this number never play and are drawn hollow.</div>
         <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
         <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
         <div class="expression-readout" id="channelVoicesHelp"></div>
@@ -263,7 +263,7 @@
 
       <div class="control-group">
         <div class="control-title"><label for="channelPolyRange">Polyphony</label><span class="hint">chord thickness</span></div>
-        <div class="expression-readout">Thins out chords. Notes past this number never play at all - the lowest go first, and they stay on the roll so you can see them. The ones that do play keep their full length.</div>
+        <div class="expression-readout">Thins out chords. Notes past this number never play at all, the lowest first. They are drawn hollow on the roll so you can still see them, and the notes that do play keep their full length.</div>
         <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
         <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
         <div class="expression-readout" id="channelPolyHelp"></div>

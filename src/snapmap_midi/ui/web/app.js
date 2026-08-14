@@ -1809,6 +1809,9 @@
         audible: event.audible !== false,
         muted: !!event.muted,
         soloExcluded: !!event.solo_excluded,
+        // Set only when a limit refused the note. Those are drawn hollow: a
+        // note that never plays should not look like a quiet one.
+        limitedBy: event.limited_by || null,
         converted: event.converted !== false,
         label: noteName(eventPitch)
       };
@@ -2381,6 +2384,20 @@
     return point;
   }
 
+  // A note a limit refused. Hollow rather than dim, because dim reads as
+  // "quieter" and this note makes no sound at all. It keeps its place on the
+  // roll so the shape of what was written is still legible.
+  function outlineNoteBlock(context, x, y, width, height, radius, color) {
+    context.save();
+    context.globalAlpha = 0.85;
+    context.strokeStyle = color;
+    context.lineWidth = 1;
+    context.setLineDash([4, 3]);
+    roundedRectPath(context, x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1), radius);
+    context.stroke();
+    context.restore();
+  }
+
   function fillNoteBlock(context, x, y, width, height, radius, color, alpha, glowing) {
     context.save();
     context.globalAlpha = glowing ? 1 : alpha;
@@ -2478,12 +2495,14 @@
     return {
       color: inactive ? palette.muted : record.color,
       alpha: alpha,
-      labelAlpha: labelAlpha
+      labelAlpha: labelAlpha,
+      silenced: !!record.limitedBy
     };
   }
   function drawStaticNotes(context, records, scrollLeft, scrollTop, width, height, duration, palette) {
     var detailed = ROLL.rowHeight >= 12 && ROLL.zoom > 140;
     var cuts = [];
+    var silenced = [];
     if (!detailed) {
       var batches = {};
       records.forEach(function (record) {
@@ -2495,6 +2514,7 @@
         if (!batches[key]) {
           batches[key] = { color: visual.color, alpha: visual.alpha, blocks: [] };
         }
+        if (visual.silenced) { silenced.push({ g: geometry, color: visual.color }); return; }
         batches[key].blocks.push(geometry);
         if (geometry.cutX !== null) { cuts.push(geometry); }
       });
@@ -2510,6 +2530,9 @@
       });
       context.globalAlpha = 1;
       cuts.forEach(function (geometry) { shadeCutTail(context, geometry, palette); });
+      silenced.forEach(function (item) {
+        outlineNoteBlock(context, item.g.x, item.g.y, item.g.width, item.g.height, 2, item.color);
+      });
       return;
     }
 
@@ -2518,6 +2541,14 @@
       if (geometry.x + geometry.width < 0 || geometry.x > width ||
           geometry.y + geometry.height < 0 || geometry.y > height) { return; }
       var visual = noteVisual(record, palette);
+      if (visual.silenced) {
+        outlineNoteBlock(
+          context, geometry.x, geometry.y, geometry.width, geometry.height,
+          geometry.radius, visual.color
+        );
+        drawNoteLabel(context, record, geometry, 0.5, visual.color);
+        return;
+      }
       fillNoteBlock(
         context,
         geometry.x,
