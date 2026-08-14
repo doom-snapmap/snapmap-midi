@@ -3430,17 +3430,17 @@
       range: "channelVoicesRange", number: "channelVoicesNumber", help: "channelVoicesHelp"
     }, function (own, songWide, peak) {
       var limit = own === null ? songWide : own;
-      var where = own === null ? "Song setting: " + songWide + "." : "Set to " + own + ".";
-      // A reading of the music, not a rule about it. Phrased as a measurement
-      // with a colon because "this track plays at most 3 notes" was read as the
-      // limit rather than as what the track contains.
-      var most = "Most notes at once here: " + peak + ".";
+      // One sentence, and only what the number MEANS. The slider already shows
+      // the value and the tickbox already shows where it came from, so a line
+      // that restated both read as "Song setting: 2. ... 2. ..." -- fragments
+      // full of numbers already on screen.
+      var sounds = peak === 1 ? "one sound" : peak + " sounds";
       if (peak <= limit) {
-        return where + " " + most + " Nothing is being cut.";
+        return "This track never needs more than " + sounds
+          + " at once, so nothing is being cut short.";
       }
-      return where + " " + most + " Where it goes past " + limit
-        + ", a new note takes over from whichever sound is closest to finishing, so that "
-        + "older one stops early.";
+      return "This track wants " + sounds + " at once but has only " + limit
+        + ", so the older ones get cut short.";
     });
   }
 
@@ -3449,18 +3449,16 @@
       enabled: "channelPolyEnabled", controls: "channelPolyControls",
       range: "channelPolyRange", number: "channelPolyNumber", help: "channelPolyHelp"
     }, function (own, songWide, peak) {
-      var most = "Most notes at once here: " + peak + ".";
+      var notes = peak === 1 ? "one note" : peak + " notes";
       if (own === null && !songWide) {
-        return "Off, so every note plays. " + most;
+        return "Off, so every note plays.";
       }
       var limit = own === null ? songWide : own;
-      var where = own === null ? "Song setting: " + songWide + "." : "Set to " + limit + ".";
       if (peak <= limit) {
-        return where + " " + most + " Nothing is being muted.";
+        return "This track never plays more than " + notes
+          + " together, so nothing is being muted.";
       }
-      return where + " " + most + " Where it goes past " + limit
-        + ", the lowest of them are muted. They stay on the roll, dimmed, and the notes that "
-        + "do play keep their full length.";
+      return "This track plays up to " + notes + " together, so the lowest ones are muted.";
     });
   }
 
