@@ -10,8 +10,8 @@ correct and still nearly unusable, and no further bug fixing will change that.
 
 | Control | Question it really asks |
 |---|---|
-| Voices | how many notes at once |
-| Limit maximum polyphony | how many notes at once |
+| Voices | how many notes at once, and what gives when there are more |
+| Limit maximum polyphony | how many notes at once, and what gives when there are more |
 | Hard stop notes | how a note ends |
 | Release | how a note ends |
 | Limit sustained-note duration | how long a note lasts |
@@ -20,10 +20,22 @@ correct and still nearly unusable, and no further bug fixing will change that.
 
 Seven controls. Three questions.
 
-The two in the first group are the worst offenders. After the fixes on this branch they give
-**identical answers** on every case tested — a melody survives whole under both, a chord thins
-from the bottom under both. They are two names, two sliders and two settings keys for one
-concept, and a user reasonably assumes two controls must do two different things.
+**The first two are NOT redundant, and an earlier version of this note was wrong to say so.**
+That claim was made after testing only block chords and single-note melodies, where the two
+happen to agree. On notes that overlap without sharing an onset — a held chord built up one
+note at a time, which is most sustained writing — they do completely different things:
+
+| | Mechanism | What a listener hears |
+|---|---|---|
+| Polyphony | drops notes past the limit | extra notes never sound; survivors keep full length |
+| Voices (speakers) | steals the oldest speaker | every note sounds; the older one is cut short |
+
+Four held notes entering 200 ms apart, limit of one: polyphony keeps the top note and deletes
+the other three. Voices keeps all four and truncates each as the next arrives. Note-dropping
+versus voice-stealing — the two things real synths do when they run out, and both worth having.
+
+So the pair should stay two controls. What they lack is names that say which is which, and
+the readout described below.
 
 ## The deeper problem: a per-track limit on a merged view
 
@@ -123,14 +135,20 @@ gives less control than exists today. Not recommended.
 
 ## Suggested shape
 
-Three controls for three questions:
-
-- **Notes at once** — per track, merging `max_speakers` and `max_poly`.
+- **Voices** (`max_speakers`) — per track. How many notes can sound at once; a new note past
+  the limit steals the oldest speaker and cuts it short. This is the lever that fixes a long
+  sample ringing under the next note, because stealing is what silences the previous one.
+- **Note limit** (`max_poly`) — how many notes are allowed to sound at once at all; extras are
+  dropped rather than cut. An editorial thinner for dense writing, and off by default.
 - **Maximum note length** — merging `cap_sustain_ms` and `bass_cap_ms`, keeping the
   per-instrument override. The override is the real answer to a long sample, such as a
   sustained string patch that rings far past its written note; the global slider is the blunt
   version of the same thing.
 - **How notes end** — hard stop or release.
+
+The first two keep separate keys and separate sliders. The naming is the fix: "voices" and
+"note limit" say which one cuts and which one deletes, where "speakers" and "polyphony" said
+neither.
 
 Plus a readout, which is the cheapest item here and probably the highest value:
 
