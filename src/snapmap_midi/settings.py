@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 10
+SETTINGS_VERSION = 11
 
 
 #: Stable operational pitch basis for rootless exact sounds. This is not an
@@ -82,6 +82,8 @@ _CHANNEL_KEYS = frozenset(
         "root_midi",
         "root_confidence",
         "root_source",
+        "voices",
+        "polyphony",
     }
 )
 #: Whether a track is a drum kit. `auto` keeps the channel-10 heuristic, which
@@ -281,14 +283,18 @@ def _optional_number(value, what: str, low: float, high: float) -> float | None:
     return None if value is None else _number(value, what, low, high)
 
 
-def _optional_whole(value, what: str, low: int) -> int | None:
+def _optional_whole(value, what: str, low: int, high=None) -> int | None:
     """A whole number or None, which is how each of these spells "off".
 
     Zero is not the same as off and is refused: `thin_polyphony(notes, 0)`
     keeps no notes at all, and a cap of zero truncates every note it touches to
     nothing. Both are silence that looks like a setting.
+
+    `high` is optional because most of these levers are open-ended durations. A
+    per-track voice count is not: it names speakers the map has to author, so it
+    takes the same ceiling the song-wide count does.
     """
-    return None if value is None else _whole(value, what, low)
+    return None if value is None else _whole(value, what, low, high)
 
 
 def _text(value, what: str) -> str:
@@ -363,6 +369,26 @@ def _channels(section, families, sounds) -> dict:
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
             "soloed": _flag(entry.get("soloed", False), "channel %s: soloed" % channel),
         }
+        # Only a track that overrides carries the key. Absent means "use the
+        # song's voice count", which is what every track says until someone
+        # decides otherwise -- so a document written before this lever existed
+        # loads unchanged, and one written after it is byte-identical unless a
+        # track actually set something. Validated whenever it IS present.
+        voices = _optional_whole(
+            entry.get("voices"), "channel %s: voices" % channel, 1, _MAX_SPEAKERS
+        )
+        if voices is not None:
+            normalized["voices"] = voices
+        # Same shape, different lever. Voices decides what happens when a track
+        # runs out of speakers -- the oldest-finishing sound is cut. Polyphony
+        # decides how many notes are allowed to sound at all; the rest are muted
+        # and keep their full length. Per track for the same reason voices is:
+        # a dense piano part and a melody line want different answers.
+        polyphony = _optional_whole(
+            entry.get("polyphony"), "channel %s: polyphony" % channel, 1, _MAX_SPEAKERS
+        )
+        if polyphony is not None:
+            normalized["polyphony"] = polyphony
         if "pitch_follow_preference" in entry:
             normalized["pitch_follow_preference"] = _flag(
                 entry["pitch_follow_preference"],
@@ -609,6 +635,12 @@ def _release(value) -> float:
 def _migrate(doc: dict) -> dict:
     """Upgrade older sidecars while preserving their stored user choices.
 
+    Version 10 gives each track its own optional voice count. There is nothing
+    to move: an absent `voices` means the track uses the song-wide count, which
+    is exactly what every version-10 track was already doing. The bump exists so
+    a document carrying per-track voices cannot be opened by a build that would
+    silently ignore them and export a different arrangement.
+
     Version 9 separates each note's preserved manual pitch from its optional
     Follow MIDI override. Version-8 pitch_semitones values become the manual
     state; when Follow MIDI is active and no mode-specific override exists,
@@ -644,7 +676,7 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
         return doc
 
     migrated = copy.deepcopy(doc)
@@ -911,6 +943,19 @@ def to_compile_kwargs(doc) -> dict:
         # channel-wide wildcard. The parser accepts either spelling.
         "channel_mutes": {part_selector(c): entry["muted"] for c, entry in channels.items()},
         "channel_solos": {part_selector(c): entry["soloed"] for c, entry in channels.items()},
+        # Only tracks that actually override appear. An empty mapping is the
+        # whole song on `max_speakers`, which is what every document said before
+        # this lever existed and what the compiler still does on its own.
+        "part_voices": {
+            part_selector(c): entry["voices"]
+            for c, entry in channels.items()
+            if entry.get("voices") is not None
+        },
+        "part_polyphony": {
+            part_selector(c): entry["polyphony"]
+            for c, entry in channels.items()
+            if entry.get("polyphony") is not None
+        },
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},
     }
 

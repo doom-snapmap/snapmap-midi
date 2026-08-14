@@ -253,6 +253,20 @@
         <div class="expression-readout" id="channelPitchModeHelp"></div>
       </div>
 
+      <div class="control-group">
+        <div class="control-title"><label for="channelVoicesRange">Voices</label><span class="hint">sounds at once</span></div>
+        <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
+        <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
+        <div class="expression-readout" id="channelVoicesHelp"></div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-title"><label for="channelPolyRange">Polyphony</label><span class="hint">notes at once</span></div>
+        <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
+        <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
+        <div class="expression-readout" id="channelPolyHelp"></div>
+      </div>
+
       <dl class="channel-facts">
         <div><dt>Sound</dt><dd id="channelSound">-</dd></div>
         <div><dt>MIDI range</dt><dd class="mono" id="channelMidiRange">-</dd></div>

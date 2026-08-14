@@ -38,7 +38,7 @@ from snapmap_midi.compile import (
     installed_event_is_looping,
 )
 from snapmap_midi.music import analysis
-from snapmap_midi.music.midi import parse_notes
+from snapmap_midi.music.midi import for_part, parse_notes
 from snapmap_midi.music.voices import (
     allocate_voices,
     prepare_voice_layers,
@@ -487,12 +487,17 @@ class Session:
             prepared = list(shared_decaying)
             for part_key in sorted(layers):
                 layer = layers[part_key]
-                if levers["max_poly"]:
-                    layer = thin_polyphony(layer, levers["max_poly"])
+                # The track's own voice count when it set one. Preview reads it
+                # the same way the compile does, because a slider that changes
+                # the roll but not the export is worse than no slider.
+                voices = for_part(levers["part_voices"], *part_key, levers["max_speakers"])
+                poly = for_part(levers["part_polyphony"], *part_key, levers["max_poly"])
+                if poly:
+                    layer = thin_polyphony(layer, poly)
                 # Same order as the compile: cap the notes that start together,
                 # then allocate and let the rest be cut. See compile.py for why.
-                layer = thin_simultaneous(layer, levers["max_speakers"])
-                allocate_voices(layer, levers["max_speakers"])
+                layer = thin_simultaneous(layer, voices)
+                allocate_voices(layer, voices)
 
                 # Starting a note on a stolen speaker cuts off the note that
                 # owned it. Reflect that effective end for both sustains and
@@ -764,10 +769,12 @@ class Session:
         )
         counts = {}
         for part_key, layer in layers.items():
-            if levers["max_poly"]:
-                layer = thin_polyphony(layer, levers["max_poly"])
-            layer = thin_simultaneous(layer, levers["max_speakers"])
-            counts[part_key] = allocate_voices(layer, levers["max_speakers"])
+            voices = for_part(levers["part_voices"], *part_key, levers["max_speakers"])
+            poly = for_part(levers["part_polyphony"], *part_key, levers["max_poly"])
+            if poly:
+                layer = thin_polyphony(layer, poly)
+            layer = thin_simultaneous(layer, voices)
+            counts[part_key] = allocate_voices(layer, voices)
         return counts
 
     def _busiest_channel(self, stats):

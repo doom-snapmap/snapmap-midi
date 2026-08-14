@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from snapmap_midi.music.midi import parse_notes
+from snapmap_midi.music.midi import for_part, parse_notes
 from snapmap_midi.music.voices import (
     allocate_voices,
     prepare_voice_layers,
@@ -100,6 +100,8 @@ def compile_to_rawmap(
     bass_pitch: int = 78,
     bass_cap_ms: Optional[int] = None,
     max_poly: Optional[int] = None,
+    part_voices: Optional[dict] = None,
+    part_polyphony: Optional[dict] = None,
     decaying_families: Optional[set] = None,
     family_caps: Optional[dict] = None,
     channel_families: Optional[dict] = None,
@@ -194,19 +196,29 @@ def compile_to_rawmap(
     parts_per_channel: dict = {}
     for _track, _chan in layers:
         parts_per_channel[_chan] = parts_per_channel.get(_chan, 0) + 1
+    part_voices = part_voices or {}
+    part_polyphony = part_polyphony or {}
     for part_key in sorted(layers):
         track, channel = part_key
         layer = layers[part_key]
-        if max_poly:
-            layer = thin_polyphony(layer, max_poly)
+        # A track's own voice count when it set one, the song's otherwise. This
+        # is per track because the limit always WAS per track -- each layer was
+        # allocated against `max_speakers` separately, so the song-wide slider
+        # was never a song-wide budget, only the same number applied fifteen
+        # times. Saying it per track is what lets a ringing string part be cut
+        # back without also strangling the piano.
+        voices = for_part(part_voices, track, channel, max_speakers)
+        poly = for_part(part_polyphony, track, channel, max_poly)
+        if poly:
+            layer = thin_polyphony(layer, poly)
         # The speaker count is a voice count, so it thins first -- but only
         # across notes that START TOGETHER. Those are the ones competing for a
         # speaker at one instant, and the only ones that can be genuinely
         # unplayable. A note arriving over an earlier note's ringing tail is
         # not blocked by it; it CUTS it, the way retriggering a monosynth does,
         # and `allocate_voices` below does exactly that.
-        layer = thin_simultaneous(layer, max_speakers)
-        count = allocate_voices(layer, max_speakers)
+        layer = thin_simultaneous(layer, voices)
+        count = allocate_voices(layer, voices)
         voices_used += count
         # Voices are allocated per layer against max_speakers, so the running
         # total can pass it while no single layer is anywhere near it. The

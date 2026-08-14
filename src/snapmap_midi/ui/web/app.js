@@ -3387,6 +3387,83 @@
     return partEntry(channel).percussion || "auto";
   }
 
+  // The most notes this track holds at the same instant, read off the notes the
+  // roll is already drawing. It is the number that says whether a limit will
+  // bite at all: a track that never holds more than one note is unaffected by
+  // any setting above one, and saying so stops a control that is correctly
+  // doing nothing from reading as a broken one.
+  function trackPeakNotes(part) {
+    if (!part) { return 0; }
+    var spans = [];
+    previewDisplayEvents().forEach(function (event) {
+      if (String(event.part) !== String(part.key)) { return; }
+      var start = Number(event.start) || 0;
+      var end = Math.max(start, Number(event.midi_end !== undefined && event.midi_end !== null
+        ? event.midi_end : event.end) || start);
+      spans.push([start, 1], [end, -1]);
+    });
+    spans.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    var live = 0, peak = 0;
+    for (var i = 0; i < spans.length; i += 1) {
+      live += spans[i][1];
+      if (live > peak) { peak = live; }
+    }
+    return peak;
+  }
+
+  // One shape, two levers. `key` is the per-track settings key, `fallbackKey`
+  // the song-wide tuning value it inherits when the track has not overridden.
+  function syncChannelLimit(channel, key, fallbackKey, ids, describe) {
+    var saved = partEntry(channel);
+    var own = saved[key];
+    var on = own !== null && own !== undefined;
+    var songWide = tuning()[fallbackKey];
+    el(ids.enabled).checked = on;
+    setDependent(ids.controls, on);
+    syncPair(ids.range, ids.number, on ? own : (songWide || 32));
+    el(ids.help).textContent = describe(on ? own : null, songWide, trackPeakNotes(channel));
+  }
+
+  function syncChannelVoices(channel) {
+    syncChannelLimit(channel, "voices", "max_speakers", {
+      enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
+      range: "channelVoicesRange", number: "channelVoicesNumber", help: "channelVoicesHelp"
+    }, function (own, songWide, peak) {
+      var limit = own === null ? songWide : own;
+      var where = own === null ? "Song setting: " + songWide + "." : "Set to " + own + ".";
+      // A reading of the music, not a rule about it. Phrased as a measurement
+      // with a colon because "this track plays at most 3 notes" was read as the
+      // limit rather than as what the track contains.
+      var most = "Most notes at once here: " + peak + ".";
+      if (peak <= limit) {
+        return where + " " + most + " Nothing is being cut.";
+      }
+      return where + " " + most + " Where it goes past " + limit
+        + ", a new note takes over from whichever sound is closest to finishing, so that "
+        + "older one stops early.";
+    });
+  }
+
+  function syncChannelPoly(channel) {
+    syncChannelLimit(channel, "polyphony", "max_poly", {
+      enabled: "channelPolyEnabled", controls: "channelPolyControls",
+      range: "channelPolyRange", number: "channelPolyNumber", help: "channelPolyHelp"
+    }, function (own, songWide, peak) {
+      var most = "Most notes at once here: " + peak + ".";
+      if (own === null && !songWide) {
+        return "Off, so every note plays. " + most;
+      }
+      var limit = own === null ? songWide : own;
+      var where = own === null ? "Song setting: " + songWide + "." : "Set to " + limit + ".";
+      if (peak <= limit) {
+        return where + " " + most + " Nothing is being muted.";
+      }
+      return where + " " + most + " Where it goes past " + limit
+        + ", the lowest of them are muted. They stay on the roll, dimmed, and the notes that "
+        + "do play keep their full length.";
+    });
+  }
+
   function syncChannelPercussion(channel) {
     var mode = percussionMode(channel);
     el("channelPercussion").value = mode;
@@ -3503,6 +3580,11 @@
     el("channelNoteCount").textContent = String(channel.notes || 0);
     syncChannelPercussion(channel);
     renderDrumKeys(channel);
+    // Above the pitch-mode block, which returns early for anything that is not
+    // an exact sound. Both limits apply to every track, so neither can sit
+    // behind that return.
+    syncChannelVoices(channel);
+    syncChannelPoly(channel);
 
     // Available for every exact sound. A detected root makes following
     // musically faithful; without one it still works, against a neutral
@@ -3597,6 +3679,43 @@
         return;
       }
       updateSelectedChannelPitchFollow(this.checked);
+    });
+    bindChannelLimit("voices", "max_speakers", {
+      enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
+      range: "channelVoicesRange", number: "channelVoicesNumber"
+    });
+    bindChannelLimit("polyphony", "max_poly", {
+      enabled: "channelPolyEnabled", controls: "channelPolyControls",
+      range: "channelPolyRange", number: "channelPolyNumber"
+    });
+  }
+
+  // Unticking writes null rather than removing the key, because a patch merges:
+  // an absent key means "leave it alone", so dropping it would leave the old
+  // override in force while the box said otherwise. Null is how the settings
+  // document spells "use the song's".
+  function bindChannelLimit(key, fallbackKey, ids) {
+    var send = debounce(function (value) {
+      var part = partByKey(SELECTED_PART);
+      if (!part) { return; }
+      var values = {}; values[key] = value;
+      applyPatch(partPatch(part, values), true);
+    }, 180);
+    el(ids.enabled).addEventListener("change", function () {
+      // Enable the slider on the click rather than on the answer. The patch is
+      // debounced and then makes a round trip, so waiting for the sync leaves
+      // the control the user just switched on disabled under their cursor.
+      setDependent(ids.controls, this.checked);
+      if (!this.checked) { send(null); return; }
+      send(Math.round(Number(el(ids.number).value) || tuning()[fallbackKey] || 32));
+    });
+    el(ids.range).addEventListener("input", function () {
+      el(ids.number).value = this.value;
+      send(Math.round(Number(this.value)));
+    });
+    el(ids.number).addEventListener("change", function () {
+      el(ids.range).value = this.value;
+      send(Math.round(Number(this.value)));
     });
   }
 

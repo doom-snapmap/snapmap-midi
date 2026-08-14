@@ -146,6 +146,92 @@ def _drumless_midi(tmp_path):
     return p
 
 
+def _two_thick_chords(tmp_path):
+    """Two tracks, each building a five-note chord one note at a time.
+
+    STAGGERED on purpose, and DESCENDING on purpose. Notes that share an onset
+    are the case where the two limits agree -- both keep the top of the chord --
+    so a block chord cannot tell them apart. Notes that overlap without sharing
+    an onset are the case that separates them, and that is most sustained
+    writing. Descending because in an ascending line every note is the new
+    highest and survives whatever the rule is.
+    """
+    mid = mido.MidiFile()
+    for channel, program, top in ((0, 0, 72), (1, 40, 60)):
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.Message("program_change", channel=channel, program=program, time=0))
+        for step in range(5):
+            track.append(
+                mido.Message(
+                    "note_on",
+                    channel=channel,
+                    note=top - step * 2,
+                    velocity=64,
+                    time=0 if step == 0 else 120,
+                )
+            )
+        for step in range(5):
+            track.append(
+                mido.Message(
+                    "note_off",
+                    channel=channel,
+                    note=top - step * 2,
+                    velocity=0,
+                    time=960 if step == 0 else 0,
+                )
+            )
+    path = tmp_path / "two-chords.mid"
+    mid.save(str(path))
+    return path
+
+
+def test_a_track_voice_limit_applies_to_that_track_alone(tmp_path):
+    """The limit always WAS per track -- each layer allocated separately -- so
+    the song-wide slider was never a budget, only the same number applied to
+    every track. Saying it per track is what lets a ringing string part be cut
+    back without also strangling the piano."""
+    song = _two_thick_chords(tmp_path)
+    _, whole = compile_to_rawmap(song)
+    _, one_track = compile_to_rawmap(song, part_voices={0: 1})
+    _, whole_song = compile_to_rawmap(song, max_speakers=1)
+
+    # Channel 0 gives up four speakers; channel 1 keeps every one of its own.
+    assert one_track["voices"] == whole["voices"] - 4
+    # Pinning the whole song is strictly stronger than pinning one track.
+    assert whole_song["voices"] < one_track["voices"]
+    # And a track that sets nothing is exactly the song-wide compile.
+    _, unset = compile_to_rawmap(song, part_voices={})
+    assert unset["voices"] == whole["voices"]
+
+
+def test_a_track_polyphony_limit_mutes_notes_where_voices_would_cut_them(tmp_path):
+    """The two levers are not the same and must not be made the same.
+
+    Polyphony refuses the note: it never sounds, and the notes that do keep
+    their full length. Voices admits every note and takes a speaker from
+    whichever sound is closest to finishing, so the older one stops early.
+    The SPEAKER count cannot tell them apart -- both settle on two -- so the
+    tell is the EVENT count. A note that is cut still has a start event; a note
+    that is muted has none.
+    """
+    song = _two_thick_chords(tmp_path)
+    _, plain = compile_to_rawmap(song)
+    _, voices = compile_to_rawmap(song, part_voices={0: 2})
+    _, poly = compile_to_rawmap(song, part_polyphony={0: 2})
+
+    # Voices admits every note. Nothing is removed; the older sounds stop early.
+    assert voices["events"] == plain["events"]
+    # Polyphony refuses notes, so their events are simply not written.
+    assert poly["events"] < plain["events"]
+    # Same ceiling, same speakers -- which is exactly why the event count is
+    # what this has to assert on.
+    assert poly["voices"] == voices["voices"]
+    # Neither edits the song: the notes are all still there to be drawn.
+    for stats in (voices, poly):
+        assert stats["notes"] == plain["notes"]
+
+
 def test_parse_notes_pairing_families_and_sustain():
     notes, stats = parse_notes(TINY_MIDI, note_index=_SYNTHETIC_INDEX)
     by_channel = {}

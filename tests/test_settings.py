@@ -720,6 +720,45 @@ def test_max_speakers_outside_its_bounds_is_refused(value):
         _patch({"tuning": {"max_speakers": value}})
 
 
+@pytest.mark.parametrize("lever", ["voices", "polyphony"])
+def test_a_track_limit_is_absent_until_it_is_set_and_null_puts_it_back(lever):
+    """Absent is how a track says "use the song's", so the key must not appear
+    on its own. Writing `null` into every track would change every settings
+    file ever written for a lever nobody touched, and a patch merge cannot
+    remove a key -- null is the only way the window can hand back control."""
+    empty = _patch({"channels": {"0": {"family": "ins_piano"}}})
+    assert lever not in empty["channels"]["0"]
+
+    doc = _patch({"channels": {"0": {lever: 4}}}, base=empty)
+    assert doc["channels"]["0"][lever] == 4
+
+    doc = _patch({"channels": {"0": {lever: None}}}, base=doc)
+    assert lever not in doc["channels"]["0"]
+    # Clearing one lever leaves the track's other choices alone.
+    assert doc["channels"]["0"]["family"] == "ins_piano"
+
+
+@pytest.mark.parametrize("lever", ["voices", "polyphony"])
+@pytest.mark.parametrize("value", [0, -1, 129, "8", 2.5, True])
+def test_a_track_limit_outside_its_bounds_is_refused(lever, value):
+    """Same bounds as the song-wide count, because it names the same thing:
+    speakers a map has to author. Zero is silence wearing a setting."""
+    with pytest.raises(settings.SettingsError, match=lever):
+        _patch({"channels": {"0": {lever: value}}})
+
+
+def test_a_track_limit_reaches_the_compiler_keyed_by_part(tmp_path):
+    """Only overriding tracks appear, so an untouched song hands the compiler
+    an empty mapping and compiles exactly as it did before this existed."""
+    doc = _patch({"channels": {"0:1": {"voices": 2}, "3": {"polyphony": 6}}})
+    levers = settings.to_compile_kwargs(doc)
+    assert levers["part_voices"] == {(0, 1): 2}
+    assert levers["part_polyphony"] == {3: 6}
+
+    bare = settings.to_compile_kwargs(_patch({"channels": {"0": {"muted": True}}}))
+    assert bare["part_voices"] == {} and bare["part_polyphony"] == {}
+
+
 def test_max_speakers_at_its_bounds_is_accepted():
     assert _patch({"tuning": {"max_speakers": 1}})["tuning"]["max_speakers"] == 1
     assert _patch({"tuning": {"max_speakers": 128}})["tuning"]["max_speakers"] == 128

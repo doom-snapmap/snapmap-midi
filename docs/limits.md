@@ -76,6 +76,32 @@ paired stop. If a valid manually entered Play event is absent from the current i
 compilation uses the conservative sustained path: an unnecessary stop is harmless, while an
 unstopped loop can leak an emitter for the rest of the song.
 
+## Voices and polyphony are different levers
+
+Both answer "how many notes at once". They differ in **what gives** when there are more, and
+that difference is the whole reason both exist.
+
+| | Mechanism | What a listener hears |
+|---|---|---|
+| **Voices** (`max_speakers`, per track `voices`) | a new note takes the speaker of whichever sound is closest to finishing | every note plays; the older one stops early |
+| **Polyphony** (`max_poly`, per track `polyphony`) | notes past the limit are refused | those notes never sound; the ones that do keep their full length |
+
+A block chord cannot tell them apart — both keep the top of it. The case that separates them is
+notes overlapping *without* sharing an onset, which is most sustained writing. Four held notes
+entering 200 ms apart at a limit of one: polyphony keeps the top note and mutes three; voices
+keeps all four and truncates each as the next arrives.
+
+Neither edits the MIDI. A note that polyphony refuses is still drawn on the roll, dimmed, the
+same as a muted track — `converted: false` in the preview manifest.
+
+**Voices is the lever for a long sample ringing under the next note**, because stealing is what
+silences the previous one. Polyphony would only delete notes and leave the ringing.
+
+**Both are per track**, and both always were — each layer is allocated separately, so the
+song-wide sliders were never a song-wide budget, only the same number applied to every track.
+A track that sets neither uses the song's. `tests/test_compile.py` pins that a per-track limit
+touches only that track, and that voices leaves the event count alone while polyphony reduces it.
+
 ## The editor's timeline size ceiling
 
 **A timeline past about 1 MB serialized loads and plays correctly, but the SnapMap editor
