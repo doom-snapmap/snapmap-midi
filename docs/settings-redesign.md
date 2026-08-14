@@ -93,6 +93,34 @@ its own strip, still visible and still editable.
 
 They go back to meaning *audibility* and stop being asked to substitute for a view.
 
+## The limits are per track but the controls are global
+
+Worth fixing early, because it is small and it is the reason the panel feels like the wrong
+place to be.
+
+Both limits are applied **per track**. Each track gets its own speakers and its own note-count
+limit. But both sliders live in a global settings panel titled "SnapMap engine limits", so
+there is one number for every track in the song.
+
+That is the worst of both arrangements:
+
+- A busy drum track and a sparse melody get the same limit, applied separately to each. You
+  cannot turn one down without turning the other down with it.
+- The number is not the song's total either, so it says nothing about the whole song. Three
+  tracks set to 4 allow twelve notes at once.
+
+Nobody appears to have decided between the two readings. The panel's title says global, the
+code says per track, and the mismatch was never resolved.
+
+**Suggested: move them onto the track rows.** Each track carries its own limit, next to its
+mute and solo buttons. The global panel keeps one value as the default for new tracks. This
+matches what the compiler already does, and it lets someone cap a dense drum part without
+touching the piano.
+
+The alternative is making them genuinely global — one budget for the song, divided across
+tracks. That matches the panel's title, but it is a much larger compiler change and the result
+gives less control than exists today. Not recommended.
+
 ## Suggested shape
 
 Three controls for three questions:
