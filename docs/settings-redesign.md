@@ -85,8 +85,13 @@ on every event, so the data to split by track is present. It is the largest item
 and the one that makes everything else legible, because a per-track voice limit can finally be
 watched against a single track's lane.
 
-Solo and mute keep their normal meaning as *audibility* controls under this design. They stop
-being a substitute for a view.
+**Solo and mute should keep the shading they have today.** Greying a muted or solo-excluded
+track was never the problem — the problem was that it was the only separation on offer, on a
+surface where every track was drawn over every other one. Once tracks have their own lanes,
+shading reads correctly: it marks a track as silent while leaving its notes where they are, in
+its own strip, still visible and still editable.
+
+They go back to meaning *audibility* and stop being asked to substitute for a view.
 
 ## Suggested shape
 
