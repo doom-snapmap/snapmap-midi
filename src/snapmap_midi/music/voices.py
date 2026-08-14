@@ -170,12 +170,25 @@ _PITCH_CEILING = (9 + 1) * 12 + 11 + 1
 
 
 def thin_polyphony(notes, max_poly: int):
-    """Keep at most `max_poly` simultaneous notes, preferring higher pitches.
+    """Keep at most `max_poly` notes held at once, preferring higher pitches.
 
     Melody and upper harmony carry the tune; inner doublings are what a
     listener misses least. Kept notes retain their FULL length -- this reduces
     how many notes sound at once, not how long each one lasts, so stops still
     land while sustain stays natural.
+
+    "At once" means keys held together, measured on written note ends. It used
+    to measure the sample's ringing tail (`voice_end`) instead, on the reasoning
+    that a tail still occupies an emitter -- which is true, and still the wrong
+    thing for this lever. A 124 ms note can trigger a 4-second sample, so a
+    plain melody a beat apart read as a seven-note chord and `max_poly=1`
+    deleted six notes that never overlapped anything. A density lever that
+    empties a monophonic line is not a density lever.
+
+    The tail limit is real; it belongs to the speaker count and the duration
+    caps, which is where it now lives exclusively. Note that this also makes
+    this function agree exactly with the naive oracle in `tests/test_voices.py`,
+    which always compared written ends.
 
     Implemented as a sweep rather than the obvious nested scan. The obvious
     one asks, for every note, how many of ALL the others overlap it, which is
@@ -211,10 +224,13 @@ def thin_polyphony(notes, max_poly: int):
         group_end = index
         while group_end < total and ordered[group_end].start == onset:
             sounding[pitches[group_end]] += 1
-            heapq.heappush(
-                ending,
-                (getattr(ordered[group_end], "voice_end", ordered[group_end].end), group_end),
-            )
+            # The WRITTEN end, not `voice_end`. Polyphony is how many keys are
+            # held down at once, which is what a player sees on the roll and
+            # what they set this lever from. Measuring the sample's ringing
+            # tail instead made a plain melody look like a chord: seven notes
+            # a beat apart, nothing overlapping, and `max_poly=1` deleted six
+            # of them because each 124 ms note sat on a 4-second sample.
+            heapq.heappush(ending, (ordered[group_end].end, group_end))
             group_end += 1
 
         # Anything that has finished by now is no longer sounding. A note is

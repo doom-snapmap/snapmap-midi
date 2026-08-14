@@ -169,7 +169,18 @@ def test_allocate_voices_steals_the_earliest_free_voice_at_the_ceiling():
     assert sorted({n.voice for n in notes}) == [0, 1, 2]
 
 
-def test_decaying_voice_reservation_controls_allocation_and_thinning():
+def test_decaying_voice_reservation_controls_allocation_but_not_polyphony():
+    """The sample's tail decides SPEAKERS. It must not decide POLYPHONY.
+
+    These two notes do not overlap as written -- 0..100 and 200..300 -- but
+    each reserves a speaker for a full second, so they genuinely need two
+    speakers. That is `allocate_voices`, and it still sees the reservation.
+
+    `max_poly` is the other question: how many keys are down together. Here the
+    answer is one, at every instant, so a limit of one must keep both notes.
+    It used to keep only the first, because it measured the tail as well -- the
+    bug that let a one-note-at-a-time melody be emptied by a density slider.
+    """
     first = Note(0, 100, "play_noise_one", False, 0, "ins_noise")
     first.pitch = 72
     first.voice_end = 1000
@@ -179,7 +190,15 @@ def test_decaying_voice_reservation_controls_allocation_and_thinning():
 
     notes = [first, second]
     assert allocate_voices(notes, max_speakers=8) == 2
-    assert thin_polyphony(notes, max_poly=1) == [first]
+    assert thin_polyphony(notes, max_poly=1) == [first, second]
+
+
+def test_polyphony_never_empties_a_line_that_plays_one_note_at_a_time():
+    """The headline symptom, pinned. Seven notes a beat apart on a 4-second
+    sample: nothing overlaps, so every note survives every setting."""
+    line = [_tailed(i * 250, name, 5) for i, name in enumerate(["b", "a", "g", "f", "e", "d", "c"])]
+    for limit in (7, 4, 2, 1):
+        assert len(thin_polyphony(list(line), limit)) == 7
 
 
 @pytest.mark.parametrize(("pitch_modifier", "voice_end"), [(12, 500), (-12, 2000)])
