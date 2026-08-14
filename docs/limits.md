@@ -2,7 +2,8 @@
 
 Two things that will not be obvious from the code, and that cost real time to rediscover.
 For the levers named here see [`capabilities.md`](capabilities.md); for where they sit in
-the pipeline see [`architecture.md`](architecture.md).
+the pipeline see [`architecture.md`](architecture.md). For why there are too many of them and
+what to do about it, see [`settings-redesign.md`](settings-redesign.md).
 
 ## The emitter-recycling limit
 
