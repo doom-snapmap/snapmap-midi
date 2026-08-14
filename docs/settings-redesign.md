@@ -54,33 +54,39 @@ will still be confusing.
 
 ### Solo and mute should remove notes from the roll, not shade them
 
-The cheapest useful step, and it does not touch the compiler at all.
-
 Today `app.js` treats muted and solo-excluded notes as `inactive` and draws them in the muted
-palette colour. They stay on the grid at full size, underneath everything else. Soloing a track
-therefore does not isolate it — it just recolours its neighbours, and the notes a user is
-trying to read are still buried under the notes they just tried to remove.
+palette colour. They stay on the grid at full size, underneath everything else, so soloing a
+track does not isolate it — it recolours its neighbours and leaves them stacked on top of the
+one being read. Clicking a note to edit its conversion means clicking into a pile of
+overlapping tracks and hoping.
 
-Solo should draw **only** the soloed tracks. Mute should draw **nothing** for that track. That
-is what solo and mute mean in every other sequencer, and it gives a per-track view immediately
-without building one: solo a track and the roll becomes that track's roll.
+**Filtering the roll by solo and mute is not the fix.** It was proposed here first and it is
+the wrong answer: hiding notes is not what the user wants, and a roll that shows one track at
+a time only when you remember to solo it is still a single shared grid with a workaround
+bolted on.
 
-It also makes the density limits legible for free, since a per-track limit can finally be
-watched against a single track.
+### The fix is two levels of view
 
-Editing is the sharper version of the same complaint. Notes from different tracks overlap on
-the grid, so clicking a note to edit its conversion means clicking into a stack and hoping. A
-roll that honours solo and mute is the difference between that and pointing at the note.
+One shared grid is the wrong surface. The window should work the way a DAW arrangement does —
+Ableton Live is the direct reference:
 
-### The real shape is per-track lanes
+- **The main view is per-track lanes.** One horizontal strip per track, each holding a
+  bird's-eye block of that track's MIDI — enough to see where the notes are, how dense the
+  part is, and where it sits against the others. Tracks stay side by side vertically, never
+  drawn on top of each other.
+- **Double-clicking a block opens the piano roll.** That is the grid that exists today, scoped
+  to the track you opened, at note-editing detail.
 
-Longer term the roll wants to be per-track lanes — MIDI clips, one strip per track, the way a
-DAW arranges them — rather than one shared grid with everything drawn on it. That is what the
-left column already implies and the right side contradicts.
+Overview for arranging, detail on demand for editing. Nothing is hidden at either level; the
+information is separated by track instead of overlaid.
 
-Solo-and-mute filtering is the cheap approximation and should come first. It is worth doing
-even if lanes are built later, because it is small, it is independently correct, and it is what
-users expect those two buttons to do regardless of how the roll is laid out.
+This is a surface change rather than a compiler change — the manifest already carries `part`
+on every event, so the data to split by track is present. It is the largest item in this note
+and the one that makes everything else legible, because a per-track voice limit can finally be
+watched against a single track's lane.
+
+Solo and mute keep their normal meaning as *audibility* controls under this design. They stop
+being a substitute for a view.
 
 ## Suggested shape
 
