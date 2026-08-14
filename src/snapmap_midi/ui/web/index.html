@@ -117,10 +117,16 @@
          aria-label="Resize tracks and piano roll" aria-orientation="vertical"
          aria-valuemin="220" aria-valuemax="720" aria-valuenow="314"
          title="Drag to resize tracks; double-click to reset"></div>
-    <section class="roll-pane" aria-label="Converted song piano roll">
+    <section class="roll-pane" id="rollPane" aria-label="Converted song piano roll">
       <div class="roll-corner" aria-hidden="true"></div>
       <canvas class="time-ruler" id="timeRuler" aria-hidden="true"></canvas>
       <canvas class="pitch-ruler" id="pitchRuler" aria-hidden="true"></canvas>
+      <div class="roll-track-chip" id="rollTrackChip" hidden>
+        <span class="roll-track-chip-dot" id="rollTrackChipDot" aria-hidden="true"></span>
+        <span id="rollTrackChipLabel">Track</span>
+        <button type="button" class="roll-track-chip-close" id="rollTrackChipClose" aria-label="Close this track's piano roll"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
+      </div>
+      <div class="lanes-view" id="lanesView" aria-label="Track lanes; double-click a lane to open its piano roll"></div>
       <div class="roll-viewport" id="pianoRollViewport">
         <div class="roll-extent" id="pianoRollExtent">
           <canvas id="pianoRoll" tabindex="0" aria-label="Full MIDI piano roll. Click a note to inspect it; click or drag empty space to seek."></canvas>

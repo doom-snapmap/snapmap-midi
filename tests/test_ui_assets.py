@@ -402,9 +402,16 @@ def test_piano_black_keys_and_the_scrollbar_corner_finish_the_rulers():
     assert "context.fillRect(isBlack ? 16" not in _JS
     assert "context.moveTo(isBlack ? 16" not in _JS
     assert "context.fillRect(0, y, width, ROLL.rowHeight)" in _JS
+    # The 72px pitch-ruler gutter is open-mode only -- see .roll-pane--open --
+    # so the base rule starts flush at 0 and only the open modifier pushes it
+    # over, or lanes mode would leave that gutter's width sitting empty.
     assert re.search(
-        r"\.roll-pane::after\s*\{[^}]*top:\s*0;[^}]*left:\s*72px;[^}]*right:\s*0;"
+        r"\.roll-pane::after\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;"
         r"[^}]*height:\s*31px;[^}]*border-bottom:\s*1px solid var\(--border2\)",
+        _CSS,
+    )
+    assert re.search(
+        r"\.roll-pane\.roll-pane--open::after\s*\{[^}]*left:\s*72px",
         _CSS,
     )
     assert "context.moveTo(0, height - 0.5)" not in _JS
@@ -564,8 +571,11 @@ def test_channel_strip_separates_focus_from_multi_solo_and_mute():
     # comparing channel numbers would select and dim both of them together.
     assert "openChannelInspector(channel.key)" in _JS
     assert "SELECTED_PART = null;\n          closeChannelInspector();" in _JS
-    assert "SELECTED_PART !== null && SELECTED_PART !== candidate.part" in _JS
-    assert "SELECTED_PART !== null && SELECTED_PART !== record.part" in _JS
+    # The roll only ever loads the OPEN track's notes -- nothing else is there
+    # to click or fade against, structurally, not by a filter someone could
+    # forget at a call site. See rollDisplayEvents / eventRenderIndex.
+    assert "var source = rollDisplayEvents();" in _JS
+    assert "return String(event.part || (Number(event.channel) || 0)) === ROLL_PART;" in _JS
     assert "STATE.preview.display_events" in _JS
     assert "record.muted || record.soloExcluded || !record.audible || !record.converted" in _JS
     assert ".track-row.muted-track .track-channel" in _CSS

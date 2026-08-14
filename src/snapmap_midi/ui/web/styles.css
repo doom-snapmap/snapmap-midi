@@ -109,6 +109,7 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .track-row:hover, .track-row.selected { background: color-mix(in srgb, var(--panel2) 86%, var(--accent) 4%); }
 .track-row.selected { box-shadow: inset 3px 0 0 var(--track-color); }
 .track-row.soloed-track:not(.selected) { box-shadow: inset 3px 0 0 var(--accent); }
+.track-row.roll-open-track { box-shadow: inset 3px 0 0 var(--track-color), 0 0 0 1px var(--track-color); }
 .track-row.muted-track .track-channel, .track-row.muted-track .track-name, .track-row.muted-track .track-sound-picker,
 .track-row.solo-excluded-track .track-channel, .track-row.solo-excluded-track .track-name, .track-row.solo-excluded-track .track-sound-picker { opacity: .5; }
 .track-channel { grid-column: 1; grid-row: 1 / span 2; align-self: stretch; display: flex; align-items: center; justify-content: center; color: var(--track-color); font: 600 11px Consolas, monospace; border-right: 2px solid color-mix(in srgb, var(--track-color) 88%, transparent); }
@@ -133,9 +134,36 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .pane-splitter:focus-visible { outline: none; }
 body.pane-resizing, body.pane-resizing * { cursor: col-resize !important; }
 
-.roll-pane { position: relative; flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 72px minmax(0,1fr); grid-template-rows: 31px minmax(0,1fr); overflow: hidden; background: var(--panel2); }
-.roll-pane::after { content: ""; position: absolute; z-index: 3; top: 0; left: 72px; right: 0; height: 31px; border-bottom: 1px solid var(--border2); pointer-events: none; }
+/* The 72px pitch-ruler gutter only exists once a track's roll is open --
+   lanes mode collapses it to 0 so the lanes and their notes run flush with
+   the ruler above them instead of leaving that gutter's width sitting empty. */
+.roll-pane { position: relative; flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 0 minmax(0,1fr); grid-template-rows: 31px minmax(0,1fr); overflow: hidden; background: var(--panel2); }
+.roll-pane.roll-pane--open { grid-template-columns: 72px minmax(0,1fr); }
+.roll-pane::after { content: ""; position: absolute; z-index: 3; top: 0; left: 0; right: 0; height: 31px; border-bottom: 1px solid var(--border2); pointer-events: none; }
+.roll-pane.roll-pane--open::after { left: 72px; }
 .roll-corner { grid-column: 1; grid-row: 1; border-right: 1px solid var(--border2); border-bottom: 1px solid var(--border2); background: var(--panel2); }
+/* :not([hidden]) rather than a bare .class{display:...} rule -- an author
+   rule that sets `display` unconditionally beats the UA stylesheet's
+   `[hidden]{display:none}` at equal specificity, so a plain class rule here
+   would make the `hidden` attribute a no-op the moment this file loads. */
+.roll-track-chip:not([hidden]) { position: absolute; z-index: 5; top: 5px; left: 80px; display: flex; align-items: center; gap: 6px; padding: 3px 5px 3px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border2); font-size: 12px; }
+.roll-track-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.roll-track-chip-close { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.roll-track-chip-close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+.roll-track-chip-close .ui-icon { width: 11px; height: 11px; }
+/* Sits in the same rectangle the piano roll canvas occupies (72px pitch
+   gutter, 31px ruler header) and simply covers it -- the roll keeps its real
+   layout size underneath so the ruler's own width/scroll math never sees a
+   zero-width viewport, it is just visually and pointer-wise on top. */
+.lanes-view:not([hidden]) { position: absolute; z-index: 4; top: 31px; left: 0; right: 0; bottom: 0; overflow-y: auto; overflow-x: hidden; background: var(--field); }
+/* Zero gap, no padding: each lane's height is set from its own track row's
+   measured height (see syncLaneRowHeights), so a line ruled across the
+   sidebar and the lanes lands on the same track in both, DAW-style. */
+.lane-row { position: relative; flex: none; box-sizing: border-box; overflow: hidden; cursor: pointer; background: var(--track-color); border-bottom: 1px solid var(--border); }
+.lane-row:hover { filter: brightness(1.08); }
+.lane-row.muted-lane, .lane-row.solo-excluded-lane { opacity: .5; }
+.lane-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.lane-label { position: absolute; left: 8px; top: 5px; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; color: #000; text-shadow: 0 1px 1px rgba(255,255,255,.4); pointer-events: none; }
 .time-ruler { grid-column: 2; grid-row: 1; display: block; align-self: start; }
 .pitch-ruler { grid-column: 1; grid-row: 2; display: block; justify-self: start; }
 .roll-viewport { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: var(--border2) var(--panel2); background: var(--field); }

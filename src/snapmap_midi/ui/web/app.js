@@ -82,6 +82,12 @@
 
   // The focused part, as its "track:channel" key, or null for "show all".
   var SELECTED_PART = null;
+  // Which track's notes the detailed piano roll is showing, or null when the
+  // roll is closed and the track list's own mini clips are the only view.
+  // Two states on purpose: opening a track's roll also opens its settings
+  // (SELECTED_PART), but opening settings alone must not drag the whole
+  // song's notes onto screen.
+  var ROLL_PART = null;
   var TRACK_KEY = '';
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
@@ -150,6 +156,26 @@
   function previewEvents() { return (STATE.preview && STATE.preview.events) || []; }
   function previewDisplayEvents() {
     return (STATE.preview && STATE.preview.display_events) || previewEvents();
+  }
+
+  // What the detailed roll draws: nothing until a track is opened, then only
+  // that track's notes -- so "only what's focused is clickable" is true
+  // because nothing else was ever loaded, not because of a filter that could
+  // be forgotten at some call site. Cached by (source, part) identity so
+  // scrolling and playback, which redraw every frame, do not refilter.
+  var ROLL_EVENTS_CACHE = { source: null, part: undefined, filtered: null };
+  function rollDisplayEvents() {
+    var source = previewDisplayEvents();
+    if (ROLL_EVENTS_CACHE.source === source && ROLL_EVENTS_CACHE.part === ROLL_PART) {
+      return ROLL_EVENTS_CACHE.filtered;
+    }
+    var filtered = ROLL_PART
+      ? source.filter(function (event) {
+        return String(event.part || (Number(event.channel) || 0)) === ROLL_PART;
+      })
+      : [];
+    ROLL_EVENTS_CACHE = { source: source, part: ROLL_PART, filtered: filtered };
+    return filtered;
   }
 
   function tuning() { return (STATE.settings && STATE.settings.tuning) || {}; }
@@ -630,12 +656,15 @@
   function buildTracks() {
     var list = el("trackList");
     list.textContent = "";
+    // The channel list just changed shape (a new song, most likely), so a
+    // roll left open against the old track set would be showing a stale key.
+    if (ROLL_PART && !partByKey(ROLL_PART)) { ROLL_PART = null; }
     channels().forEach(function (channel, position) {
       var row = document.createElement("div");
       row.className = "track-row";
       row.dataset.part = channel.key;
       row.style.setProperty("--track-color", partColor(channel));
-      row.title = "Click to focus this track and open its settings; click again to show all tracks";
+      row.title = "Click to open this track's settings";
 
       var number = document.createElement("div");
       number.className = "track-channel";
@@ -748,6 +777,7 @@
       row.classList.toggle("muted-track", !!entry.muted);
       row.classList.toggle("soloed-track", !!entry.soloed);
       row.classList.toggle("solo-excluded-track", soloActive && !entry.soloed);
+      row.classList.toggle("roll-open-track", ROLL_PART === partKey);
       var picker = row.querySelector(".track-sound-picker");
       if (channel && picker) {
         picker.querySelector(".track-sound-copy").textContent = assignmentLabel(channel);
@@ -777,9 +807,89 @@
     if (key !== TRACK_KEY) {
       TRACK_KEY = key;
       buildTracks();
+      buildLanesView();
     }
     patchTracks();
+    patchLanesView();
     el("trackCount").textContent = String(channels().length);
+  }
+
+  // Arrangement-style lanes: one full-width strip per track, on that track's
+  // own color, standing in for the piano roll until a lane is opened. This is
+  // the DEFAULT view (see .lanes-view:not([hidden]) in styles.css) -- the
+  // detailed roll only shows once a track is opened.
+  function buildLanesView() {
+    var container = el("lanesView");
+    if (!container) { return; }
+    container.textContent = "";
+    channels().forEach(function (channel) {
+      var lane = document.createElement("div");
+      lane.className = "lane-row";
+      lane.dataset.part = channel.key;
+      lane.style.setProperty("--track-color", partColor(channel));
+
+      var canvas = document.createElement("canvas");
+      canvas.className = "lane-canvas";
+      lane.appendChild(canvas);
+
+      var label = document.createElement("div");
+      label.className = "lane-label";
+      label.textContent = partLabel(channel) + (channel.is_drums ? " \u00b7 Percussion" : "");
+      lane.appendChild(label);
+
+      // Opening settings is the row's job, in the sidebar right beside this
+      // lane -- a single click here does nothing, so a real double-click
+      // never fires that open-then-immediately-close as its two halves.
+      lane.addEventListener("dblclick", function () { toggleTrackRoll(channel.key); });
+      container.appendChild(lane);
+    });
+  }
+
+  function patchLanesView() {
+    var container = el("lanesView");
+    if (!container) { return; }
+    var soloActive = anySoloedChannel();
+    var lanes = container.querySelectorAll(".lane-row");
+    var rows = el("trackList").querySelectorAll(".track-row");
+    for (var index = 0; index < lanes.length; index += 1) {
+      var lane = lanes[index];
+      var channel = partByKey(lane.dataset.part);
+      var entry = partEntry(channel);
+      lane.classList.toggle("muted-lane", !!entry.muted);
+      lane.classList.toggle("solo-excluded-lane", soloActive && !entry.soloed);
+      // Flush with its own track row -- a line ruled across the sidebar and
+      // the lanes has to land on the same track in both, DAW-style, and the
+      // row's real height (name wrap, font metrics) is only known by asking
+      // the row itself, not by guessing a number here.
+      var row = rows[index];
+      if (row) { lane.style.height = row.getBoundingClientRect().height + "px"; }
+      var canvas = lane.querySelector(".lane-canvas");
+      if (channel && canvas) { drawTrackClip(channel, canvas); }
+    }
+  }
+
+  // The sidebar and the lanes are two independent scroll containers standing
+  // in for one DAW arrangement view, so a scroll in either has to move both
+  // or a track's row and its lane would drift apart the moment the list
+  // outgrows the window. Guarded both ways so mirroring one doesn't re-fire
+  // the other in a loop.
+  var LANES_SCROLL_SYNCING = false;
+  function initLanesScrollSync() {
+    var list = el("trackList");
+    var lanes = el("lanesView");
+    if (!list || !lanes) { return; }
+    list.addEventListener("scroll", function () {
+      if (LANES_SCROLL_SYNCING) { return; }
+      LANES_SCROLL_SYNCING = true;
+      lanes.scrollTop = list.scrollTop;
+      LANES_SCROLL_SYNCING = false;
+    });
+    lanes.addEventListener("scroll", function () {
+      if (LANES_SCROLL_SYNCING) { return; }
+      LANES_SCROLL_SYNCING = true;
+      list.scrollTop = lanes.scrollTop;
+      LANES_SCROLL_SYNCING = false;
+    });
   }
 
   function normalizeSoundPath(path) {
@@ -1771,7 +1881,7 @@
   }
 
   function eventRenderIndex() {
-    var source = previewDisplayEvents();
+    var source = rollDisplayEvents();
     if (RENDER.eventSource === source && RENDER.eventIndex) { return RENDER.eventIndex; }
     var buckets = [];
     for (var pitch = 0; pitch <= 127; pitch += 1) {
@@ -2483,15 +2593,53 @@
   }
 
 
+  // The lane's own thumbnail: this track's notes only, black on the track's
+  // color, scaled to the clip's own box -- not the roll's zoom or scroll, so
+  // a lane stays readable at a glance no matter what the detailed roll shows.
+  function drawTrackClip(channel, canvas) {
+    var width = canvas.clientWidth;
+    var height = canvas.clientHeight;
+    if (width < 1 || height < 1) { return; }
+    sizeCanvas(canvas, width, height);
+    var context = prepareContext(canvas);
+    clearCanvas(context, canvas);
+    var duration = Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1);
+    var events = previewDisplayEvents().filter(function (event) {
+      return String(event.part || (Number(event.channel) || 0)) === channel.key;
+    });
+    if (!events.length) { return; }
+    var lowest = Number(channel.lowest);
+    var highest = Number(channel.highest);
+    if (!isFinite(lowest) || !isFinite(highest) || highest <= lowest) {
+      lowest = 0;
+      highest = 127;
+    }
+    var span = Math.max(1, highest - lowest + 1);
+    var rowHeight = Math.max(1, height / span);
+    context.fillStyle = '#000';
+    events.forEach(function (event) {
+      var pitch = Number(event.pitch);
+      if (!isFinite(pitch)) { return; }
+      var start = Math.max(0, Number(event.start) || 0);
+      var written = Number(
+        event.midi_end !== undefined && event.midi_end !== null ? event.midi_end : event.end
+      );
+      var end = Math.max(start, isFinite(written) ? written : start);
+      var x = (start / duration) * width;
+      var w = Math.max(1, ((end - start) / duration) * width);
+      var y = height - ((pitch - lowest + 1) / span) * height;
+      context.globalAlpha = event.limited_by ? 0.3 : 0.8;
+      context.fillRect(x, y, w, rowHeight);
+    });
+    context.globalAlpha = 1;
+  }
+
   function noteVisual(record, palette) {
-    var focusedOut = SELECTED_PART !== null && SELECTED_PART !== record.part;
+    // The roll only ever loads the open track's notes (see rollDisplayEvents),
+    // so there is no second track here to fade against.
     var inactive = record.muted || record.soloExcluded || !record.audible || !record.converted;
     var alpha = inactive ? 0.38 : 0.88;
     var labelAlpha = inactive ? 0.72 : 1;
-    if (focusedOut) {
-      alpha = Math.min(alpha, 0.2);
-      labelAlpha = Math.min(labelAlpha, 0.42);
-    }
     return {
       color: inactive ? palette.muted : record.color,
       alpha: alpha,
@@ -2658,7 +2806,6 @@
     recordsOverlapping(eventRenderIndex().buckets[127 - row], time - tolerance, time + tolerance, candidates);
     for (var index = candidates.length - 1; index >= 0; index -= 1) {
       var candidate = candidates[index];
-      if (SELECTED_PART !== null && SELECTED_PART !== candidate.part) { continue; }
       var geometry = eventGeometry(
         candidate, viewport.scrollLeft, viewport.scrollTop, duration);
       if (point.x >= geometry.x && point.x <= geometry.x + geometry.width &&
@@ -3669,6 +3816,48 @@
     queueDraw();
   }
 
+  // A double-clicked lane opens the detailed roll scoped to that one track,
+  // and its settings alongside it -- double-clicking the already-open lane
+  // closes the roll again, back to the lanes-only view.
+  // Opens the roll only -- track settings are their own click, on the row or
+  // the lane, so a double-click to look at notes never also pops the
+  // settings panel open over them.
+  function toggleTrackRoll(partKey) {
+    var channel = partByKey(partKey);
+    if (!channel) { return; }
+    ROLL_PART = ROLL_PART === channel.key ? null : channel.key;
+    invalidateRollAll();
+    syncRollFocus();
+    patchTracks();
+    queueDraw();
+  }
+
+  function syncRollFocus() {
+    var pane = el('rollPane');
+    var chip = el('rollTrackChip');
+    var lanes = el('lanesView');
+    var pitchRuler = el('pitchRuler');
+    var channel = ROLL_PART ? partByKey(ROLL_PART) : null;
+    if (!chip || !lanes) { return; }
+    // The 72px pitch-ruler gutter (see .roll-pane--open in styles.css) only
+    // exists once a track is open -- otherwise it is dead space beside the
+    // lanes, which is the gap this class removes. The piano roll canvas
+    // itself is never display:none'd (see .lanes-view's comment), so its
+    // width just follows that column like any other grid content.
+    if (pane) { pane.classList.toggle('roll-pane--open', !!channel); }
+    lanes.hidden = !!channel;
+    // Inline, not a class: pitchRuler already carries an unconditional
+    // `display: block` class rule, and an author rule beats [hidden] at
+    // equal specificity, so only an inline style is guaranteed to win.
+    if (pitchRuler) { pitchRuler.style.display = channel ? '' : 'none'; }
+    chip.hidden = !channel;
+    if (channel) {
+      el('rollTrackChipDot').style.background = partColor(channel);
+      el('rollTrackChipLabel').textContent = partLabel(channel) + (channel.is_drums ? ' \u00b7 Percussion' : '');
+    }
+    resizeCanvas();
+  }
+
   function updateSelectedChannelPitchFollow(enabled) {
     var channel = partByKey(SELECTED_PART);
     if (!channel) { return; }
@@ -3694,6 +3883,9 @@
       "click",
       closeChannelInspectorAndClearSelection
     );
+    el("rollTrackChipClose").addEventListener("click", function () {
+      if (ROLL_PART) { toggleTrackRoll(ROLL_PART); }
+    });
     el("channelPercussion").addEventListener("change", function () {
       var channel = partByKey(SELECTED_PART);
       if (!channel) { return; }
@@ -4257,7 +4449,7 @@
     el('rollZoom').disabled = !song;
     el('masterVolume').disabled = !song;
     syncMasterVolume();
-    if (song) { renderTracks(); }
+    if (song) { renderTracks(); syncRollFocus(); }
     renderTransportState();
     renderPosition(currentPosition(), true);
     renderAudio();
@@ -4359,6 +4551,7 @@
     initPaneSplitter();
     initInspector();
     initChannelInspector();
+    initLanesScrollSync();
     initNoteInspector();
     initSoundBrowser();
     initMasterVolume();
