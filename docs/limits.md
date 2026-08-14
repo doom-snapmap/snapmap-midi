@@ -37,21 +37,36 @@ Decay behavior no longer tells the whole allocation story:
   installed-event duration, or 750 ms for drums and 1000 ms for other sounds when metadata is
   unavailable.
 
-**`max_speakers` is a voice count, and it drops notes rather than shortening them.** A layer is
-thinned to what its speakers can actually sound before any speaker is handed out, keeping the
-highest notes, which is what a hardware synth does when it runs out of voices. A note either
-gets a speaker and rings its full tail, or it does not play and the roll dims it.
+**`max_speakers` is a voice count, and it applies to notes that START TOGETHER.** Those are the
+only notes competing for a speaker at one instant, so they are the only ones that can be
+genuinely unplayable. A chord wider than the voice count is thinned from the bottom, keeping
+the highest notes, which is what a hardware synth does when it runs out of voices. A kept note
+rings its full tail; a dropped one does not play and the roll dims it.
 
-It did not always work that way. A note that could not get a speaker used to be handed one
-anyway and truncated by the next note on it — to *zero length* when they started together. It
-was silent, but it was reported as a shortened note rather than a dropped one, so a five-note
-chord on two speakers played two notes and drew five blocks. Which two survived was decided by
-the order the exporter happened to write the events in, so two exports of one arrangement
-sounded different. Both are fixed; see `tests/test_voices.py`.
+A note that arrives over an earlier note's ringing tail is a different case, and it is **not**
+dropped. It cuts that tail short and plays, exactly like retriggering a monosynth. So a melody
+that plays one note at a time survives whole even at a single voice — every note sounds, each
+one ended by the next.
 
-Note that this reads as "shorter notes" on a single melody line too, and that is not a
-contradiction: **your notes do not overlap, but their sounds do.** A 124 ms note can trigger a
-4-second sample, so notes a beat apart are still both sounding and still both need a speaker.
+Two bugs here are fixed, and both are worth knowing because the symptoms look nothing alike:
+
+- A note that could not get a speaker used to be handed one anyway and truncated by the next
+  note on it — to *zero length* when they started together. It was silent but drawn as a
+  shortened note rather than a dropped one, so a five-note chord on two speakers played two
+  notes and drew five blocks. Which two survived followed the order the exporter happened to
+  write the events in, so two exports of one arrangement sounded different.
+- The first fix for that thinned by notes still *sounding*, tails included. That counts a
+  ringing tail as a live voice, so a descending melody with nothing overlapping lost seven of
+  its eight notes at one voice. Thinning now looks at shared onsets only.
+
+Both are pinned in `tests/test_voices.py`. The second test uses a *descending* line
+deliberately: in an ascending line every note is the new highest and survives whatever the rule
+is, which is exactly how the broken version passed its first test.
+
+None of this stops sustained notes being shortened by the duration caps, which are a separate
+lever: **your notes do not overlap, but their sounds do.** A 124 ms note can trigger a
+4-second sample, so notes a beat apart are still both sounding — they just share one speaker
+instead of needing two.
 - A sustained note reserves a speaker until its capped note end and receives a stop or release.
 
 For an exact full-game assignment, installed Wwise metadata still decides decay behavior.

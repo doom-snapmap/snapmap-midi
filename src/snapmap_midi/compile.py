@@ -23,6 +23,7 @@ from snapmap_midi.music.voices import (
     allocate_voices,
     prepare_voice_layers,
     thin_polyphony,
+    thin_simultaneous,
 )
 from snapmap_midi.rawmap import template
 from snapmap_midi.rawmap.codec import serialize
@@ -173,12 +174,13 @@ def compile_to_rawmap(
         layer = layers[part_key]
         if max_poly:
             layer = thin_polyphony(layer, max_poly)
-        # The speaker count is a voice count, so it thins first. A note that
-        # cannot get a speaker at its onset used to be handed one and cut to
-        # nothing by the next note -- silent, but drawn as a shortened note
-        # instead of a dropped one. Dropping it says the same thing honestly,
-        # and the notes that DO play keep their full tail.
-        layer = thin_polyphony(layer, max_speakers)
+        # The speaker count is a voice count, so it thins first -- but only
+        # across notes that START TOGETHER. Those are the ones competing for a
+        # speaker at one instant, and the only ones that can be genuinely
+        # unplayable. A note arriving over an earlier note's ringing tail is
+        # not blocked by it; it CUTS it, the way retriggering a monosynth does,
+        # and `allocate_voices` below does exactly that.
+        layer = thin_simultaneous(layer, max_speakers)
         count = allocate_voices(layer, max_speakers)
         voices_used += count
         # Voices are allocated per layer against max_speakers, so the running

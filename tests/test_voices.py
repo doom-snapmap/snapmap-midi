@@ -14,7 +14,12 @@ import random
 import pytest
 
 from snapmap_midi.music.midi import Note
-from snapmap_midi.music.voices import allocate_voices, prepare_voice_layers, thin_polyphony
+from snapmap_midi.music.voices import (
+    allocate_voices,
+    prepare_voice_layers,
+    thin_polyphony,
+    thin_simultaneous,
+)
 from snapmap_midi.sound.palette import shader_pitch
 
 
@@ -104,6 +109,49 @@ def test_thinning_keeps_highest_voices():
 def test_thinning_keeps_everything_when_nothing_overlaps():
     notes = [Note(i * 1000, i * 1000 + 500, "play_pianoc4", True, 0, "f") for i in range(20)]
     assert len(thin_polyphony(notes, max_poly=1)) == 20
+
+
+def _tailed(start, pitch_name, octave, *, duration=124, tail=4000):
+    """A short note on a long sample -- the shape that caused the regression."""
+    note = Note(start, start + duration, "play_piano%s%d" % (pitch_name, octave), False, 0, "p")
+    note.voice_end = start + tail
+    return note
+
+
+def test_simultaneous_thinning_keeps_a_sequential_line_whole():
+    """The voice limit must never delete a note that plays on its own.
+
+    This is the regression that made the speaker slider unusable. A descending
+    melody, one note at a time and nothing overlapping in written time, lost
+    seven of its eight notes at one voice -- because thinning counted every
+    note still SOUNDING, and a 124 ms note on a 4-second sample is still
+    ringing when the next one starts.
+
+    A ringing tail does not block the next note. It gets CUT by it, exactly
+    like retriggering a monosynth. Descending pitches matter here: with an
+    ascending line every note is the new highest and survives whatever the
+    rule is, which is what made an earlier version of this test pass while the
+    bug was live.
+    """
+    line = [_tailed(i * 250, name, 5) for i, name in enumerate(["b", "a", "g", "f", "e", "d", "c"])]
+    for voices in (7, 4, 2, 1):
+        assert len(thin_simultaneous(list(line), voices)) == 7
+
+
+def test_simultaneous_thinning_caps_a_chord_from_the_top():
+    """Notes that begin together DO compete, and the top of the chord wins."""
+    chord = [_tailed(0, name, octave) for name, octave in [("c", 3), ("g", 3), ("c", 4), ("e", 4)]]
+    kept = thin_simultaneous(chord, 2)
+    assert {n.shader for n in kept} == {"play_pianoc4", "play_pianoe4"}
+
+
+def test_simultaneous_thinning_ignores_the_order_the_file_listed_the_chord_in():
+    """Two exports of one arrangement must drop the same notes."""
+    spec = [("c", 3), ("g", 3), ("c", 4), ("e", 4), ("g", 4)]
+    for voices in (1, 2, 3, 4):
+        forward = thin_simultaneous([_tailed(0, n, o) for n, o in spec], voices)
+        backward = thin_simultaneous([_tailed(0, n, o) for n, o in reversed(spec)], voices)
+        assert sorted(n.shader for n in forward) == sorted(n.shader for n in backward)
 
 
 def test_allocate_voices_overlap_vs_sequential():

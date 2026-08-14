@@ -122,6 +122,41 @@ def allocate_voices(notes, max_speakers: int) -> int:
     return len(free_at)
 
 
+def thin_simultaneous(notes, max_voices: int):
+    """Drop only what cannot physically sound: more notes STARTING AT ONCE
+    than there are voices. Highest kept, as a synth does.
+
+    This is deliberately not `thin_polyphony`. That one counts every note still
+    SOUNDING, tails included, which is right for an editorial density lever and
+    catastrophically wrong for a voice count: a plain descending melody, one
+    note at a time and nothing overlapping, lost seven of its eight notes at one
+    voice, because each note's 4-second sample tail was still ringing when the
+    next arrived and the next was lower.
+
+    A ringing tail does not stop the next note from playing. It gets CUT by it
+    -- one speaker, retriggered, exactly like a monosynth. Only notes that
+    begin together are competing for a speaker at the same instant, and only
+    they can be genuinely unplayable.
+
+    So: notes that share an onset are capped here, and everything else is left
+    to `allocate_voices` to steal and truncate as it always did.
+    """
+    if not max_voices:
+        return list(notes)
+    by_start: dict = {}
+    for note in notes:
+        by_start.setdefault(note.start, []).append(note)
+    kept = []
+    for group in by_start.values():
+        if len(group) <= max_voices:
+            kept.extend(group)
+            continue
+        # Ties on pitch keep their existing order, which allocate_voices then
+        # sorts deterministically anyway.
+        kept.extend(sorted(group, key=lambda n: -_note_pitch(n))[:max_voices])
+    return kept
+
+
 def _note_pitch(note) -> int:
     pitch = getattr(note, "pitch", None)
     if pitch is not None:

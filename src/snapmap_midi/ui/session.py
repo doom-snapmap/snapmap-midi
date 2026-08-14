@@ -43,6 +43,7 @@ from snapmap_midi.music.voices import (
     allocate_voices,
     prepare_voice_layers,
     thin_polyphony,
+    thin_simultaneous,
 )
 from snapmap_midi.sound import palette
 
@@ -483,9 +484,9 @@ class Session:
                 layer = layers[part_key]
                 if levers["max_poly"]:
                     layer = thin_polyphony(layer, levers["max_poly"])
-                # Same order as the compile: thin to what the speakers can
-                # sound, then allocate. See compile.py for why.
-                layer = thin_polyphony(layer, levers["max_speakers"])
+                # Same order as the compile: cap the notes that start together,
+                # then allocate and let the rest be cut. See compile.py for why.
+                layer = thin_simultaneous(layer, levers["max_speakers"])
                 allocate_voices(layer, levers["max_speakers"])
 
                 # Starting a note on a stolen speaker cuts off the note that
@@ -760,7 +761,7 @@ class Session:
         for part_key, layer in layers.items():
             if levers["max_poly"]:
                 layer = thin_polyphony(layer, levers["max_poly"])
-            layer = thin_polyphony(layer, levers["max_speakers"])
+            layer = thin_simultaneous(layer, levers["max_speakers"])
             counts[part_key] = allocate_voices(layer, levers["max_speakers"])
         return counts
 
