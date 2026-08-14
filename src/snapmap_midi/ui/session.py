@@ -174,6 +174,11 @@ def _percussion_modes(doc) -> tuple:
     )
 
 
+def _kb(size: int) -> str:
+    """A byte count a musician can read. Rounded, because these are budgets."""
+    return "%.1f MB" % (size / (1024.0 * 1024.0)) if size >= 1024 * 1024 else "%d KB" % (size // 1024)
+
+
 def _advice(destination: Path) -> str:
     """How to reach a map that has just been written to `destination`.
 
@@ -930,5 +935,20 @@ class Session:
                     "The busiest channel" if busiest is None else self._who(busiest),
                     stats["max_speakers"],
                 )
+            )
+
+        # Last, because it is the only one here that says nothing about how the
+        # song SOUNDS. The map loads and the music plays exactly as written --
+        # what is lost is the ability to open the timeline in the editor, and
+        # the editor's own message for that is "could not open this timeline"
+        # with no size in it and no hint that size is the reason.
+        budget = stats.get("timeline_budget")
+        size = stats.get("timeline_bytes")
+        if budget and size and size > budget:
+            warnings.append(
+                "This timeline is %s and will play, but SnapMap cannot open it for editing: the "
+                "editor serializes one entity into a fixed buffer of about %s and gives up past "
+                "it. Shorten the song, mute a track, or cap the note count to bring it under."
+                % (_kb(size), _kb(budget))
             )
         return warnings

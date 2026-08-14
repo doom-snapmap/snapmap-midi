@@ -1156,6 +1156,45 @@ def test_pitch_beyond_the_engine_range_is_clamped_and_warned(tmp_path):
     assert "playback and export clamp at the nearest limit" in warning
 
 
+def test_an_ordinary_song_reports_its_timeline_size_and_stays_under_budget(tmp_path):
+    """Every compile measures what the editor will be asked to serialize.
+
+    The number is reported whether or not it is a problem, because it is the
+    only place a user can see how much of the budget a song has spent before
+    it runs out.
+    """
+    song = _midi(tmp_path, _hits(0, 0, program=0), name="small.mid")
+    stats = Session(midi=song).stats()
+    assert 0 < stats["timeline_bytes"] < stats["timeline_budget"]
+    assert not any("cannot open it for editing" in w for w in _warnings(Session(midi=song)))
+
+
+def test_a_timeline_past_the_editor_budget_warns_that_it_plays_but_cannot_be_opened(tmp_path):
+    """The failure this warning exists for is silent in every other way.
+
+    A timeline past the engine's serialize buffer LOADS and PLAYS correctly --
+    only opening it in the editor fails, and the editor's own message is
+    "could not open this timeline" with no size in it. Bisected in game: 1,081,338
+    bytes opens and 1,091,628 refuses. Nothing in the compiler could have found
+    this, so the warning is the only thing standing between a user and a song
+    they cannot edit and cannot diagnose.
+    """
+    song = _midi(tmp_path, _hits(0, 0, program=0), name="oversize.mid")
+    session = Session(midi=song)
+    real = session.stats
+
+    def oversized():
+        stats = dict(real())
+        stats["timeline_bytes"] = stats["timeline_budget"] + 1
+        stats["warnings"] = session._warnings(stats)
+        return stats
+
+    session.stats = oversized
+    warning = [w for w in session.stats()["warnings"] if "cannot open it for editing" in w][0]
+    assert "will play" in warning
+    assert "fixed buffer" in warning
+
+
 def test_muting_a_clamped_channel_removes_its_expression_warning(tmp_path):
     song = _midi(tmp_path, _hits(0, 0, program=0), name="muted-clamp.mid")
     session = Session(midi=song)

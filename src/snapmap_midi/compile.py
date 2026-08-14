@@ -33,6 +33,31 @@ from snapmap_midi.rawmap.template import blank_map
 from snapmap_midi.sound import events as _events
 from snapmap_midi.sound.timeline import add_button, ensure_timeline
 
+#: The largest timeline the SnapMap editor can OPEN, in serialized bytes.
+#:
+#: The engine serializes one entity into a fixed buffer and reports only a byte
+#: count, so a timeline past that buffer comes back as a plain failure: the
+#: editor says it cannot open the timeline and nothing says why. The map still
+#: LOADS and the music still PLAYS -- only editing is lost -- which is what made
+#: this so hard to place.
+#:
+#: Bisected in game over eight loads, measuring the timeline entity through this
+#: module's own serializer, so the numbers below compare directly with
+#: `stats["timeline_bytes"]`:
+#:
+#:     1,081,338 bytes  opens
+#:     1,091,628 bytes  refuses
+#:
+#: That is 1.036x one MiB, consistent with a 1 MiB buffer on the engine's side
+#: and our compact JSON running a few percent fatter than what it writes. The
+#: budget is set at one MiB rather than at the measured line: it is below every
+#: size proven to open, it is the round number the evidence points at, and it
+#: leaves ~32 KB for the difference between their serializer and ours.
+#:
+#: Raising a buffer on the READING side cannot help. That was tried first --
+#: 1 MB through 32 MB, every one returning zero.
+TIMELINE_SERIALIZE_BUDGET = 1024 * 1024
+
 
 def installed_event_is_looping(name: str):
     """Loop metadata for an exact installed Play event, when available.
@@ -246,6 +271,12 @@ def compile_to_rawmap(
             "long_sustains": sum(1 for n in sustained if n.duration > 1000),
             "peak_voices": peak_voices,
             "max_speakers": max_speakers,
+            # What the editor will be asked to serialize when someone opens
+            # this timeline. Measured here rather than estimated from the map
+            # size: the timeline is most of the map but not all of it, and the
+            # budget is spent by this entity alone.
+            "timeline_bytes": len(serialize(timeline)),
+            "timeline_budget": TIMELINE_SERIALIZE_BUDGET,
         }
     )
     return serialize(doc.data), stats

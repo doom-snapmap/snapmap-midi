@@ -76,6 +76,42 @@ paired stop. If a valid manually entered Play event is absent from the current i
 compilation uses the conservative sustained path: an unnecessary stop is harmless, while an
 unstopped loop can leak an emitter for the rest of the song.
 
+## The editor's timeline size ceiling
+
+**A timeline past about 1 MB serialized loads and plays correctly, but the SnapMap editor
+cannot open it.** The editor says "could not open this timeline" and nothing else. The map is
+fine. The music is fine. Only editing is lost.
+
+The two paths are different, which is why every symptom points away from the cause. Loading a
+map streams the whole document in and builds entities, with no per-entity buffer anywhere.
+Opening a timeline asks the engine to hand that **one entity back out as text**, and that call
+writes into a fixed buffer. Past the buffer it returns nothing — not a length, not an error,
+just zero, which is also what a genuine failure looks like.
+
+Bisected in game over eight loads, measuring the timeline entity through this project's own
+serializer, so the numbers compare directly with `stats["timeline_bytes"]`:
+
+| Serialized timeline | Editor |
+|---|---|
+| 1,081,338 bytes | opens |
+| 1,091,628 bytes | refuses |
+
+That is 1.036x one MiB, consistent with a 1 MiB buffer on the engine's side and this project's
+compact JSON running a few percent fatter than what the engine writes.
+
+`TIMELINE_SERIALIZE_BUDGET` in `compile.py` is set at **one MiB**, below every size proven to
+open, leaving roughly 32 KB for the difference between the two serializers. Every compile
+reports `timeline_bytes` against it, and the session warns when a song goes over.
+
+**Enlarging the buffer on the reading side cannot help.** That was the first fix attempted, and
+it grew from 1 MB to 32 MB, doubling six times, with every attempt returning zero. The evidence
+is a proven-good control in the same session: 25 other entities serialized on the first try
+while the timeline refused at every size.
+
+To bring a song under: shorten it, mute a track, or cap the note count. Nothing about the
+density levers helps — they change how many notes sound at once, not how many events the
+timeline carries.
+
 ## The byte-gate honesty rule
 
 Three tests compare compiler output against a recorded artifact, byte for byte. Each is
