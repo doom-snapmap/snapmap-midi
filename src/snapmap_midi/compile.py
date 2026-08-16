@@ -368,21 +368,27 @@ def compile_to_rawmap(
             attack_ms = int(
                 for_part(part_attack_ms or {}, getattr(n, "track", 0), n.chan, 0) or 0
             )
-            # `fadeSound` is the engine's attack envelope: mute before the
-            # same-time start, then rise to the resolved note gain one
-            # millisecond later. The offset follows the proven fadePitch
-            # ordering and ensures the ramp applies to the new sound.
-            scheduled.append(_events.fade(n.start, -60.0 if attack_ms else n.volume_db, 0.0))
-            scheduled.append(_events.start(n.shader, n.start))
+            # The game does not carry a fade state into a subsequently
+            # started one-shot. Start on the exact MIDI time, then address the
+            # live sound one millisecond later with a mute and one millisecond
+            # after that with its gain ramp. That keeps the attack targeted at
+            # an existing engine sound without shifting the arrangement.
+            sound_start = n.start
+            post_start = sound_start + 1
             if attack_ms:
-                scheduled.append(_events.fade(n.start + 1, n.volume_db, attack_ms / 1000.0))
+                scheduled.append(_events.start(n.shader, sound_start))
+                scheduled.append(_events.fade(post_start, -60.0, 0.0))
+                scheduled.append(_events.fade(post_start + 1, n.volume_db, attack_ms / 1000.0))
+            else:
+                scheduled.append(_events.fade(n.start, n.volume_db, 0.0))
+                scheduled.append(_events.start(n.shader, sound_start))
             if glide_ms:
                 # One millisecond keeps the ramp on the newly started sound.
                 # Zero-delay pitch-before-start is the separate immediate path
                 # proven above; longer onset delays were audibly inconsistent.
                 scheduled.append(
                     _events.fade_pitch(
-                        n.start + 1,
+                        post_start,
                         n.pitch_modifier,
                         glide_ms / 1000.0,
                     )

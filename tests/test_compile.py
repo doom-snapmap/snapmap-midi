@@ -551,7 +551,7 @@ def test_track_hard_stop_can_override_the_song_default(tmp_path, minimal_timelin
     assert '"float":-60.0' in text
 
 
-def test_track_attack_writes_a_gain_ramp_after_the_sound_starts(minimal_timeline_map):
+def test_track_attack_mutes_the_live_sound_before_starting_its_gain_ramp(minimal_timeline_map):
     raw, stats = compile_to_rawmap(
         TINY_MIDI,
         json.dumps(minimal_timeline_map).encode("utf-8"),
@@ -565,17 +565,19 @@ def test_track_attack_writes_a_gain_ramp_after_the_sound_starts(minimal_timeline
         if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
     )
     groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
-    attack = [
-        event
-        for group_index in range(groups["num"])
-        for event_index in range(groups["item[%d]" % group_index]["events"]["num"])
-        for event in [groups["item[%d]" % group_index]["events"]["item[%d]" % event_index]]
-        if event["eventTime"] == 1
-        and event["eventCall"]["\neventHandle_t eventDef"] == "fadeSound"
-        and event["eventCall"]["args"]["item[2]"] == {"float": 0.25}
-    ]
+    for group_index in range(groups["num"]):
+        events = groups["item[%d]" % group_index]["events"]
+        calls = [events["item[%d]" % index] for index in range(events["num"])]
+        definitions = [call["eventCall"]["\neventHandle_t eventDef"] for call in calls]
+        if definitions[:4] != ["fadePitch", "startSoundShader", "fadeSound", "fadeSound"]:
+            continue
+        assert [call["eventTime"] for call in calls[:4]] == [0, 0, 1, 2]
+        assert calls[2]["eventCall"]["args"]["item[1]"] == {"float": -60.0}
+        assert calls[3]["eventCall"]["args"]["item[2]"] == {"float": 0.25}
+        break
+    else:
+        raise AssertionError("attack sequence was not emitted")
 
-    assert attack
     assert stats["expressive_one_shots"] >= 1
 
 

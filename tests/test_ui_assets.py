@@ -1028,6 +1028,7 @@ def test_track_attack_and_hard_stop_are_optional_track_only_controls():
     assert '<label for="channelAttackRange">Track Attack</label>' in _HTML
     assert 'id="channelAttackEnabled"' in _HTML
     assert 'id="channelAttackRange" min="10" max="5000"' in _HTML
+    assert 'including Automatic instruments.' in _HTML
     assert "function syncChannelAttack(channel)" in _JS
     assert "function bindChannelAttack()" in _JS
     assert "partPatch(part, { attack_ms: value })" in _JS
