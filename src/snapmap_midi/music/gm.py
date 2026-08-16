@@ -24,10 +24,6 @@ SUSTAINED = {
     "ins_horns",
     "ins_trumpet",
     "ins_flute",
-    "ins_sine",
-    "ins_square",
-    "ins_tri",
-    "ins_pulse",
     "ins_string",
 }
 

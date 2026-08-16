@@ -266,8 +266,8 @@ pool first, then every installed event from the folders the game files itself us
 percussive material — impacts, footsteps, player foley, explosions, gore, the whole
 interface branch, SnapMap's own object and gameplay sounds, and the struck instruments
 (marimba, brass bells) plus the classic DOOM effects. Weapons, voice, music and ambience
-are excluded, as are piano, guitar, horns and the waveform sets: those are held notes, and
-a held note under every hit is not a kit.
+are excluded, as are piano, guitar and horns: those are held notes, and a held note under
+every hit is not a kit.
 
 Two rules decide what appears, and both are needed. The folder is the only place the game
 says what a sound is *for* — by length alone, a half-second event is as likely to be a

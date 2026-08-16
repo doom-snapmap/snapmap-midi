@@ -394,8 +394,8 @@ DRUM_EVENT_FOLDERS = (
     "doom_dlc1_sfx/SnapMaps/hellOneShots",
     # The only melodic folders here, and both earn it: a marimba and a bell are
     # struck, and the classic DOOM effects are almost all short transients.
-    # Piano, guitar, horns and the waveform sets are deliberately absent -- they
-    # are held notes, and a held note under every hit is not a kit.
+    # Piano, guitar and horns are deliberately absent -- they are held notes,
+    # and a held note under every hit is not a kit.
     "doom_dlc2_sfx/ClassicSFX",
     "doom_dlc2_sfx/instruments/Marimba",
     "doom_dlc2_sfx/instruments/Brass Bells",

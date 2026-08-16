@@ -269,7 +269,12 @@ def test_parse_notes_low_split(tmp_path):
     notes, _ = parse_notes(p, low_split=(60, "ins_sine"), note_index=_SYNTHETIC_INDEX)
     low = [n for n in notes if n.chan == 1 and (shader_pitch(n.shader) or 99) < 60]
     assert low and all(n.fam == "ins_sine" for n in low)
-    assert "ins_sine" in SUSTAINED  # the split target stays stoppable
+    assert "ins_sine" not in SUSTAINED
+    assert all(not note.sustained for note in low)
+
+
+def test_automatic_waveform_families_are_one_shots():
+    assert not {"ins_sine", "ins_pulse", "ins_square", "ins_tri"} & SUSTAINED
 
 
 def test_parse_notes_drum_override():
