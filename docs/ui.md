@@ -477,10 +477,10 @@ Sliders are paired with exact numeric fields where a bounded number is meaningfu
 | **Track Glide** | per-track slider + milliseconds field, 0-5000 | fixed-sound tracks slide from the prior pitch; 0 is immediate and Track Voices 1 is monophonic portamento |
 | **Default Track Polyphony** | enable checkbox + slider + integer | default per-track note limit; a Track Polyphony override takes precedence |
 | **Track Polyphony** | per-track enable checkbox + slider + integer | strict held-note ceiling per track; lower rejected notes remain as dashed hollow blocks in the piano roll and Track lanes |
-| **Track Sustain Limit** | per-track enable checkbox + milliseconds pair | intentionally caps held-note length on one track without changing its voice count |
-| **Hard stop notes** | checkbox | cuts at note-off instead of fading |
-| **Default Track Release** | slider + seconds field | inherited note-off fade; disabled while Hard stop is on |
-| **Default Track Sustain Limit** | enable checkbox + milliseconds pair | caps held notes on tracks without their own Sustain Limit |
+| **Track Sustain Limit** | per-track enable checkbox + milliseconds pair | caps a track's audible tail; the Release fade completes at that deadline, which can free voices for later notes |
+| **Hard stop notes** | checkbox | cuts at note-off or the Sustain Limit instead of fading |
+| **Default Track Release** | slider + seconds field | inherited fade after note-off, or immediately before a Sustain Limit deadline; disabled while Hard stop is on |
+| **Default Track Sustain Limit** | enable checkbox + milliseconds pair | caps audible tails on tracks without their own Sustain Limit |
 | **Limit bass-note duration** | enable checkbox + milliseconds pair | caps notes below the selected MIDI threshold |
 | **Below MIDI note** | integer + note name | defines bass for the preceding control |
 

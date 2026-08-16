@@ -884,7 +884,7 @@ def test_sustain_limited_one_shot_gets_its_own_release_event(
     cap_release = next(
         event
         for event in calls
-        if event["eventTime"] == 300
+        if event["eventTime"] == 200
         and event["eventCall"]["\neventHandle_t eventDef"] == "fadeSound"
     )
 
@@ -892,6 +892,7 @@ def test_sustain_limited_one_shot_gets_its_own_release_event(
     assert stats["expressive_one_shots"] == 1
     assert stats["voices"] == 1
     assert cap_release["eventCall"]["args"]["item[1]"] == {"float": -60.0}
+    assert cap_release["eventCall"]["args"]["item[2]"] == {"float": 0.1}
 
 
 def test_hermetic_multi_voice_authors_generic_timeline_emitters(minimal_timeline_map):

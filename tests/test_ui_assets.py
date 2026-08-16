@@ -1014,7 +1014,7 @@ def test_track_settings_expose_a_persisted_track_volume_layer():
 
 def test_release_has_a_song_default_and_optional_track_override():
     assert '<label for="releaseRange">Default Track Release</label>' in _HTML
-    assert "Fades sustained or looping notes after MIDI note-off" in _HTML
+    assert "finishes a Sustain Limit fade by its deadline" in _HTML
     assert 'id="channelReleaseEnabled"' in _HTML
     assert 'id="channelReleaseRange" min="0" max="2" step="0.01"' in _HTML
     assert 'id="channelReleaseNumber" min="0" max="10" step="0.01"' in _HTML

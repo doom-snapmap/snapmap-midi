@@ -404,10 +404,36 @@ def compile_to_rawmap(
             # explicit hard stop at its virtual cutoff.
             if voice_cap_end is not None and (following is None or following.start > stop_at):
                 scheduled.append(_events.stop(stop_at))
-            elif (
-                (n.sustained or getattr(n, "sustain_limited", False))
-                and (following is None or following.start > n.end)
-            ):
+            elif getattr(n, "sustain_limited", False):
+                # A Sustain Limit is a maximum *audible* duration, not the
+                # time at which a release merely begins. Finish the release
+                # by its deadline so this voice is genuinely free when the
+                # allocator reuses it, instead of cutting a live fade short.
+                note_release = for_part(
+                    part_release_s or {},
+                    getattr(n, "track", 0),
+                    n.chan,
+                    release_s,
+                )
+                note_hard_stop = for_part(
+                    part_hard_stop or {},
+                    getattr(n, "track", 0),
+                    n.chan,
+                    hard_stop,
+                )
+                if note_hard_stop:
+                    scheduled.append(_events.stop(n.end))
+                else:
+                    release_ms = max(0, int(round(float(note_release) * 1000)))
+                    release_start = max(n.start, n.end - release_ms)
+                    scheduled.append(
+                        _events.fade(
+                            release_start,
+                            -60.0,
+                            (n.end - release_start) / 1000.0,
+                        )
+                    )
+            elif n.sustained and (following is None or following.start > n.end):
                 note_release = for_part(
                     part_release_s or {},
                     getattr(n, "track", 0),

@@ -3739,10 +3739,31 @@
             ? playbackPreview().release_s : event.release_s) || 0
           : 0;
         if (sustainRelease > 0) {
+          // A Sustain Limit is the point by which the note is silent, not
+          // when its release begins. Match the exported Timeline so a voice
+          // is ready to be reused at event.end without an abrupt cut.
+          var capDuration = Math.max(0, (event.end - event.start) / 1000);
+          var fadeDuration = Math.min(sustainRelease, capDuration);
+          var fadeStartsAt = event.end - fadeDuration * 1000;
           var cutoffAt = when + untilCut;
-          gain.gain.setValueAtTime(baseGain, cutoffAt);
-          gain.gain.exponentialRampToValueAtTime(0.001, cutoffAt + sustainRelease);
-          source.stop(cutoffAt + sustainRelease);
+          if (audiblePosition < fadeStartsAt) {
+            var fadeAt = when + Math.max(0, (fadeStartsAt - audiblePosition) / 1000);
+            gain.gain.setValueAtTime(baseGain, when);
+            gain.gain.setValueAtTime(baseGain, fadeAt);
+            gain.gain.exponentialRampToValueAtTime(0.001, cutoffAt);
+          } else {
+            // When seeking into a release, start at its current level rather
+            // than jumping the note back to full volume.
+            var progress = fadeDuration > 0
+              ? Math.min(1, (audiblePosition - fadeStartsAt) / 1000 / fadeDuration)
+              : 1;
+            var startGain = Math.max(0.001, baseGain);
+            gain.gain.setValueAtTime(
+              startGain * Math.pow(0.001 / startGain, progress), when
+            );
+            gain.gain.exponentialRampToValueAtTime(0.001, cutoffAt);
+          }
+          source.stop(cutoffAt);
         } else {
           source.stop(when + Math.max(0.01, untilCut));
         }
@@ -3775,10 +3796,7 @@
           ? 0 : (Number(event.release_s === undefined
             ? performance.release_s : event.release_s) || 0) * 1000)
         : (event.cut
-          ? event.end + (event.shortened_by === 'sustain' && !hardStop
-            ? (Number(event.release_s === undefined
-              ? performance.release_s : event.release_s) || 0) * 1000
-            : 0)
+          ? event.end
           : (event.voice_end || (event.start + (buffer ? buffer.duration * 1000 / Number(event.playback_rate || 1) : 0))));
       if (end > position) { scheduleEvent(event, position, AUDIO.context.currentTime + 0.025); }
     }

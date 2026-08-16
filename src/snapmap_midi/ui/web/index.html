@@ -222,7 +222,7 @@
       <div class="control-group">
         <label class="check-line"><input type="checkbox" id="hardStop"> Hard stop notes</label>
         <div class="control-title"><label for="releaseRange">Default Track Release</label><span class="hint">all tracks</span></div>
-        <div class="expression-readout">Fades sustained or looping notes after MIDI note-off unless that track has its own Release. It does not change attack or a sample's natural decay.</div>
+        <div class="expression-readout">Fades sustained or looping notes after MIDI note-off, and finishes a Sustain Limit fade by its deadline. It does not change attack or a sample's natural decay.</div>
         <div class="range-number dependent" id="releaseControls"><input type="range" id="releaseRange" min="0" max="2" step="0.01"><input type="number" id="releaseNumber" min="0" max="10" step="0.01"></div>
       </div>
       <div class="control-group">
@@ -370,13 +370,13 @@
 
           <div class="control-group">
             <div class="control-title"><label for="channelReleaseRange">Track Release</label><span class="hint">note-off fade</span></div>
-            <div class="expression-readout">Fades sustained or looping notes after MIDI note-off. It does not change attack or the sample's natural decay.</div>
+            <div class="expression-readout">Fades sustained or looping notes after MIDI note-off, and finishes a Sustain Limit fade by its deadline. It does not change attack or the sample's natural decay.</div>
             <label class="check-line"><input type="checkbox" id="channelReleaseEnabled"> Set for this track</label>
             <div class="range-number dependent" id="channelReleaseControls"><input type="range" id="channelReleaseRange" min="0" max="2" step="0.01"><input type="number" id="channelReleaseNumber" min="0" max="10" step="0.01"><span class="unit">s</span></div>
             <div class="expression-readout" id="channelReleaseHelp"></div>
 
             <div class="control-title"><span>Track Hard Stop</span><span class="hint">immediate note-off</span></div>
-            <div class="expression-readout">Stops this track immediately at note-off instead of using its Release fade. Leave it inherited to follow Default Track Release's Hard stop notes choice.</div>
+            <div class="expression-readout">Stops this track immediately at note-off or its Sustain Limit instead of using its Release fade. Leave it inherited to follow Default Track Release's Hard stop notes choice.</div>
             <label class="check-line"><input type="checkbox" id="channelHardStopEnabled"> Set for this track</label>
             <label class="check-line dependent" id="channelHardStopControls"><input type="checkbox" id="channelHardStop"> Hard stop notes</label>
             <div class="expression-readout" id="channelHardStopHelp"></div>
