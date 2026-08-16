@@ -758,8 +758,12 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+    # Every earlier schema is migrated forward. Keep rejecting an unknown
+    # future version: treating it as old could discard a newer build's data.
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or not 1 <= version < SETTINGS_VERSION
     ):
         return doc
 

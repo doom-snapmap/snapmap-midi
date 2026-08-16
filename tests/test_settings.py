@@ -563,6 +563,16 @@ def test_version_seventeen_sidecar_migrates_with_default_track_release():
     assert settings.to_compile_kwargs(migrated)["part_release_s"] == {}
 
 
+@pytest.mark.parametrize("version", range(1, settings.SETTINGS_VERSION))
+def test_every_prior_sidecar_version_migrates_to_the_current_schema(version):
+    old = settings.defaults()
+    old["version"] = version
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+
+
 @pytest.mark.parametrize("value", [-1, 5001, 1.5, "250", True])
 def test_track_glide_outside_whole_millisecond_bounds_is_refused(value):
     sound = palette.sounds_in_category("ins_piano")[0]
