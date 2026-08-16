@@ -83,11 +83,11 @@ def set_events(doc: SnapMapDocument, events) -> str:
 
 def add_button(
     doc: SnapMapDocument,
-    timeline_id: str,
+    timeline_id: str | Iterable[str],
     display_name: str = "snapmap-midi-button",
     near_inherit: str = "player_start",
 ) -> int:
-    """Add a switch wired through an on-use listener to `timeline_id`.
+    """Add a switch wired through an on-use listener to one or more timelines.
 
     Reference-slot counts come from the document's injected table, not from
     constants written here. Those counts used to be hardcoded at each call
@@ -97,6 +97,16 @@ def add_button(
     Returns the switch's id. Positions it near the player start so it is
     reachable on spawn.
     """
+    timeline_ids = [timeline_id] if isinstance(timeline_id, str) else list(timeline_id)
+    # A target repeated in the listener would start the same timeline twice.
+    # Preserve order while removing duplicates so callers can assemble shard
+    # lists without a second bookkeeping structure.
+    timeline_ids = list(dict.fromkeys(timeline_ids))
+    if not timeline_ids:
+        raise ValueError("a button needs at least one timeline target")
+    targets = {"item[%d]" % index: target for index, target in enumerate(timeline_ids)}
+    targets["num"] = len(timeline_ids)
+
     entities = doc.data["entities"]
     anchor = next(
         (e for e in entities if near_inherit in ((e.get("entityDef") or {}).get("inherit") or "")),
@@ -126,7 +136,7 @@ def add_button(
             LISTENER_ON_USE_INHERIT,
             {
                 "spawnPosition": {"x": bx + 16, "y": by + 32, "z": bz + 128},
-                "targets": {"item[0]": timeline_id, "num": 1},
+                "targets": targets,
             },
         )
     )

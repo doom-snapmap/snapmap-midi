@@ -1,8 +1,8 @@
 """Pitch and loudness math shared by map export and browser preview.
 
-SnapMap exposes integral semitone and dB modifiers. Keeping every conversion in
-this module prevents the UI, compiler, and tests from growing slightly different
-rounding and clamping rules.
+SnapMap's Timeline stores pitch as a floating-point semitone modifier. Keeping
+every conversion in this module prevents the UI, compiler, and tests from
+growing slightly different rounding and clamping rules.
 """
 
 from __future__ import annotations
@@ -26,14 +26,17 @@ class NoteExpression:
     target_pitch: int
     velocity: int
     root_pitch: float | None
-    pitch_offset: int
-    pitch_semitones: int | None
+    pitch_offset: float
+    pitch_semitones: float | None
+    track_transpose: float
+    fine_tune_cents: float
     volume_trim_db: int
     note_volume_db: int
+    track_volume_db: int
     master_volume_db: int
-    automatic_pitch: int | None
-    requested_pitch: int
-    pitch_modifier: int
+    automatic_pitch: float | None
+    requested_pitch: float
+    pitch_modifier: float
     pitch_limited: bool
     playback_rate: float
     velocity_db: int
@@ -44,6 +47,13 @@ class NoteExpression:
 
 def clamp(value, low, high):
     return max(low, min(high, value))
+
+
+def clean_float(value: float) -> float:
+    """Keep JSON and UI readouts stable after decimal semitone arithmetic."""
+
+    value = round(float(value), 6)
+    return 0.0 if value == 0 else value
 
 
 def nearest_int(value: float) -> int:
@@ -88,34 +98,41 @@ def expression_for(
     source_pitch: int,
     velocity: int,
     root_pitch: float | None,
-    pitch_offset: int = 0,
-    pitch_semitones: int | None = None,
+    pitch_offset: float = 0,
+    pitch_semitones: float | None = None,
+    track_transpose: float = 0,
+    fine_tune_cents: float = 0,
     volume_trim_db: int = 0,
     note_volume_db: int | None = None,
+    track_volume_db: int = 0,
     master_volume_db: int = 0,
 ) -> NoteExpression:
-    """Resolve one note to the exact integral values SnapMap will receive.
+    """Resolve one note to the exact values SnapMap will receive.
 
     The source MIDI pitch never moves. With a trusted or manually calibrated
     playback reference, the automatic modifier makes the sound follow that
-    MIDI note. A legacy pitch_offset is added afterward; an absolute
-    pitch_semitones value instead replaces the automatic result so the note
-    control always represents the exact SnapMap modifier it will export.
-    Without a playback reference, natural playback is zero and either kind of
-    note edit remains playback-only.
+    MIDI note, including the reference's fractional cents. A legacy
+    pitch_offset is added afterward; a pitch_semitones value instead replaces
+    that per-note result. Track transpose and fine tune are then added to every
+    note, including manually edited ones. Without a playback reference,
+    natural playback is zero and the same track/note controls remain direct
+    playback modifiers.
 
     MIDI velocity supplies the initial note volume. An absolute
-    ``note_volume_db`` replaces that initial value, while master volume is
-    always added afterward. ``volume_trim_db`` exists only to replay migrated
+    ``note_volume_db`` replaces that initial value. Track volume and then
+    master volume are always added afterward. ``volume_trim_db`` exists only to replay migrated
     settings from builds that stored note edits as relative offsets. This keeps
     composition, sound choice, and playback tuning as separate decisions.
     """
 
     source_pitch = int(clamp(int(source_pitch), MIDI_MIN, MIDI_MAX))
-    pitch_offset = int(clamp(int(pitch_offset), PITCH_MIN, PITCH_MAX))
+    pitch_offset = clean_float(clamp(float(pitch_offset), PITCH_MIN, PITCH_MAX))
     if pitch_semitones is not None:
-        pitch_semitones = int(clamp(int(pitch_semitones), PITCH_MIN, PITCH_MAX))
+        pitch_semitones = clean_float(clamp(float(pitch_semitones), PITCH_MIN, PITCH_MAX))
+    track_transpose = clean_float(clamp(float(track_transpose), PITCH_MIN, PITCH_MAX))
+    fine_tune_cents = clean_float(clamp(float(fine_tune_cents), -100.0, 100.0))
     volume_trim_db = int(clamp(int(volume_trim_db), VOLUME_MIN, VOLUME_MAX))
+    track_volume_db = int(clamp(int(track_volume_db), VOLUME_MIN, VOLUME_MAX))
     master_volume_db = int(clamp(int(master_volume_db), VOLUME_MIN, VOLUME_MAX))
     target_pitch = source_pitch
 
@@ -123,11 +140,14 @@ def expression_for(
         automatic_pitch = None
         requested_pitch = pitch_offset
     else:
-        automatic_pitch = nearest_int(source_pitch - float(root_pitch))
+        automatic_pitch = clean_float(source_pitch - float(root_pitch))
         requested_pitch = automatic_pitch + pitch_offset
     if pitch_semitones is not None:
         requested_pitch = pitch_semitones
-    pitch_modifier = int(clamp(requested_pitch, PITCH_MIN, PITCH_MAX))
+    requested_pitch = clean_float(
+        requested_pitch + track_transpose + fine_tune_cents / 100.0
+    )
+    pitch_modifier = clean_float(clamp(requested_pitch, PITCH_MIN, PITCH_MAX))
     playback_rate = pitch_playback_rate(pitch_modifier)
 
     velocity = int(clamp(int(velocity), 1, MIDI_MAX))
@@ -139,7 +159,7 @@ def expression_for(
     else:
         note_volume = int(clamp(int(note_volume_db), VOLUME_MIN, VOLUME_MAX))
         volume_trim_db = note_volume - velocity_db
-    requested_volume = note_volume + master_volume_db
+    requested_volume = note_volume + track_volume_db + master_volume_db
     volume_db = int(clamp(requested_volume, VOLUME_MIN, VOLUME_MAX))
 
     return NoteExpression(
@@ -149,8 +169,11 @@ def expression_for(
         root_pitch=None if root_pitch is None else float(root_pitch),
         pitch_offset=pitch_offset,
         pitch_semitones=pitch_semitones,
+        track_transpose=track_transpose,
+        fine_tune_cents=fine_tune_cents,
         volume_trim_db=volume_trim_db,
         note_volume_db=note_volume,
+        track_volume_db=track_volume_db,
         master_volume_db=master_volume_db,
         automatic_pitch=automatic_pitch,
         requested_pitch=requested_pitch,

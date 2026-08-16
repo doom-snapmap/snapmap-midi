@@ -16,7 +16,10 @@ import pytest
 from snapmap_midi.music.midi import Note
 from snapmap_midi.music.voices import (
     allocate_voices,
+    apply_glides,
+    apply_voice_cap,
     prepare_voice_layers,
+    thin_global_polyphony,
     thin_polyphony,
     thin_simultaneous,
 )
@@ -145,6 +148,39 @@ def test_simultaneous_thinning_caps_a_chord_from_the_top():
     assert {n.shader for n in kept} == {"play_pianoc4", "play_pianoe4"}
 
 
+def test_global_polyphony_strictly_caps_a_cross_track_chord_from_the_top():
+    chord = [_tailed(0, name, octave) for name, octave in [("c", 3), ("g", 3), ("c", 4), ("e", 4)]]
+    for track, note in enumerate(chord):
+        note.track = track
+
+    kept = thin_global_polyphony(chord, 2)
+
+    assert {note.shader for note in kept} == {"play_pianoc4", "play_pianoe4"}
+
+
+def test_global_polyphony_refuses_a_later_note_instead_of_stealing_a_held_one():
+    held = Note(0, 1000, "play_pianoc3", True, 0, "ins_piano")
+    later = Note(200, 800, "play_pianoc6", True, 1, "ins_piano")
+
+    assert thin_global_polyphony([held, later], 1) == [held]
+
+
+def test_track_voice_cap_cuts_its_own_ringing_notes_before_global_allocation():
+    """A track cap is not polyphony: staggered notes still start, but each new
+    note steals this track's virtual voice and frees it for the global pool."""
+    notes = [
+        Note(0, 1000, "play_pianoc4", True, 0, "ins_piano"),
+        Note(200, 1200, "play_pianoe4", True, 0, "ins_piano"),
+        Note(400, 1400, "play_pianog4", True, 0, "ins_piano"),
+    ]
+
+    kept = apply_voice_cap(notes, 1)
+
+    assert kept == notes
+    assert [getattr(note, "voice_cap_end", None) for note in kept] == [200, 400, None]
+    assert allocate_voices(kept, 32) == 1
+
+
 def test_simultaneous_thinning_ignores_the_order_the_file_listed_the_chord_in():
     """Two exports of one arrangement must drop the same notes."""
     spec = [("c", 3), ("g", 3), ("c", 4), ("e", 4), ("g", 4)]
@@ -152,6 +188,22 @@ def test_simultaneous_thinning_ignores_the_order_the_file_listed_the_chord_in():
         forward = thin_simultaneous([_tailed(0, n, o) for n, o in spec], voices)
         backward = thin_simultaneous([_tailed(0, n, o) for n, o in reversed(spec)], voices)
         assert sorted(n.shader for n in forward) == sorted(n.shader for n in backward)
+
+
+def test_global_voice_tie_break_uses_track_identity_not_midi_order():
+    """Equal-pitch notes have no musical priority, so their stable part key
+    decides the global-cap survivor instead of the order a MIDI exporter wrote
+    the tracks. The lower track number is predictable and repeatable."""
+    def kept_track(order):
+        notes = []
+        for track in order:
+            note = _tailed(0, "c", 4)
+            note.track = track
+            note.id = "%d:60:1" % track
+            notes.append(note)
+        return thin_simultaneous(notes, 1)[0].track
+
+    assert kept_track([2, 1]) == kept_track([1, 2]) == 1
 
 
 def test_allocate_voices_overlap_vs_sequential():
@@ -219,6 +271,40 @@ def test_decaying_voice_reservation_controls_allocation_but_not_polyphony():
     assert thin_polyphony(notes, max_poly=1) == [first, second]
 
 
+def test_track_sustain_limit_overrides_family_and_song_defaults():
+    note = Note(0, 2000, "play_pianoc4", True, 0, "ins_piano")
+    note.track = 2
+    note.chan = 3
+
+    _shared, _expressive, layers = prepare_voice_layers(
+        [],
+        [note],
+        cap_sustain_ms=1200,
+        family_caps={"ins_piano": 900},
+        part_sustain_ms={(2, 3): 650},
+    )
+
+    assert layers[(2, 3)] == [note]
+    assert note.end == 650
+    assert note.sustain_limited is True
+
+
+def test_bass_limit_remains_an_additional_ceiling_on_track_sustain():
+    note = Note(0, 2000, "play_pianoc3", True, 0, "ins_piano")
+    note.track = 1
+    note.chan = 0
+
+    prepare_voice_layers(
+        [],
+        [note],
+        bass_pitch=78,
+        bass_cap_ms=400,
+        part_sustain_ms={(1, 0): 900},
+    )
+
+    assert note.end == 400
+
+
 def test_polyphony_never_empties_a_line_that_plays_one_note_at_a_time():
     """The headline symptom, pinned. Seven notes a beat apart on a 4-second
     sample: nothing overlaps, so every note survives every setting."""
@@ -255,14 +341,79 @@ def test_neutral_decaying_note_stays_on_the_shared_timeline():
     assert (shared, expressive, layers) == ([note], [], {})
 
 
+def test_sustain_limit_routes_a_capped_one_shot_to_an_isolated_voice():
+    """A shared Timeline can start a one-shot but cannot stop just that note."""
+    note = Note(0, 100, "play_noise_one", False, 0, "exact")
+    note.pitch_modifier = note.volume_db = 0
+
+    shared, expressive, layers = prepare_voice_layers(
+        [note], [], cap_sustain_ms=300, duration_lookup=lambda _sound: 1000
+    )
+
+    assert shared == []
+    assert expressive == [note]
+    assert layers == {(0, 0): [note]}
+    assert note.sustain_limited is True
+    assert note.end == note.voice_end == 300
+
+
+def test_track_voice_setting_routes_neutral_notes_through_its_voice_lane():
+    note = Note(0, 100, "play_pianoc4", False, 0, "ins_piano")
+    note.track = 3
+    note.pitch_modifier = note.volume_db = 0
+
+    shared, isolated, layers = prepare_voice_layers(
+        [note], [], part_voices={(3, 0): 1}
+    )
+
+    assert shared == []
+    assert isolated == [note]
+    assert layers == {(3, 0): [note]}
+
+
+def test_glide_keeps_an_exact_sounds_zero_pitch_note_in_its_voice_lane():
+    note = Note(0, 100, "play_pianoc4", False, 0, "exact")
+    note.track = 2
+    note.pitch_modifier = note.volume_db = 0
+    note.uses_exact_sound = True
+
+    shared, expressive, layers = prepare_voice_layers(
+        [note], [], part_glide_ms={(2, 0): 250}
+    )
+
+    assert shared == []
+    assert expressive == [note]
+    assert layers == {(2, 0): [note]}
+
+
+def test_monophonic_glide_follows_the_tracks_previous_local_voice():
+    first = Note(0, 100, "play_pianoc4", False, 0, "exact")
+    second = Note(200, 300, "play_pianoc4", False, 0, "exact")
+    for note, pitch in ((first, 0.0), (second, 2.0)):
+        note.track = 1
+        note.pitch_modifier = pitch
+        note.volume_db = 0
+        note.voice_end = note.start + 1000
+        note.uses_exact_sound = True
+
+    kept = apply_voice_cap([first, second], 1)
+    allocate_voices(kept, 32)
+    apply_glides(kept, {(1, 0): 180})
+
+    assert first.part_voice == second.part_voice == 0
+    assert first.glide_ms == 0
+    assert second.glide_ms == 180
+    assert second.glide_from_pitch == 0.0
+
+
 def test_two_tracks_on_one_channel_get_their_own_speaker_pools():
-    """A MIDI channel is not an identity, so it cannot be the pool key.
+    """A MIDI channel is not an identity, so it cannot be the layer key.
 
     Two exports of the same music -- one with the second part on channel 1, one
     on channel 2 -- behaved completely differently: on the shared channel both
-    parts landed in ONE pool, so one part's notes stole the other's speakers and
-    each looked like it was being cut by the other's music. The window shows two
-    rows either way, because rows are parts.
+    parts collapsed into one preparation layer. The window shows two rows either
+    way, because rows are parts; the compiler applies per-track polyphony before
+    both layers enter the one global speaker pool.
     """
     a = Note(0, 100, "play_noise_one", False, 0, "exact")
     b = Note(0, 100, "play_noise_two", False, 0, "exact")

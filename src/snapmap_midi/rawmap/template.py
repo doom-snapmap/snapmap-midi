@@ -80,6 +80,23 @@ INTERIOR_X_MAX = 1280
 #: How far apart consecutive speakers sit.
 SPEAKER_SPACING = 24
 
+# The master Timeline is the editor's otherwise-unlabelled ``Unknown`` node.
+# Keep it apart from the generated voice/shard Timelines so it remains easy to
+# identify and select. Generated Timelines march along y and use a nearby x
+# column only when the room cannot hold another one on that vertical run. The
+# production fanout probe creates 165 of these nodes, so wrapping still matters.
+TIMELINE_MASTER_POSITION = (-1276.0, 1226.0, 0.5)
+# Start the generated group 64 units above the master on y. Nodes within that
+# group use the finer 32-unit grid requested by the editor workflow. Y is the
+# primary axis; only a group too long to remain inside the room wraps into the
+# next nearby x column.
+TIMELINE_GRID_X_START = TIMELINE_MASTER_POSITION[0]
+TIMELINE_GRID_Y_START = TIMELINE_MASTER_POSITION[1] + 64.0
+TIMELINE_GRID_Y_MAX = 3826.0
+TIMELINE_GRID_SPACING = 32.0
+TIMELINE_INTERACTIVE_GAP = 64.0
+TIMELINE_INTERACTIVE_X_OFFSET = 25.0
+
 
 def speaker_position(index: int) -> tuple[float, float, float]:
     """Where the nth speaker goes: along x, and never outside the room.
@@ -92,6 +109,59 @@ def speaker_position(index: int) -> tuple[float, float, float]:
     """
     span = INTERIOR_X_MAX - INTERIOR_X_MIN
     return (float(INTERIOR_X_MIN + (index * SPEAKER_SPACING) % span), 0.0, 64.0)
+
+
+def timeline_position(index: int) -> tuple[float, float, float]:
+    """Lay Timeline/``Unknown`` nodes out without stacking them.
+
+    Index zero is the master/shared Timeline and deliberately keeps its own
+    anchor. Voices and storage shards run along y, wrapping to a nearby x
+    column only when necessary.
+    Positions are deterministic so two exports of the same arrangement remain
+    byte-stable, and the common 33- and 165-target cases stay inside the blank
+    room instead of walking through a wall.
+    """
+    if index < 0:
+        raise ValueError("timeline layout index must be non-negative")
+    if index == 0:
+        return TIMELINE_MASTER_POSITION
+
+    generated_index = index - 1
+    rows = int((TIMELINE_GRID_Y_MAX - TIMELINE_GRID_Y_START) // TIMELINE_GRID_SPACING) + 1
+    row = generated_index % rows
+    column = generated_index // rows
+    return (
+        TIMELINE_GRID_X_START + column * TIMELINE_GRID_SPACING,
+        TIMELINE_GRID_Y_START + row * TIMELINE_GRID_SPACING,
+        0.5,
+    )
+
+
+def timeline_position_after_interactive(
+    interactive_position: tuple[float, float, float], index: int
+) -> tuple[float, float, float]:
+    """Place one song Timeline after its interactive in editor order.
+
+    SnapMap renders Timeline entities as translucent ``Unknown`` boxes.  The
+    old absolute layout put the interactive in the middle of that line, making
+    the switch look as though it contained several Unknowns.  MIDI exports
+    instead put the master 64 units to the interactive's right (positive y in
+    this module), followed by every voice/shard at 32-unit intervals.  Very
+    large groups wrap into the next nearby x column without leaving the room.
+    """
+
+    if index < 0:
+        raise ValueError("timeline layout index must be non-negative")
+    interactive_x, interactive_y, interactive_z = interactive_position
+    first_y = interactive_y + TIMELINE_INTERACTIVE_GAP
+    rows = max(1, int((TIMELINE_GRID_Y_MAX - first_y) // TIMELINE_GRID_SPACING) + 1)
+    row = index % rows
+    column = index // rows
+    return (
+        interactive_x + TIMELINE_INTERACTIVE_X_OFFSET + column * TIMELINE_GRID_SPACING,
+        first_y + row * TIMELINE_GRID_SPACING,
+        interactive_z,
+    )
 
 
 #: How far the reference tables are padded. They are prefix-sum indexed by
@@ -211,7 +281,12 @@ def timeline_entity_id(module_stem: str, unique_id: int, instance: int = 0) -> s
     return "%d_%s/%s_%d" % (instance, module_stem, TIMELINE_INHERIT, unique_id)
 
 
-def timeline_entity(unique_id: int, module_stem: str, instance: int = 0) -> dict:
+def timeline_entity(
+    unique_id: int,
+    module_stem: str,
+    instance: int = 0,
+    layout_index: int = 0,
+) -> dict:
     """A timeline entity with one empty event group, ready to be filled.
 
     The group is created here rather than by the caller because a timeline
@@ -236,7 +311,9 @@ def timeline_entity(unique_id: int, module_stem: str, instance: int = 0) -> dict
                             "num": 1,
                         }
                     },
-                    "spawnPosition": {"x": -1276.0, "y": 1226.0, "z": 0.5},
+                    "spawnPosition": dict(
+                        zip(("x", "y", "z"), timeline_position(layout_index))
+                    ),
                 }
             },
             "targetType": "idDeclEntityDef",

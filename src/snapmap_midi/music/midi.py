@@ -227,6 +227,7 @@ def parse_notes(
     event_is_looping=None,
     channel_pitch_profiles=None,
     note_overrides=None,
+    part_volume_db=None,
     master_volume_db=0,
     include_silent=False,
     part_percussion=None,
@@ -261,6 +262,7 @@ def parse_notes(
     channel_mutes = channel_mutes or frozenset()
     channel_pitch_profiles = channel_pitch_profiles or {}
     note_overrides = note_overrides or {}
+    part_volume_db = part_volume_db or {}
     no_sustain = set(decaying_families or ())
     channel_solos = channel_solos or frozenset()
     part_percussion = part_percussion or {}
@@ -313,17 +315,18 @@ def parse_notes(
             if not audible and not include_silent:
                 continue
             override = note_overrides.get(note_id, {})
-            pitch_offset = int(override.get("pitch_offset", 0))
+            pitch_offset = float(override.get("pitch_offset", 0))
             manual_pitch_semitones = (
-                int(override["pitch_semitones"]) if "pitch_semitones" in override else None
+                float(override["pitch_semitones"]) if "pitch_semitones" in override else None
             )
             follow_pitch_semitones = (
-                int(override["follow_pitch_semitones"])
+                float(override["follow_pitch_semitones"])
                 if "follow_pitch_semitones" in override
                 else None
             )
             note_volume_db = int(override["volume_db"]) if "volume_db" in override else None
             volume_trim_db = int(override.get("volume_trim_db", 0))
+            track_volume_db = int(for_part(part_volume_db, track_index, msg.channel, 0))
             exact_sound = for_part(channel_sounds, track_index, msg.channel)
             chosen_family = for_part(channel_families, track_index, msg.channel)
             applied_root = None
@@ -331,6 +334,8 @@ def parse_notes(
             root_confidence = None
             root_source = None
             pitch_follow = False
+            track_transpose = 0.0
+            fine_tune_cents = 0.0
             if exact_sound is not None:
                 shader = exact_sound
                 family = sound_categories.get(shader, "exact")
@@ -338,6 +343,8 @@ def parse_notes(
                 profile_root = profile.get("root_midi")
                 root_confidence = profile.get("root_confidence")
                 root_source = profile.get("root_source")
+                track_transpose = float(profile.get("pitch_transpose", 0))
+                fine_tune_cents = float(profile.get("fine_tune_cents", 0))
                 pitch_follow = bool(profile.get("pitch_follow", False) and profile_root is not None)
                 if pitch_follow:
                     applied_root = float(profile_root)
@@ -398,8 +405,11 @@ def parse_notes(
                     applied_root,
                     pitch_offset=pitch_offset,
                     pitch_semitones=active_pitch_semitones,
+                    track_transpose=track_transpose,
+                    fine_tune_cents=fine_tune_cents,
                     volume_trim_db=volume_trim_db,
                     note_volume_db=note_volume_db,
+                    track_volume_db=track_volume_db,
                     master_volume_db=master_volume_db,
                 )
                 metadata = {
@@ -414,6 +424,11 @@ def parse_notes(
                     "root_confidence": root_confidence,
                     "root_source": root_source,
                     "pitch_follow": pitch_follow,
+                    # Glide is meaningful only when successive notes retune
+                    # one recording. Automatic instruments deliberately choose
+                    # separately tuned recordings and keep their shared,
+                    # polyphonic emitter path instead.
+                    "uses_exact_sound": exact_sound is not None,
                     "manual_pitch_semitones": manual_pitch_semitones,
                     "follow_pitch_semitones": follow_pitch_semitones,
                     "audible": audible,

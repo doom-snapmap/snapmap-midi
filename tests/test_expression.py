@@ -44,6 +44,41 @@ def test_a_trusted_root_follows_the_imported_midi_note():
     assert expression.pitch_limited is False
 
 
+def test_natural_sample_note_compensates_inversely_but_transpose_is_direct():
+    # A D-sharp sample has to be pitched down three semitones to produce MIDI C.
+    calibrated = expression_for(60, 127, 63)
+    assert calibrated.automatic_pitch == -3
+    assert calibrated.pitch_modifier == -3
+
+    # Track Transpose is the musician-facing audible direction control.
+    raised = expression_for(60, 127, 63, track_transpose=2)
+    assert raised.pitch_modifier == -1
+
+
+def test_fractional_root_track_transpose_and_cents_survive_without_rounding():
+    expression = expression_for(
+        60,
+        127,
+        60.25,
+        track_transpose=2,
+        fine_tune_cents=50,
+    )
+
+    assert expression.automatic_pitch == -0.25
+    assert expression.track_transpose == 2
+    assert expression.fine_tune_cents == 50
+    assert expression.requested_pitch == 2.25
+    assert expression.pitch_modifier == 2.25
+    assert expression.playback_rate == pytest.approx(2 ** (2.25 / 12))
+
+
+def test_fractional_manual_note_pitch_is_clamped_without_integer_coercion():
+    expression = expression_for(60, 127, None, pitch_semitones=-3.75)
+
+    assert expression.pitch_semitones == -3.75
+    assert expression.pitch_modifier == -3.75
+
+
 def test_absolute_note_pitch_replaces_automatic_pitch_without_moving_the_note():
     expression = expression_for(64, 127, 60, pitch_semitones=-3)
     assert expression.source_pitch == 64
@@ -107,6 +142,18 @@ def test_an_unedited_note_uses_its_midi_derived_level():
     assert expression.note_volume_db == -12
     assert expression.requested_volume_db == -9
     assert expression.volume_db == -9
+
+
+def test_track_volume_is_added_between_note_and_global_volume():
+    expression = expression_for(
+        60, 64, 60, note_volume_db=-3, track_volume_db=-6, master_volume_db=4
+    )
+
+    assert expression.note_volume_db == -3
+    assert expression.track_volume_db == -6
+    assert expression.master_volume_db == 4
+    assert expression.requested_volume_db == -5
+    assert expression.volume_db == -5
 
 
 def test_absolute_note_volume_can_raise_the_quietest_velocity_to_the_maximum():

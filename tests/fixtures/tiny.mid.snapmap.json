@@ -1,0 +1,24 @@
+{
+  "version": 19,
+  "midi": "D:\\GitHub\\snapmap-midi\\tests\\fixtures\\tiny.mid",
+  "button": "snapmap-midi-song",
+  "out_dir": null,
+  "baseline": "C:\\Users\\mfloy\\.codex\\visualizations\\2026\\08\\15\\01a003f2-8854-72b3-88b9-b15d5e45eae5\\pytest-full-attack\\test_choosing_a_baseline_map_r0\\saved.json",
+  "channels": {},
+  "drums": "auto",
+  "notes": {},
+  "drum_keys": {},
+  "tuning": {
+    "master_volume_db": 0,
+    "max_speakers": 32,
+    "song_polyphony": 32,
+    "release_s": 0.1,
+    "hard_stop": false,
+    "max_poly": null,
+    "cap_sustain_ms": null,
+    "bass_pitch": 78,
+    "bass_cap_ms": null,
+    "decaying_families": [],
+    "family_caps": {}
+  }
+}

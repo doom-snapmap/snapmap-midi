@@ -29,7 +29,7 @@ from snapmap_midi.sound import palette
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TINY_MIDI = FIXTURES / "tiny.mid"
-SCRATCH_GOLDEN = FIXTURES / "tiny_song_scratch.json"
+SCRATCH_GOLDEN = FIXTURES / "tiny_song_named_layout_scratch.json"
 
 # Same parameters the from-scratch golden in `test_compile.py` is recorded
 # under. Named here rather than imported so this file states what it compares.
@@ -345,13 +345,12 @@ def test_a_long_one_shot_is_not_a_long_sustain(tmp_path):
     assert stats["long_sustains"] == 0
 
 
-def test_peak_voices_is_the_worst_single_layer_not_the_running_total(tmp_path):
-    """Voices are allocated PER LAYER against `max_speakers`, so the total
-    across layers can pass it while no layer is anywhere near it. Judging a map
-    by the total warns about arrangements that thin nothing."""
+def test_peak_voices_is_the_song_wide_global_pool(tmp_path):
+    """Global Voices counts the shared allocation after all tracks are
+    combined, so the reported peak is exactly the speaker count authored."""
     mid = _lopsided_layers_midi(tmp_path)
     _, stats = compile_to_rawmap(mid, channel_families={0: "ins_violin", 1: "ins_violin"})
-    assert stats["voices"] == 4
+    assert stats["voices"] == 3
     assert stats["peak_voices"] == 3
 
 
@@ -382,7 +381,7 @@ def test_compile_accepts_empty_mixer_and_drum_controls_without_moving_a_byte():
         drum_key_overrides={},
         **_SCRATCH_PARAMS,
     )
-    assert gated == SCRATCH_GOLDEN.read_bytes()
+    assert gated + b"\n" == SCRATCH_GOLDEN.read_bytes()
 
 
 def test_compiling_with_every_channel_muted_still_produces_a_loadable_map():

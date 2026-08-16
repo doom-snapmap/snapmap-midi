@@ -108,6 +108,14 @@
     </div>
   </div>
 
+  <div class="midi-loading-state" id="midiLoadingState" role="status" aria-live="polite" aria-busy="true" hidden>
+    <div class="midi-loading-card">
+      <div class="midi-loading-spinner" aria-hidden="true"></div>
+      <div class="midi-loading-title" id="midiLoadingTitle">Opening MIDI...</div>
+      <div class="muted" id="midiLoadingDetail">Reading tracks and preparing the piano roll. Large songs may take a moment.</div>
+    </div>
+  </div>
+
   <main class="workspace" id="workspace" hidden>
     <section class="tracks-pane" id="tracksPane" aria-label="Song tracks">
       <div class="pane-head"><span>Tracks</span><span class="badge" id="trackCount">0</span></div>
@@ -154,12 +162,18 @@
       <output class="mono range-value master-volume-value" id="masterVolumeValue" for="masterVolume">0 dB</output>
     </label>
     <span class="control-spacer"></span>
+    <button type="button" class="roll-view-toggle" id="globalRollToggle" aria-pressed="false" title="Show all tracks in one piano roll">All tracks</button>
+    <div class="roll-status-legend" aria-label="Piano roll note status legend">
+      <span title="Amber striped tail: Sustain Limit begins the note release here."><i class="roll-status-swatch sustain" aria-hidden="true"></i>Sustain cap</span>
+      <span title="Red crosshatched tail: a voice was reused here."><i class="roll-status-swatch voice" aria-hidden="true"></i>Voice steal</span>
+      <span title="Dashed outline: this note never starts because of a polyphony or voice limit."><i class="roll-status-swatch silent" aria-hidden="true"></i>Not played</span>
+    </div>
     <label class="plane-field" for="gridResolution"><span>Grid</span>
       <select id="gridResolution" title="Visual grid resolution">
         <option value="1">1</option>
         <option value="2">1/2</option>
         <option value="4">1/4</option>
-        <option value="8" selected>1/8</option>
+        <option value="8">1/8</option>
         <option value="16">1/16</option>
         <option value="32">1/32</option>
       </select>
@@ -178,7 +192,7 @@
     </label>
     <label class="range-control zoom-control" for="rollZoom">
       <span>Zoom</span>
-      <input type="range" id="rollZoom" min="0" max="60" value="0" step="1" aria-valuetext="100%" title="Piano roll zoom">
+      <input type="range" id="rollZoom" min="0" max="53" value="0" step="1" aria-valuetext="100%" title="Piano roll zoom">
       <output class="mono range-value zoom-value" id="rollZoomValue" for="rollZoom">100%</output>
     </label>
   </div>
@@ -190,20 +204,31 @@
     </div>
     <div class="inspector-body">
       <div class="control-group">
-        <div class="control-title"><label for="maxSpeakersRange">Voices</label><span class="hint">notes at once, per track</span></div>
-        <div class="range-number"><input type="range" id="maxSpeakersRange" min="1" max="128" step="1"><input type="number" id="maxSpeakersNumber" min="1" max="128" step="1"></div>
+        <div class="control-title"><label for="maxSpeakersRange">Global Voices</label><span class="hint">entire song</span></div>
+        <div class="expression-readout">Sets the maximum number of dedicated sounds the whole song can play at once. When the song reaches the limit, a new note can cut off another ringing sound; in a chord, the highest notes are kept first.</div>
+        <div class="range-number"><input type="range" id="maxSpeakersRange" min="1" max="128" value="32" step="1"><input type="number" id="maxSpeakersNumber" min="1" max="128" value="32" step="1"></div>
       </div>
       <div class="control-group">
-        <label class="check-line"><input type="checkbox" id="polyEnabled"> Limit maximum polyphony</label>
+        <div class="control-title"><label for="songPolyphonyRange">Global Polyphony</label><span class="hint">all tracks</span></div>
+        <div class="expression-readout">Limits MIDI notes held at once across all tracks, including notes layered on the shared emitter. Ringing sample tails do not consume this limit; when too many notes begin together, the highest new notes are kept.</div>
+        <div class="range-number"><input type="range" id="songPolyphonyRange" min="1" max="128" value="32" step="1"><input type="number" id="songPolyphonyNumber" min="1" max="128" value="32" step="1"></div>
+      </div>
+      <div class="control-group">
+        <div class="control-title"><label for="polyEnabled">Default Track Polyphony</label><span class="hint">all tracks</span></div>
+        <div class="expression-readout">Sets the polyphony limit used by every track unless that track has its own setting.</div>
+        <label class="check-line"><input type="checkbox" id="polyEnabled"> Enable default limit</label>
         <div class="range-number dependent" id="polyControls"><input type="range" id="maxPolyRange" min="1" max="128" step="1"><input type="number" id="maxPolyNumber" min="1" max="128" step="1"></div>
       </div>
       <div class="control-group">
         <label class="check-line"><input type="checkbox" id="hardStop"> Hard stop notes</label>
-        <div class="control-title"><label for="releaseRange">Release</label><span class="hint">seconds</span></div>
+        <div class="control-title"><label for="releaseRange">Default Track Release</label><span class="hint">all tracks</span></div>
+        <div class="expression-readout">Fades sustained or looping notes after MIDI note-off unless that track has its own Release. It does not change attack or a sample's natural decay.</div>
         <div class="range-number dependent" id="releaseControls"><input type="range" id="releaseRange" min="0" max="2" step="0.01"><input type="number" id="releaseNumber" min="0" max="10" step="0.01"></div>
       </div>
       <div class="control-group">
-        <label class="check-line"><input type="checkbox" id="sustainEnabled"> Limit sustained-note duration</label>
+        <div class="control-title"><label for="sustainEnabled">Default Track Sustain Limit</label><span class="hint">all tracks</span></div>
+        <div class="expression-readout">Caps how long any sound may remain audible on tracks without their own Sustain Limit. This is separate from voice stealing.</div>
+        <label class="check-line"><input type="checkbox" id="sustainEnabled"> Enable default limit</label>
         <div class="range-number dependent" id="sustainControls"><input type="range" id="sustainRange" min="50" max="5000" step="10"><input type="number" id="sustainNumber" min="1" step="10"><span class="unit">ms</span></div>
       </div>
       <div class="control-group">
@@ -257,23 +282,105 @@
         <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
         <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
         <div class="expression-readout" id="channelPitchModeHelp"></div>
+        <div class="channel-pitch-regular" id="channelPitchRegular">
+          <div class="channel-pitch-analysis-row">
+            <button type="button" class="btn" id="channelAnalyzePitch">Analyze sound</button>
+            <button type="button" class="btn" id="channelClearPitch">Clear pitch setup</button>
+            <span class="hint">find natural pitch</span>
+          </div>
+          <div class="expression-readout control-description">Finds the sound's natural note and cents offset. Confidence shows how reliable the detection is. Clear pitch setup removes analysis and manual calibration, then plays the sound unchanged.</div>
+          <div class="expression-readout" id="channelPitchAnalysis">Not analyzed yet.</div>
+
+          <div class="control-title"><label for="channelTransposeRange">Track transpose</label><span class="hint">semitones</span></div>
+          <div class="expression-readout control-description">Moves every note on this track up or down in whole semitones.</div>
+          <div class="range-number"><input type="range" id="channelTransposeRange" min="-24" max="24" step="1"><input type="number" id="channelTransposeNumber" min="-24" max="24" step="1"></div>
+          <div class="expression-readout" id="channelEffectivePitch"></div>
+        </div>
       </div>
 
       <div class="control-group">
-        <div class="control-title"><label for="channelVoicesRange">Voices</label><span class="hint">sounds take turns</span></div>
-        <div class="expression-readout">Sets how many sounds can be ringing at the same time. Overlapping notes take turns: the one ringing longest is cut off so the next can start. Notes that begin at the very same instant cannot take turns, so any beyond this number never play and are drawn hollow.</div>
-        <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
-        <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
-        <div class="expression-readout" id="channelVoicesHelp"></div>
+        <div class="control-title"><label for="channelVolumeRange">Track Volume</label><span class="hint">dB</span></div>
+        <div class="expression-readout">Raises or lowers every note on this track. Individual note volume remains an additional per-note setting.</div>
+        <div class="range-number"><input type="range" id="channelVolumeRange" min="-60" max="20" value="0" step="1"><input type="number" id="channelVolumeNumber" min="-60" max="20" value="0" step="1"></div>
+        <div class="expression-readout" id="channelVolumeHelp"></div>
       </div>
 
-      <div class="control-group">
-        <div class="control-title"><label for="channelPolyRange">Polyphony</label><span class="hint">chord thickness</span></div>
-        <div class="expression-readout">Thins out chords. Notes past this number never play at all, the lowest first. They are drawn hollow on the roll so you can still see them, and the notes that do play keep their full length.</div>
-        <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
-        <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
-        <div class="expression-readout" id="channelPolyHelp"></div>
-      </div>
+      <details class="channel-advanced-settings" id="channelAdvancedSettings">
+        <summary>Advanced track settings</summary>
+        <div class="channel-advanced-body">
+          <div class="control-group channel-pitch-advanced" id="channelPitchAdvanced">
+            <div class="control-title"><span>Manual sample calibration</span><span class="hint">advanced</span></div>
+
+            <div class="channel-pitch-analysis-row channel-reference-row">
+              <button type="button" class="btn" id="channelPlayReference">Play C4 reference</button>
+              <span class="hint" id="channelReferenceHelp">MIDI 60 · 261.63 Hz</span>
+            </div>
+            <div class="expression-readout control-description">Loops a built-in pure tone until you press Stop. It uses no DOOM sound asset and never changes the track.</div>
+
+            <div class="control-title"><label for="channelCalibrationRange">Coarse sample tuning</label><span class="hint">semitones</span></div>
+            <div class="expression-readout control-description">Calibrates an unanalyzed sound against the reference in whole semitones. Positive pitches the sample higher; negative pitches it lower. Every MIDI note then follows from that tuning.</div>
+            <div class="range-number"><input type="range" id="channelCalibrationRange" min="-24" max="24" step="1"><input type="number" id="channelCalibrationNumber" min="-24" max="24" step="1"></div>
+
+            <div class="control-title"><label for="channelCalibrationCentsRange">Sample tuning fine adjustment</label><span class="hint">cents</span></div>
+            <div class="expression-readout control-description">Finishes the manual sample calibration between semitones. This is saved as the sample's inferred natural note.</div>
+            <div class="range-number"><input type="range" id="channelCalibrationCentsRange" min="-100" max="100" step="1"><input type="number" id="channelCalibrationCentsNumber" min="-100" max="100" step="1"></div>
+            <div class="expression-readout" id="channelCalibrationHelp"></div>
+
+            <label class="field-label" id="channelRootLabel" for="channelRootValue">Sample root or Follow MIDI reference</label>
+            <input type="text" class="mono" id="channelRootValue" placeholder="60 or C4 (optional)" autocomplete="off">
+            <div class="expression-readout control-description" id="channelRootDescription">Shows the analyzer result or the note inferred from manual sample tuning. Edit it only when you already know the sound's natural note. Correction equals the imported MIDI note minus this value.</div>
+            <div class="expression-readout" id="channelRootHelp"></div>
+
+            <div class="control-title"><label for="channelGlideRange">Track glide</label><span class="hint">milliseconds</span></div>
+            <div class="expression-readout control-description">Slides this fixed sound from its previous note into the next. Default: No glide (0 ms). Track Voices 1 gives monophonic portamento.</div>
+            <div class="range-number"><input type="range" id="channelGlideRange" min="0" max="5000" value="0" step="1"><input type="number" id="channelGlideNumber" min="0" max="5000" value="0" step="1"></div>
+
+            <div class="control-title"><label for="channelAttackRange">Track Attack</label><span class="hint">note-on fade</span></div>
+            <div class="expression-readout control-description">Fades each sound in from silence at note-on. Leave it off for the source sound's natural attack; enabling it routes this track's notes through dedicated emitters.</div>
+            <label class="check-line"><input type="checkbox" id="channelAttackEnabled"> Set for this track</label>
+            <div class="range-number dependent" id="channelAttackControls"><input type="range" id="channelAttackRange" min="10" max="5000" step="10"><input type="number" id="channelAttackNumber" min="1" max="5000" step="10"><span class="unit">ms</span></div>
+            <div class="expression-readout" id="channelAttackHelp"></div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-title"><label for="channelVoicesRange">Track Voices</label><span class="hint">share of global pool</span></div>
+            <div class="expression-readout">Caps how many Global Voices this track can use. Set 1 for a monophonic track; each new note takes over its one pitch-controlled emitter.</div>
+            <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
+            <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
+            <div class="expression-readout" id="channelVoicesHelp"></div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-title"><label for="channelPolyRange">Track Polyphony</label><span class="hint">this track</span></div>
+            <div class="expression-readout">Caps simultaneous notes on this track. Extra low notes are muted and shown as dashed outlines; playing notes are not cut off.</div>
+            <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
+            <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
+            <div class="expression-readout" id="channelPolyHelp"></div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-title"><label for="channelSustainRange">Track Sustain Limit</label><span class="hint">this track</span></div>
+            <div class="expression-readout">Caps how long any sound on this track may remain audible. One-shots use a dedicated emitter only when this cap cuts their natural ring. It does not change how many voices the track can use.</div>
+            <label class="check-line"><input type="checkbox" id="channelSustainEnabled"> Set for this track</label>
+            <div class="range-number dependent" id="channelSustainControls"><input type="range" id="channelSustainRange" min="50" max="5000" step="10"><input type="number" id="channelSustainNumber" min="1" step="10"><span class="unit">ms</span></div>
+            <div class="expression-readout" id="channelSustainHelp"></div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-title"><label for="channelReleaseRange">Track Release</label><span class="hint">note-off fade</span></div>
+            <div class="expression-readout">Fades sustained or looping notes after MIDI note-off. It does not change attack or the sample's natural decay.</div>
+            <label class="check-line"><input type="checkbox" id="channelReleaseEnabled"> Set for this track</label>
+            <div class="range-number dependent" id="channelReleaseControls"><input type="range" id="channelReleaseRange" min="0" max="2" step="0.01"><input type="number" id="channelReleaseNumber" min="0" max="10" step="0.01"><span class="unit">s</span></div>
+            <div class="expression-readout" id="channelReleaseHelp"></div>
+
+            <div class="control-title"><span>Track Hard Stop</span><span class="hint">immediate note-off</span></div>
+            <div class="expression-readout">Stops this track immediately at note-off instead of using its Release fade. Leave it inherited to follow Default Track Release's Hard stop notes choice.</div>
+            <label class="check-line"><input type="checkbox" id="channelHardStopEnabled"> Set for this track</label>
+            <label class="check-line dependent" id="channelHardStopControls"><input type="checkbox" id="channelHardStop"> Hard stop notes</label>
+            <div class="expression-readout" id="channelHardStopHelp"></div>
+          </div>
+        </div>
+      </details>
 
       <dl class="channel-facts">
         <div><dt>Sound</dt><dd id="channelSound">-</dd></div>
@@ -302,6 +409,7 @@
           <label for="notePitchRange">Pitch</label>
           <span class="hint" id="notePitchMode">Manual / semitones</span>
         </div>
+        <div class="expression-readout control-description">Adjusts this note in whole semitones. Use Sample tuning fine adjustment for cents across the track.</div>
         <div class="range-number">
           <input type="range" id="notePitchRange" min="-24" max="24" step="1">
           <input type="number" id="notePitchNumber" min="-24" max="24" step="1">

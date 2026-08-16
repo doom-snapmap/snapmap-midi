@@ -105,6 +105,9 @@ def test_eventcall_encodings_match_proven_forms():
     assert pitch["eventCall"]["args"]["item[2]"] == {"float": 0.0}
     assert pitch["eventTime"] == 1000
 
+    fractional = fade_pitch(1200, to_semitones=-0.25, over_s=0)
+    assert fractional["eventCall"]["args"]["item[1]"] == {"float": -0.25}
+
     block = events_block([s, st])
     assert block["num"] == 2 and "item[0]" in block and "item[1]" in block
     # The count key is inserted last and key order is preserved on output.
@@ -186,47 +189,49 @@ def _two_thick_chords(tmp_path):
     return path
 
 
-def test_a_track_voice_limit_applies_to_that_track_alone(tmp_path):
-    """The limit always WAS per track -- each layer allocated separately -- so
-    the song-wide slider was never a budget, only the same number applied to
-    every track. Saying it per track is what lets a ringing string part be cut
-    back without also strangling the piano."""
+def test_global_voice_limit_caps_the_entire_song(tmp_path):
+    """Global Voices is one budget, not the old repeated per-track ceiling."""
     song = _two_thick_chords(tmp_path)
     _, whole = compile_to_rawmap(song)
-    _, one_track = compile_to_rawmap(song, part_voices={0: 1})
     _, whole_song = compile_to_rawmap(song, max_speakers=1)
 
-    # Channel 0 gives up four speakers; channel 1 keeps every one of its own.
-    assert one_track["voices"] == whole["voices"] - 4
-    # Pinning the whole song is strictly stronger than pinning one track.
-    assert whole_song["voices"] < one_track["voices"]
-    # And a track that sets nothing is exactly the song-wide compile.
-    _, unset = compile_to_rawmap(song, part_voices={})
-    assert unset["voices"] == whole["voices"]
+    assert whole_song["voices"] == 1
+    assert whole_song["voices"] < whole["voices"]
 
 
-def test_a_track_polyphony_limit_mutes_notes_where_voices_would_cut_them(tmp_path):
+def test_track_voice_cap_limits_its_track_before_the_global_budget(tmp_path):
+    song = _two_thick_chords(tmp_path)
+    _, unrestricted = compile_to_rawmap(song, max_speakers=32)
+    _, capped = compile_to_rawmap(song, max_speakers=32, part_voices={0: 1})
+
+    assert capped["voices"] < unrestricted["voices"]
+    assert capped["voices"] <= 32
+
+
+def test_track_polyphony_mutes_notes_where_global_voices_would_cut_them(tmp_path):
     """The two levers are not the same and must not be made the same.
 
     Polyphony refuses the note: it never sounds, and the notes that do keep
-    their full length. Voices admits every note and takes a speaker from
-    whichever sound is closest to finishing, so the older one stops early.
-    The SPEAKER count cannot tell them apart -- both settle on two -- so the
-    tell is the EVENT count. A note that is cut still has a start event; a note
-    that is muted has none.
+    their full length. Global Voices shares speakers between tracks and takes
+    the speaker that is closest to finishing, so older notes can stop early.
+    The compiler's event count includes the stops and fades needed to reuse a
+    speaker, so it no longer identifies the distinction by itself; retained
+    source-note count and the polyphony compile's smaller timeline do.
     """
     song = _two_thick_chords(tmp_path)
     _, plain = compile_to_rawmap(song)
-    _, voices = compile_to_rawmap(song, part_voices={0: 2})
+    _, voices = compile_to_rawmap(song, max_speakers=2)
     _, poly = compile_to_rawmap(song, part_polyphony={0: 2})
 
-    # Voices admits every note. Nothing is removed; the older sounds stop early.
-    assert voices["events"] == plain["events"]
+    # Global Voices still retains the imported notes; it only changes how the
+    # limited speaker pool schedules them.
+    assert voices["notes"] == plain["notes"]
     # Polyphony refuses notes, so their events are simply not written.
     assert poly["events"] < plain["events"]
-    # Same ceiling, same speakers -- which is exactly why the event count is
-    # what this has to assert on.
-    assert poly["voices"] == voices["voices"]
+    # The global cap is stricter: polyphony only thins its named track, while
+    # the other track may still use speakers.
+    assert voices["voices"] == 2
+    assert poly["voices"] > voices["voices"]
     # Neither edits the song: the notes are all still there to be drawn.
     for stats in (voices, poly):
         assert stats["notes"] == plain["notes"]
@@ -273,6 +278,27 @@ def test_parse_notes_drum_override():
     )
     drum = [n for n in notes if n.chan == 9][0]
     assert drum.shader == "play_noise_hat"
+
+
+def test_parse_notes_preserves_fractional_root_and_track_tuning():
+    notes, _ = parse_notes(
+        TINY_MIDI,
+        channel_sounds={0: "play_pianoc4"},
+        channel_pitch_profiles={
+            0: {
+                "pitch_follow": True,
+                "root_midi": 60.25,
+                "pitch_transpose": 1,
+                "fine_tune_cents": 50,
+            }
+        },
+        note_index=_SYNTHETIC_INDEX,
+    )
+
+    first = next(note for note in notes if note.chan == 0)
+    assert first.source_pitch == 60
+    assert first.automatic_pitch == -0.25
+    assert first.pitch_modifier == 1.25
 
 
 def test_unpaired_note_is_held_to_the_end_not_dropped(tmp_path):
@@ -329,7 +355,7 @@ def test_retriggered_notes_keep_stable_source_ids_and_independent_expression(tmp
 # This one uses the synthetic baseline and synthetic palette, so it survives
 # the move and keeps a byte gate on the compiler wherever the code lives.
 
-HERMETIC_GOLDEN = FIXTURES / "tiny_song_hermetic.json"
+HERMETIC_GOLDEN = FIXTURES / "tiny_song_named_layout_hermetic.json"
 
 _HERMETIC_PARAMS = dict(button_name="hermetic-test", drums="auto", max_speakers=32)
 
@@ -346,11 +372,13 @@ def _hermetic_compile(minimal_timeline_map):
 def test_hermetic_compile_golden_bytes(minimal_timeline_map):
     """Byte gate that needs no game data, so it survives extraction.
 
-    Covers the compile path end to end: speaker creation, the start/fade
+    Covers the compile path end to end: emitter creation, the start/fade
     builders, the events block, and multi-group entity events.
     """
     raw, _ = _hermetic_compile(minimal_timeline_map)
-    assert raw == HERMETIC_GOLDEN.read_bytes()
+    # The checked-in text fixture has its conventional final newline; rawmap
+    # serialization intentionally does not emit one.
+    assert raw + b"\n" == HERMETIC_GOLDEN.read_bytes()
 
 
 def test_hermetic_compile_structure(minimal_timeline_map):
@@ -363,15 +391,118 @@ def test_hermetic_compile_structure(minimal_timeline_map):
         if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
     )
     groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
-    speakers = [
+    emitters = [
         e
         for e in obj["entities"]
-        if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
+        if e is not timeline
+        and (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
     ]
     assert groups["num"] == stats["voices"] + 1
-    assert len(speakers) == stats["voices"]
+    assert len(emitters) == stats["voices"]
+    assert not any(
+        (e.get("entityDef") or {}).get("className") == "idSnapMapGameEntity_Speaker"
+        for e in obj["entities"]
+    )
     assert stats["notes"] == 4
     assert stats["decaying"] == 2 and stats["sustained"] == 2
+
+
+def test_midi_filename_names_the_interactive_and_unknowns_follow_it(
+    minimal_timeline_map,
+):
+    raw, _stats = compile_to_rawmap(
+        TINY_MIDI,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        button_name="stale-pitch-probe-name",
+    )
+    obj = deserialize(raw)
+    interactive = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idInteractable"
+    )
+    timelines = [
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    ]
+
+    assert interactive["displayName"] == TINY_MIDI.name
+    switch_position = interactive["entityDef"]["state"]["edit"]["spawnPosition"]
+    timeline_positions = [
+        entity["entityDef"]["state"]["edit"]["spawnPosition"] for entity in timelines
+    ]
+    assert timeline_positions[0] == {
+        "x": switch_position["x"] + 25.0,
+        "y": switch_position["y"] + 64.0,
+        "z": switch_position["z"],
+    }
+    assert all(
+        right["y"] - left["y"] == 32.0
+        for left, right in zip(timeline_positions, timeline_positions[1:])
+    )
+
+
+def test_large_master_timeline_stays_single_while_sharding_is_disabled(
+    minimal_timeline_map, monkeypatch
+):
+    # Deliberately tiny so the four-note hermetic song exercises the same path
+    # a real near-1 MiB arrangement takes without building a giant fixture.
+    budget = 2000
+    monkeypatch.setattr("snapmap_midi.compile.TIMELINE_SERIALIZE_BUDGET", budget)
+
+    raw, stats = _hermetic_compile(minimal_timeline_map)
+    obj = deserialize(raw)
+    listener = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idSnapMapListener_Simple"
+    )
+    targets = listener["entityDef"]["state"]["edit"]["targets"]
+
+    assert stats["timeline_unsharded_bytes"] > budget
+    assert stats["timeline_sharding_enabled"] is False
+    assert stats["timeline_shards"] == targets["num"] == 1
+    assert stats["timeline_bytes"] == stats["timeline_unsharded_bytes"]
+    assert stats["timeline_bytes"] > budget
+
+
+def test_parked_sharding_path_remains_executable(minimal_timeline_map, monkeypatch):
+    """The parked implementation stays ready for deliberate reactivation."""
+    budget = 2000
+    monkeypatch.setattr("snapmap_midi.compile.TIMELINE_SERIALIZE_BUDGET", budget)
+    monkeypatch.setattr("snapmap_midi.compile.ENABLE_TIMELINE_SHARDING", True)
+
+    raw, stats = _hermetic_compile(minimal_timeline_map)
+    obj = deserialize(raw)
+    timelines = [
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    ]
+    listener = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idSnapMapListener_Simple"
+    )
+    targets = listener["entityDef"]["state"]["edit"]["targets"]
+
+    assert stats["timeline_sharding_enabled"] is True
+    assert stats["timeline_shards"] == len(timelines) == targets["num"]
+    assert stats["timeline_bytes"] <= budget
+    assert all(
+        entity["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]["num"]
+        == 1
+        for entity in timelines
+    )
+    event_count = sum(
+        entity["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
+            "item[0]"
+        ]["events"]["num"]
+        for entity in timelines
+    )
+    assert event_count == stats["events"]
 
 
 def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
@@ -391,6 +522,108 @@ def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
     assert '"float":-60.0' not in text
 
 
+def test_track_hard_stop_can_override_the_song_default(tmp_path, minimal_timeline_map):
+    midi = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    midi.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=40, time=0),
+            mido.Message("program_change", channel=1, program=40, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_on", channel=1, note=67, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.Message("note_off", channel=1, note=67, velocity=0, time=0),
+        ]
+    )
+    path = tmp_path / "track-hard-stop.mid"
+    midi.save(path)
+    raw, _ = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        hard_stop=True,
+        part_hard_stop={1: False},
+    )
+    text = raw.decode("utf-8")
+
+    assert "stopSound" in text
+    assert '"float":-60.0' in text
+
+
+def test_track_attack_writes_a_gain_ramp_after_the_sound_starts(minimal_timeline_map):
+    raw, stats = compile_to_rawmap(
+        TINY_MIDI,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        part_attack_ms={0: 250},
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    attack = [
+        event
+        for group_index in range(groups["num"])
+        for event_index in range(groups["item[%d]" % group_index]["events"]["num"])
+        for event in [groups["item[%d]" % group_index]["events"]["item[%d]" % event_index]]
+        if event["eventTime"] == 1
+        and event["eventCall"]["\neventHandle_t eventDef"] == "fadeSound"
+        and event["eventCall"]["args"]["item[2]"] == {"float": 0.25}
+    ]
+
+    assert attack
+    assert stats["expressive_one_shots"] >= 1
+
+
+def test_track_release_overrides_the_default_note_off_fade(
+    tmp_path, minimal_timeline_map
+):
+    midi_path = tmp_path / "track-release.mid"
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=40, time=0),
+            mido.Message("note_on", channel=0, note=67, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=67, velocity=0, time=480),
+        ]
+    )
+    mid.save(midi_path)
+
+    raw, _ = compile_to_rawmap(
+        midi_path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        release_s=0.1,
+        part_release_s={0: 0.35},
+        button_name="track-release-test",
+    )
+    obj = deserialize(raw)
+    release_events = []
+    for entity in obj["entities"]:
+        if (entity.get("entityDef") or {}).get("className") != "idTarget_Timeline":
+            continue
+        groups = entity["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+        for group_index in range(groups["num"]):
+            block = groups["item[%d]" % group_index]["events"]
+            for event_index in range(block["num"]):
+                event = block["item[%d]" % event_index]
+                call = event["eventCall"]
+                if (
+                    call["\neventHandle_t eventDef"] == "fadeSound"
+                    and call["args"]["item[1]"] == {"float": -60.0}
+                ):
+                    release_events.append(call)
+
+    assert release_events
+    assert all(call["args"]["item[2]"] == {"float": 0.35} for call in release_events)
+
+
 def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
     def compile_shape(final_note_ticks):
         mid = mido.MidiFile(ticks_per_beat=96)
@@ -403,7 +636,9 @@ def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
                 mido.Message("note_off", channel=0, note=72, velocity=64, time=final_note_ticks),
             ]
         )
-        path = tmp_path / ("shape-%d.mid" % final_note_ticks)
+        # The interactive is deliberately named from the MIDI filename.
+        # Reuse one filename so this test compares scheduling only.
+        path = tmp_path / "shape.mid"
         mid.save(path)
         return compile_to_rawmap(path, note_index=_SYNTHETIC_INDEX)
 
@@ -417,7 +652,7 @@ def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
     assert b"stopSound" not in short_raw
 
 
-def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timeline_map):
+def test_expression_events_precede_start_in_proven_equal_time_order(minimal_timeline_map):
     raw, stats = compile_to_rawmap(
         TINY_MIDI,
         json.dumps(minimal_timeline_map).encode("utf-8"),
@@ -440,15 +675,15 @@ def test_expression_events_follow_start_in_stable_equal_time_order(minimal_timel
         block = groups["item[%d]" % group_index]["events"]
         events = [block["item[%d]" % index] for index in range(block["num"])]
         definitions = [event["eventCall"]["\neventHandle_t eventDef"] for event in events]
-        if definitions[:3] == ["startSoundShader", "fadePitch", "fadeSound"]:
+        if definitions[:3] == ["fadePitch", "fadeSound", "startSoundShader"]:
             matched = events[:3]
             break
 
     assert matched is not None
     assert [event["eventTime"] for event in matched] == [0, 0, 0]
-    assert matched[0]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
-    assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": 1.0}
-    assert matched[2]["eventCall"]["args"]["item[1]"] == {"float": 9.0}
+    assert matched[0]["eventCall"]["args"]["item[1]"] == {"float": 1.0}
+    assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": 9.0}
+    assert matched[2]["eventCall"]["args"]["item[0]"] == {"decl": {"sound": "play_pianoc4"}}
     assert stats["expressive_one_shots"] >= 1
     assert stats["pitch_adjusted"] == 1
 
@@ -475,13 +710,63 @@ def test_absolute_note_pitch_is_the_value_written_to_the_timeline(minimal_timeli
         block = groups["item[%d]" % group_index]["events"]
         events = [block["item[%d]" % index] for index in range(block["num"])]
         definitions = [event["eventCall"]["\neventHandle_t eventDef"] for event in events]
-        if definitions[:2] == ["startSoundShader", "fadePitch"]:
-            matched = events[:2]
+        if definitions[:3] == ["fadePitch", "fadeSound", "startSoundShader"]:
+            matched = events[:3]
             break
 
     assert matched is not None
-    assert matched[1]["eventCall"]["args"]["item[1]"] == {"float": -3.0}
+    assert matched[0]["eventCall"]["args"]["item[1]"] == {"float": -3.0}
     assert stats["pitch_adjusted"] == 1
+
+
+def test_monophonic_track_glide_ramps_from_the_previous_pitch(tmp_path, minimal_timeline_map):
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=240),
+            mido.Message("note_on", channel=0, note=62, velocity=100, time=240),
+            mido.Message("note_off", channel=0, note=62, velocity=0, time=240),
+        ]
+    )
+    path = tmp_path / "glide.mid"
+    mid.save(path)
+
+    raw, stats = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_pianoc4"},
+        channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 60}},
+        part_voices={0: 1},
+        part_glide_ms={0: 250},
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    pitches = []
+    for group_index in range(groups["num"]):
+        block = groups["item[%d]" % group_index]["events"]
+        for event_index in range(block["num"]):
+            event = block["item[%d]" % event_index]
+            if event["eventCall"]["\neventHandle_t eventDef"] == "fadePitch":
+                pitches.append(event)
+
+    glide = next(event for event in pitches if event["eventTime"] == 501)
+    assert glide["eventCall"]["args"]["item[1]"] == {"float": 2.0}
+    assert glide["eventCall"]["args"]["item[2]"] == {"float": 0.25}
+    assert stats["voices"] == 1
+    assert not any(
+        (entity.get("entityDef") or {}).get("className")
+        == "idSnapMapGameEntity_Speaker"
+        for entity in obj["entities"]
+    )
 
 
 def test_export_uses_the_sound_root_octave_without_silent_transposition(
@@ -555,10 +840,57 @@ def test_neutral_one_shot_keeps_the_shared_timeline_fast_path(tmp_path, minimal_
     assert shared["item[0]"]["eventCall"]["\neventHandle_t eventDef"] == "startSoundShader"
 
 
-def test_hermetic_multi_voice_steps_speaker_positions(minimal_timeline_map):
-    """Two overlapping sustained notes need two speakers, which exercises the
-    per-layer loop's position stepping -- also absent from the default golden,
-    which allocates exactly one voice."""
+def test_sustain_limited_one_shot_gets_its_own_release_event(
+    tmp_path, minimal_timeline_map
+):
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=120),
+        ]
+    )
+    path = tmp_path / "capped-one-shot.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        cap_sustain_ms=300,
+    )
+    obj = deserialize(raw)
+    timeline = next(
+        entity
+        for entity in obj["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    )
+    groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+    calls = [
+        groups["item[%d]" % group_index]["events"]["item[%d]" % event_index]
+        for group_index in range(groups["num"])
+        for event_index in range(groups["item[%d]" % group_index]["events"]["num"])
+    ]
+    cap_release = next(
+        event
+        for event in calls
+        if event["eventTime"] == 300
+        and event["eventCall"]["\neventHandle_t eventDef"] == "fadeSound"
+    )
+
+    assert stats["shared_one_shots"] == 0
+    assert stats["expressive_one_shots"] == 1
+    assert stats["voices"] == 1
+    assert cap_release["eventCall"]["args"]["item[1]"] == {"float": -60.0}
+
+
+def test_hermetic_multi_voice_authors_generic_timeline_emitters(minimal_timeline_map):
+    """Two overlapping sustained notes need two independent emitters, but the
+    live pitch path proves those entities must be generic Timelines rather than
+    SnapMap Speakers."""
     import mido
 
     mid = mido.MidiFile()
@@ -582,12 +914,18 @@ def test_hermetic_multi_voice_steps_speaker_positions(minimal_timeline_map):
         path.unlink(missing_ok=True)
     assert stats["voices"] == 2
     obj = deserialize(raw)
-    positions = [
-        e["entityDef"]["state"]["edit"].get("spawnPosition", {}).get("x")
+    emitters = [
+        e
         for e in obj["entities"]
-        if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
+        if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+        and e.get("displayName", "").startswith("snapmap-midi-v")
     ]
-    assert positions == [-1280.0, -1256.0]  # stepped by 24, starting inside the room
+    assert len(emitters) == 2
+    assert [e["displayName"] for e in emitters] == ["snapmap-midi-v0", "snapmap-midi-v1"]
+    assert not any(
+        (e.get("entityDef") or {}).get("className") == "idSnapMapGameEntity_Speaker"
+        for e in obj["entities"]
+    )
 
 
 def test_speakers_stay_inside_the_room_however_many_there_are():
@@ -636,15 +974,16 @@ def test_compile_golden_structure():
         if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
     )
     groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
-    speakers = [
+    emitters = [
         e
         for e in obj["entities"]
-        if "2d_speaker" in ((e.get("entityDef") or {}).get("inherit") or "")
+        if e is not timeline
+        and (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
     ]
     assert groups["num"] == stats["voices"] + 1  # group 0 plus one per voice
-    # Exact equality holds only because this baseline has ZERO pre-existing
-    # speakers. Against another baseline this must become a delta.
-    assert len(speakers) == stats["voices"]
+    # Exact equality holds only because this baseline has no pre-existing
+    # auxiliary timelines. Against another baseline this must become a delta.
+    assert len(emitters) == stats["voices"]
     assert stats["drums_on"] is True
     assert stats["decaying"] >= 2  # piano note plus kick
     assert stats["sustained"] >= 2  # both string notes
@@ -708,7 +1047,7 @@ def test_compiles_with_no_inputs_at_all():
 # start moving, a reference table sized differently. All of those are silent
 # in every structural assertion and fatal in game.
 
-SCRATCH_GOLDEN = FIXTURES / "tiny_song_scratch.json"
+SCRATCH_GOLDEN = FIXTURES / "tiny_song_named_layout_scratch.json"
 
 _SCRATCH_PARAMS = dict(button_name="scratch-test", drums="auto", max_speakers=32)
 
@@ -721,7 +1060,7 @@ def test_from_scratch_golden_bytes():
     compile on top of them.
     """
     raw, _ = compile_to_rawmap(TINY_MIDI, **_SCRATCH_PARAMS)
-    assert raw == SCRATCH_GOLDEN.read_bytes()
+    assert raw + b"\n" == SCRATCH_GOLDEN.read_bytes()
 
 
 def test_from_scratch_golden_structure():
@@ -732,18 +1071,18 @@ def test_from_scratch_golden_structure():
     for e in obj["entities"]:
         by_class.setdefault((e.get("entityDef") or {}).get("className"), []).append(e)
 
-    # The stage: both portals capped, somewhere to spawn, one scheduler.
+    # The stage: both portals capped, somewhere to spawn, one master scheduler.
     assert len(by_class["idSnapMapCapEntity"]) == 2
     assert obj["doorsAndCaps"]["portalDoors"] == [
         e["uniqueId"] for e in by_class["idSnapMapCapEntity"]
     ]
     assert len(by_class["idSnapMapGameEntity_ComboStart"]) == 1
-    assert len(by_class["idTarget_Timeline"]) == 1
+    assert len(by_class["idTarget_Timeline"]) == stats["voices"] + 1
     # The song: one group per voice plus the shared one-shot group.
     timeline = by_class["idTarget_Timeline"][0]
     groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
     assert groups["num"] == stats["voices"] + 1
-    assert len(by_class["idSnapMapGameEntity_Speaker"]) == stats["voices"]
+    assert "idSnapMapGameEntity_Speaker" not in by_class
     # The trigger: a switch wired through a listener, and nothing else wired.
     assert len(by_class["idInteractable"]) == 1
     assert len(by_class["idSnapMapListener_Simple"]) == 1
@@ -755,15 +1094,9 @@ def test_from_scratch_golden_structure():
     assert obj["instanceEntities"]["values"] == [e["uniqueId"] for e in obj["entities"]]
 
 
-def test_a_song_past_the_initial_table_width_keeps_its_tables_consistent(tmp_path):
-    """`REFERENCE_TABLE_WIDTH` is where the blank stage's tables START, not a
-    ceiling. A dense arrangement allocates a speaker per voice and walks past
-    it; the reference tables have to grow with it or the engine reads off the
-    end of a prefix-sum array and rejects the map.
-
-    Deliberately far past the width rather than just over it, so the test
-    still means something if the starting width changes.
-    """
+def test_global_voice_cap_keeps_dense_song_tables_consistent(tmp_path):
+    """Even a very dense arrangement authors no more global speakers than its
+    cap, while the blank stage's reference tables stay well-formed."""
     mid = mido.MidiFile()
     track = mido.MidiTrack()
     mid.tracks.append(track)
@@ -786,10 +1119,16 @@ def test_a_song_past_the_initial_table_width_keeps_its_tables_consistent(tmp_pat
     path = tmp_path / "dense.mid"
     mid.save(str(path))
 
-    raw, stats = compile_to_rawmap(path, max_speakers=64, button_name="dense")
+    raw, stats = compile_to_rawmap(
+        path,
+        max_speakers=64,
+        song_polyphony=128,
+        button_name="dense",
+    )
     obj = deserialize(raw)
     uids = [e["uniqueId"] for e in obj["entities"]]
-    assert max(uids) > template.REFERENCE_TABLE_WIDTH, "did not actually exceed the width"
+    assert max(uids) < template.REFERENCE_TABLE_WIDTH
+    assert stats["voices"] == 64
     assert stats["voices"] == len([u for u in uids]) - 6  # stage(4) + switch + listener
 
     for table in ("entityEntRefs", "entityVarRefs"):

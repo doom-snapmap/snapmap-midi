@@ -28,6 +28,7 @@
   var ROLL = {
     zoom: 100,
     gridDenominator: 8,
+    laneGridDenominator: 1,
     meterNumerator: 4,
     meterDenominator: 4,
     songKey: '',
@@ -71,6 +72,7 @@
   var REQUEST = 0;
   var APPLIED = {};
   var BUSY = 0;
+  var MIDI_LOADING = false;
   var BOOTED = false;
   // The note a rootless sound is treated as already sounding, so Follow MIDI
   // has an interval to measure from. C4 is the sampler convention: the sample
@@ -80,14 +82,17 @@
   // as settings.NEUTRAL_PITCH_REFERENCE, which validates it.
   var NEUTRAL_ROOT_MIDI = 60;
 
-  // The focused part, as its "track:channel" key, or null for "show all".
+  // The focused part, as its "track:channel" key, or null when no track's
+  // settings are selected.
   var SELECTED_PART = null;
   // Which track's notes the detailed piano roll is showing, or null when the
   // roll is closed and the track list's own mini clips are the only view.
-  // Two states on purpose: opening a track's roll also opens its settings
-  // (SELECTED_PART), but opening settings alone must not drag the whole
-  // song's notes onto screen.
+  // This is separate from the settings selection: either a track roll or the
+  // global roll may be open while the settings panel stays as it was.
   var ROLL_PART = null;
+  // The detailed roll can also show the original all-track view. Kept
+  // separate from ROLL_PART because null still means the arrangement lanes.
+  var ROLL_GLOBAL = false;
   var TRACK_KEY = '';
   var OPEN_MENU = null;
   var INSPECTOR_OPEN = false;
@@ -96,6 +101,7 @@
   var NOTE_INSPECTOR_OPEN = false;
   var SELECTED_NOTE_ID = null;
   var DRAW_FRAME = null;
+  var LANE_DRAW_FRAME = null;
   var SEEK_DRAG = null;
   var SCRUB_DRAG = null;
   var NOTE_POINTER = null;
@@ -105,7 +111,12 @@
   var PLAY_TOKEN = 0;
   var PATCH_QUEUE = Promise.resolve();
   var PATCH_PENDING = 0;
-  var PATCH_RESUME = false;
+  var PATCH_IN_FLIGHT = false;
+  var PATCH_NEXT = null;
+  var SETTINGS_AUDIO_REFRESH = 0;
+  var LAST_SIDECAR_ERROR = '';
+  var PITCH_REFERENCE_TONE = null;
+  var PITCH_REFERENCE_TOKEN = 0;
 
   var SOUND_BROWSER = {
     open: false,
@@ -143,6 +154,8 @@
     timer: null,
     frame: null,
     sources: [],
+    performance: null,
+    scheduledThrough: 0,
     generation: 0,
     preparing: false,
     prepareError: null
@@ -154,27 +167,39 @@
   function hasSong() { return !!(STATE.analysis && STATE.settings && STATE.settings.midi); }
   function channels() { return (STATE.analysis && STATE.analysis.channels) || []; }
   function previewEvents() { return (STATE.preview && STATE.preview.events) || []; }
+  function playbackPreview() { return AUDIO.performance || STATE.preview || {}; }
+  function playbackEvents() { return playbackPreview().events || []; }
+
+  function capturePlaybackPreview() {
+    var preview = STATE.preview || {};
+    return {
+      events: previewEvents().slice(),
+      sounds: (preview.sounds || []).slice(),
+      duration_ms: Number(preview.duration_ms) || 0,
+      hard_stop: !!preview.hard_stop,
+      release_s: Number(preview.release_s) || 0
+    };
+  }
   function previewDisplayEvents() {
     return (STATE.preview && STATE.preview.display_events) || previewEvents();
   }
 
-  // What the detailed roll draws: nothing until a track is opened, then only
-  // that track's notes -- so "only what's focused is clickable" is true
-  // because nothing else was ever loaded, not because of a filter that could
-  // be forgotten at some call site. Cached by (source, part) identity so
-  // scrolling and playback, which redraw every frame, do not refilter.
+  // What the detailed roll draws: a focused track, or the original all-track
+  // view. Cached by (source, focus) identity so scrolling and playback, which
+  // redraw every frame, do not refilter.
   var ROLL_EVENTS_CACHE = { source: null, part: undefined, filtered: null };
   function rollDisplayEvents() {
     var source = previewDisplayEvents();
-    if (ROLL_EVENTS_CACHE.source === source && ROLL_EVENTS_CACHE.part === ROLL_PART) {
+    var focus = ROLL_GLOBAL ? "*" : ROLL_PART;
+    if (ROLL_EVENTS_CACHE.source === source && ROLL_EVENTS_CACHE.part === focus) {
       return ROLL_EVENTS_CACHE.filtered;
     }
-    var filtered = ROLL_PART
+    var filtered = ROLL_GLOBAL ? source : ROLL_PART
       ? source.filter(function (event) {
         return String(event.part || (Number(event.channel) || 0)) === ROLL_PART;
       })
       : [];
-    ROLL_EVENTS_CACHE = { source: source, part: ROLL_PART, filtered: filtered };
+    ROLL_EVENTS_CACHE = { source: source, part: focus, filtered: filtered };
     return filtered;
   }
 
@@ -217,6 +242,51 @@
     var octave = Math.floor(note / 12) + MIDDLE_C_OCTAVE - 5;
     return NOTE_NAMES[((note % 12) + 12) % 12] + octave;
   }
+  function compactNumber(value, places) {
+    value = Number(value) || 0;
+    var text = value.toFixed(places === undefined ? 2 : places);
+    return text.replace(/\.0+$|(?:(\.\d*?[1-9]))0+$/, '$1');
+  }
+  function pitchName(value) {
+    value = Number(value);
+    if (!isFinite(value)) { return "Unknown"; }
+    var nearest = Math.round(value);
+    var cents = Math.round((value - nearest) * 100);
+    return noteName(nearest) + (cents ? " " + (cents > 0 ? "+" : "") + cents + "\u00a2" : "");
+  }
+  function pitchReference(value) {
+    return pitchName(value) + " (MIDI " + Math.round(Number(value)) + ")";
+  }
+  function pitchAdjustment(value) {
+    var totalCents = Math.round((Number(value) || 0) * 100);
+    var semitones = totalCents < 0
+      ? Math.ceil(totalCents / 100)
+      : Math.floor(totalCents / 100);
+    var cents = totalCents - semitones * 100;
+    var parts = [];
+    if (semitones) {
+      parts.push((semitones > 0 ? "+" : "") + semitones +
+        (Math.abs(semitones) === 1 ? " semitone" : " semitones"));
+    }
+    if (cents) {
+      parts.push((cents > 0 ? "+" : "") + cents + " cents");
+    }
+    return parts.length ? parts.join(" ") : "0 semitones";
+  }
+  function parsePitchReference(raw) {
+    var text = String(raw || "").trim();
+    if (/^\d+$/.test(text)) {
+      var numeric = Number(text);
+      return isFinite(numeric) && numeric >= 0 && numeric <= 127 ? numeric : null;
+    }
+    var match = /^([A-Ga-g])\s*([#b\u266d]?)\s*(-?\d+)\s*(?:([+-]\s*\d+)\s*(?:c|\u00a2))?$/i.exec(text);
+    if (!match) { return null; }
+    var natural = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[match[1].toUpperCase()];
+    var accidental = match[2] === "#" ? 1 : (match[2] ? -1 : 0);
+    var cents = Number(String(match[4] || "0").replace(/\s/g, "")) || 0;
+    var midi = (Number(match[3]) - MIDDLE_C_OCTAVE + 5) * 12 + natural + accidental + cents / 100;
+    return isFinite(midi) && midi >= 0 && midi <= 127 ? midi : null;
+  }
   function humanCategory(name) {
     return String(name || '')
       .replace(/^([a-z]+\d*)_/, '')
@@ -255,12 +325,29 @@
     toast(error && (error.message || error.error) || String(error || 'Something went wrong'), 'err');
   }
 
+  function reportSidecarStatus(response) {
+    var message = response && response.sidecar_error || '';
+    if (message && message !== LAST_SIDECAR_ERROR) { toast(message, 'warn'); }
+    LAST_SIDECAR_ERROR = message;
+  }
+
   function stamp(text) { el('stamp').textContent = text || ''; }
   function setBusy(on, text) {
     BUSY += on ? 1 : -1;
     BUSY = Math.max(0, BUSY);
     el('busyText').hidden = BUSY === 0;
     el('busyText').textContent = BUSY ? (text || 'Working...') : 'Working...';
+  }
+
+  function setMidiLoading(on, title, detail) {
+    MIDI_LOADING = !!on;
+    el('midiLoadingState').hidden = !MIDI_LOADING;
+    el('midiLoadingTitle').textContent = title || 'Opening MIDI...';
+    el('midiLoadingDetail').textContent = detail ||
+      'Reading tracks and preparing the piano roll. Large songs may take a moment.';
+    document.querySelector('.app').setAttribute('aria-busy', MIDI_LOADING ? 'true' : 'false');
+    el('emptyState').hidden = MIDI_LOADING || hasSong();
+    el('workspace').hidden = MIDI_LOADING || !hasSong();
   }
 
   function accept(key, sequence) {
@@ -638,7 +725,7 @@
         return;
       }
       setBusy(false);
-      invalidateAudio(false);
+      refreshAudioAfterSettings();
       render();
       toast(sound
         ? "Saved as your default for every song."
@@ -706,7 +793,15 @@
       // both fall back to the General MIDI instrument, as before parts existed.
       name.textContent = partLabel(channel) + (channel.is_drums ? " \u00b7 Percussion" : "");
       name.title = channel.notes + " notes \u00b7 " + noteName(channel.lowest) + "\u2013" + noteName(channel.highest) +
-        " \u00b7 MIDI channel " + (channel.channel + 1);
+        " \u00b7 MIDI channel " + (channel.channel + 1) + "\nDouble-click to open or close this track's piano roll";
+      // A label double-click is deliberately not built from two delayed
+      // single clicks: Windows lets the user choose that interval, so a timer
+      // can fire settings before a valid slower double-click arrives.
+      name.addEventListener("dblclick", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleTrackRoll(channel.key);
+      });
 
       heading.appendChild(name);
 
@@ -728,6 +823,23 @@
 
       actions.appendChild(mixerButton("mute", "muted"));
       actions.appendChild(mixerButton("solo", "soloed"));
+      var settingsButton = document.createElement("button");
+      settingsButton.type = "button";
+      settingsButton.className = "track-toggle track-settings-button";
+      settingsButton.title = "Track settings";
+      settingsButton.setAttribute("aria-label", "Open settings for " + partLabel(channel));
+      settingsButton.appendChild(iconElement("settings"));
+      settingsButton.addEventListener("click", function () {
+        if (SELECTED_PART === channel.key && CHANNEL_INSPECTOR_OPEN) {
+          closeChannelInspectorAndClearSelection();
+          return;
+        }
+        openChannelInspector(channel.key);
+        patchTracks();
+        invalidateRollSurface();
+        queueDraw();
+      });
+      actions.appendChild(settingsButton);
       heading.appendChild(actions);
       row.appendChild(heading);
 
@@ -745,15 +857,16 @@
 
       row.addEventListener("click", function (event) {
         if (event.target.closest("button, input, label")) { return; }
-        if (SELECTED_PART === channel.key && CHANNEL_INSPECTOR_OPEN) {
-          SELECTED_PART = null;
-          closeChannelInspector();
-        } else {
-          openChannelInspector(channel.key);
+        // Once a detailed roll is visible, the sidebar becomes its track
+        // switcher. A click is then the fast way to inspect another part;
+        // settings remain available from the normal lanes view.
+        if (ROLL_PART && !ROLL_GLOBAL) {
+          openTrackRoll(channel.key);
         }
-        patchTracks();
-        invalidateRollSurface();
-        queueDraw();
+      });
+      row.addEventListener("dblclick", function (event) {
+        if (event.target.closest("button, input, label")) { return; }
+        toggleTrackRoll(channel.key);
       });
       list.appendChild(row);
     });
@@ -768,6 +881,9 @@
       var channel = partByKey(partKey);
       var entry = partEntry(channel);
       var selected = SELECTED_PART === partKey;
+      row.title = ROLL_PART && !ROLL_GLOBAL
+        ? (ROLL_PART === partKey ? 'This track\'s piano roll is open' : 'Click to open this track\'s piano roll')
+        : 'Double-click to open this track\'s piano roll; use the gear for track settings';
       row.classList.toggle("selected", selected);
       row.setAttribute("aria-selected", selected ? "true" : "false");
       row.setAttribute(
@@ -791,6 +907,14 @@
       mute.setAttribute("aria-label", (entry.muted ? "Unmute " : "Mute ") + who);
       mute.title = entry.muted ? "Unmute this track" : "Mute this track";
       setIcon(mute, entry.muted ? "volume-x" : "volume-2");
+      var trackSettingsButton = row.querySelector(".track-settings-button");
+      var settingsOpen = selected && CHANNEL_INSPECTOR_OPEN;
+      trackSettingsButton.classList.toggle("active", settingsOpen);
+      trackSettingsButton.setAttribute("aria-pressed", settingsOpen ? "true" : "false");
+      trackSettingsButton.setAttribute(
+        "aria-label", (settingsOpen ? "Close settings for " : "Open settings for ") + who
+      );
+      trackSettingsButton.title = settingsOpen ? "Close track settings" : "Track settings";
       solo.classList.toggle("active", !!entry.soloed);
       solo.setAttribute("aria-pressed", entry.soloed ? "true" : "false");
       solo.setAttribute("aria-label", entry.soloed
@@ -843,6 +967,15 @@
       lane.addEventListener("dblclick", function () { toggleTrackRoll(channel.key); });
       container.appendChild(lane);
     });
+    // The arrangement remains a usable grid below the last imported track.
+    // Keeping this separate from a real lane means a later import can add a
+    // track without a fake row, label, or track color to replace.
+    var fill = document.createElement("div");
+    fill.className = "lane-grid-fill";
+    var fillCanvas = document.createElement("canvas");
+    fillCanvas.className = "lane-grid-fill-canvas";
+    fill.appendChild(fillCanvas);
+    container.appendChild(fill);
   }
 
   function patchLanesView() {
@@ -851,6 +984,19 @@
     var soloActive = anySoloedChannel();
     var lanes = container.querySelectorAll(".lane-row");
     var rows = el("trackList").querySelectorAll(".track-row");
+    // Same content width as the roll (ROLL.contentWidth already carries the
+    // zoom factor -- see resizeCanvas), so a lane is exactly as wide as the
+    // ruler above it and the two scroll and zoom in lockstep instead of the
+    // lanes always squeezing the whole song into whatever is visible.
+    var contentWidth = Math.max(1, Math.ceil(ROLL.contentWidth || container.clientWidth));
+    var visibleWidth = Math.max(1, container.clientWidth);
+    var scrollLeft = container.scrollLeft;
+    // Lanes are an arrangement view, not an un-timed thumbnail strip. Reuse
+    // the exact tempo-aware subdivisions that the piano roll uses so clip
+    // edges, the ruler, and a future edit/snap surface all agree.
+    var laneLines = timingLinesAt(scrollLeft, visibleWidth, ROLL.laneGridDenominator);
+    var lanePalette = rollPalette();
+    var usedHeight = 0;
     for (var index = 0; index < lanes.length; index += 1) {
       var lane = lanes[index];
       var channel = partByKey(lane.dataset.part);
@@ -862,21 +1008,69 @@
       // row's real height (name wrap, font metrics) is only known by asking
       // the row itself, not by guessing a number here.
       var row = rows[index];
-      if (row) { lane.style.height = row.getBoundingClientRect().height + "px"; }
+      var rowHeight = row ? row.getBoundingClientRect().height : lane.getBoundingClientRect().height;
+      if (row) { lane.style.height = rowHeight + "px"; }
+      usedHeight += rowHeight;
+      lane.style.width = contentWidth + "px";
       var canvas = lane.querySelector(".lane-canvas");
-      if (channel && canvas) { drawTrackClip(channel, canvas); }
+      if (channel && canvas) {
+        canvas.style.left = scrollLeft + "px";
+        drawTrackClip(
+          channel, canvas, visibleWidth, rowHeight, contentWidth, scrollLeft,
+          laneLines, lanePalette
+        );
+      }
+      var label = lane.querySelector(".lane-label");
+      if (label) { label.style.left = (scrollLeft + 8) + "px"; }
+    }
+    var fill = container.querySelector(".lane-grid-fill");
+    var fillHeight = Math.max(0, container.clientHeight - usedHeight);
+    if (fill) {
+      fill.style.width = contentWidth + "px";
+      fill.style.height = fillHeight + "px";
+      var fillCanvas = fill.querySelector(".lane-grid-fill-canvas");
+      if (fillCanvas && fillHeight > 0) {
+        fillCanvas.style.left = scrollLeft + "px";
+        drawLaneGridFill(
+          fillCanvas, visibleWidth, fillHeight, scrollLeft, laneLines, lanePalette
+        );
+      }
+    }
+    var viewport = el("pianoRollViewport");
+    if (viewport && container.scrollLeft !== viewport.scrollLeft) {
+      container.scrollLeft = viewport.scrollLeft;
     }
   }
 
-  // The sidebar and the lanes are two independent scroll containers standing
-  // in for one DAW arrangement view, so a scroll in either has to move both
-  // or a track's row and its lane would drift apart the moment the list
-  // outgrows the window. Guarded both ways so mirroring one doesn't re-fire
-  // the other in a loop.
+  // Lane thumbnails are a complete arrangement overview, so filtering the
+  // whole song once for every row turns a 16-track song into sixteen scans of
+  // the same event list. Build the part buckets once per preview payload.
+  var LANE_EVENTS_CACHE = { source: null, byPart: null };
+  function laneDisplayEvents(partKey) {
+    var source = previewDisplayEvents();
+    if (LANE_EVENTS_CACHE.source !== source || !LANE_EVENTS_CACHE.byPart) {
+      var byPart = {};
+      source.forEach(function (event) {
+        var key = String(event.part || (Number(event.channel) || 0));
+        if (!byPart[key]) { byPart[key] = []; }
+        byPart[key].push(event);
+      });
+      LANE_EVENTS_CACHE = { source: source, byPart: byPart };
+    }
+    return LANE_EVENTS_CACHE.byPart[partKey] || [];
+  }
+
+  // Three scroll containers stand in for one DAW arrangement view -- the
+  // sidebar (vertical only), the lanes (both axes), and the roll viewport
+  // (both axes, but hidden behind the lanes until a track opens). A scroll
+  // on any one has to reach the other two or a track's row/lane and the
+  // ruler above it would drift apart. Guarded both ways so mirroring one
+  // doesn't re-fire the others in a loop.
   var LANES_SCROLL_SYNCING = false;
   function initLanesScrollSync() {
     var list = el("trackList");
     var lanes = el("lanesView");
+    var viewport = el("pianoRollViewport");
     if (!list || !lanes) { return; }
     list.addEventListener("scroll", function () {
       if (LANES_SCROLL_SYNCING) { return; }
@@ -888,8 +1082,18 @@
       if (LANES_SCROLL_SYNCING) { return; }
       LANES_SCROLL_SYNCING = true;
       list.scrollTop = lanes.scrollTop;
+      if (viewport) { viewport.scrollLeft = lanes.scrollLeft; }
       LANES_SCROLL_SYNCING = false;
+      queueLaneDraw();
     });
+    if (viewport) {
+      viewport.addEventListener("scroll", function () {
+        if (LANES_SCROLL_SYNCING) { return; }
+        LANES_SCROLL_SYNCING = true;
+        lanes.scrollLeft = viewport.scrollLeft;
+        LANES_SCROLL_SYNCING = false;
+      });
+    }
   }
 
   function normalizeSoundPath(path) {
@@ -1688,13 +1892,6 @@
       return;
     }
     if (!soundCandidateChanged()) { return; }
-    // The user's OWN Follow-MIDI choice, carried across a sound change. null
-    // means they never said, and then the incoming sound's own plan decides.
-    var savedPart = partEntry(partByKey(partKey));
-    var pitchPreference = Object.prototype.hasOwnProperty.call(
-      savedPart,
-      "pitch_follow_preference"
-    ) ? !!savedPart.pitch_follow_preference : null;
     var body = { family: null, sound: null };
     if (candidate.kind === "family") { body.family = candidate.value; }
     function commit() {
@@ -1711,35 +1908,14 @@
 
     body.sound = candidate.value;
     body.pitch_follow = false;
+    body.pitch_follow_preference = false;
     body.root_midi = null;
-    var useButton = el("soundBrowserUse");
-    useButton.disabled = true;
-    el("soundSelection").textContent = "Analyzing musical pitch...";
-    setBusy(true, "Resolving sound pitch...");
-    api().sound_profile(candidate.value, partKey).then(function (response) {
-      setBusy(false);
-      if (response && response.ok && response.profile && response.pitch_plan) {
-        var plan = response.pitch_plan;
-        body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined &&
-          isFinite(Number(plan.root_midi)) ? Number(plan.root_midi) : null;
-        body.pitch_follow = body.root_midi !== null &&
-          (pitchPreference === null ? !!plan.pitch_follow : pitchPreference);
-        body.root_confidence = Number(plan.root_confidence || 0);
-        body.root_source = plan.root_source || null;
-        if (!body.pitch_follow && body.root_midi === null) {
-          toast("This sound will play unchanged at its natural pitch.");
-        }
-      } else {
-        toast("Pitch analysis was unavailable; this sound will play at natural pitch", "warn");
-      }
-      commit();
-    }, function () {
-      setBusy(false);
-      toast("Pitch analysis was unavailable; this sound will play at natural pitch", "warn");
-      commit();
-    }).finally(function () {
-      if (useButton && useButton.isConnected) { useButton.disabled = false; }
-    });
+    body.detected_root_midi = null;
+    body.root_confidence = 0;
+    body.root_source = null;
+    body.fine_tune_cents = 0;
+    toast("Sound selected unchanged. Analyze or tune it only when you want pitch following.");
+    commit();
   }
 
   function initSoundBrowser() {
@@ -1868,6 +2044,8 @@
         text: css('--text'),
         muted: css('--muted'),
         accent: css('--accent'),
+        sustainCut: css('--rollSustain'),
+        voiceCut: css('--rollVoice'),
         rollBlack: css('--rollBlack'),
         rollGrid: css('--rollGrid'),
         rollBeat: css('--rollBeat'),
@@ -1922,6 +2100,7 @@
         // Set only when a limit refused the note. Those are drawn hollow: a
         // note that never plays should not look like a quiet one.
         limitedBy: event.limited_by || null,
+        shortenedBy: event.shortened_by || null,
         converted: event.converted !== false,
         label: noteName(eventPitch)
       };
@@ -2009,22 +2188,62 @@
     };
   }
 
-  function shadeCutTail(context, geometry, palette) {
+  function cutTailStyle(palette, shortenedBy) {
+    if (shortenedBy === 'sustain') {
+      return { color: palette.sustainCut, crosshatch: false };
+    }
+    if (shortenedBy === 'voices') {
+      return { color: palette.voiceCut, crosshatch: true };
+    }
+    return { color: palette.border2, crosshatch: false };
+  }
+
+  function hatchCutTail(context, geometry, color, crosshatch) {
+    var tail = geometry.x + geometry.width - geometry.cutX;
+    if (tail < 4 || geometry.height < 4) { return; }
+    context.save();
+    context.beginPath();
+    context.rect(geometry.cutX, geometry.y, tail, geometry.height);
+    context.clip();
+    context.globalAlpha = 0.62;
+    context.strokeStyle = color;
+    context.lineWidth = 1;
+    context.setLineDash([]);
+
+    function diagonal(reverse) {
+      context.beginPath();
+      for (var offset = -geometry.height; offset < tail + geometry.height; offset += 5) {
+        var x = geometry.cutX + offset;
+        context.moveTo(x, reverse ? geometry.y + geometry.height : geometry.y);
+        context.lineTo(x + geometry.height, reverse ? geometry.y : geometry.y + geometry.height);
+      }
+      context.stroke();
+    }
+
+    diagonal(false);
+    if (crosshatch) { diagonal(true); }
+    context.restore();
+  }
+
+  function shadeCutTail(context, geometry, palette, shortenedBy, detailed) {
     if (geometry.cutX === null || geometry.cutX === undefined) { return; }
     var tail = geometry.x + geometry.width - geometry.cutX;
     if (tail <= 0.5) { return; }
+    var style = cutTailStyle(palette, shortenedBy);
     context.save();
     context.globalAlpha = 0.62;
     context.fillStyle = palette.field;
     context.fillRect(geometry.cutX, geometry.y, tail, geometry.height);
-    context.globalAlpha = 0.9;
-    context.strokeStyle = palette.field;
+    context.globalAlpha = 0.95;
+    context.strokeStyle = style.color;
     context.lineWidth = 1;
+    context.setLineDash([]);
     context.beginPath();
     context.moveTo(geometry.cutX + 0.5, geometry.y);
     context.lineTo(geometry.cutX + 0.5, geometry.y + geometry.height);
     context.stroke();
     context.restore();
+    if (detailed) { hatchCutTail(context, geometry, style.color, style.crosshatch); }
   }
 
   function parseMeter(value) {
@@ -2081,6 +2300,59 @@
       .filter(function (pitch) { return isFinite(pitch) && pitch >= 0 && pitch <= 127; });
     if (!pitches.length) { return 60; }
     return (Math.min.apply(null, pitches) + Math.max.apply(null, pitches)) / 2;
+  }
+
+  function setRollZoomPercent(percent) {
+    ROLL.zoom = clamp(Number(percent) || 100, 100, 800);
+    var stops = clamp(Math.log(ROLL.zoom / 100) / Math.LN2 * 10, 0, 53);
+    var control = el('rollZoom');
+    var label = Math.round(ROLL.zoom) + '%';
+    control.value = String(Math.round(stops));
+    control.setAttribute('aria-valuetext', label);
+    el('rollZoomValue').textContent = label;
+  }
+
+  function focusTrackRoll(channel) {
+    var events = laneDisplayEvents(channel.key);
+    var start = Infinity;
+    var end = -Infinity;
+    var low = Infinity;
+    var high = -Infinity;
+    events.forEach(function (event) {
+      var pitch = Number(event.pitch);
+      var noteStart = Number(event.start);
+      var noteEnd = Number(event.midi_end !== undefined && event.midi_end !== null
+        ? event.midi_end : event.end);
+      if (!isFinite(pitch) || !isFinite(noteStart) || !isFinite(noteEnd)) { return; }
+      start = Math.min(start, noteStart);
+      end = Math.max(end, noteEnd, noteStart);
+      low = Math.min(low, pitch);
+      high = Math.max(high, pitch);
+    });
+    if (!isFinite(start) || !isFinite(end) || !isFinite(low) || !isFinite(high)) { return; }
+
+    // Fit the track's written time span into roughly 84% of the window. The
+    // hard 800% ceiling gives a short one-note part useful surrounding context
+    // rather than dropping straight into the maximum browser canvas zoom.
+    var duration = Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1);
+    var span = Math.max(1, end - start);
+    setRollZoomPercent(100 * clamp(duration / span * 0.84, 1, 8));
+    resizeCanvas();
+
+    var viewport = el('pianoRollViewport');
+    var centerX = (contentXAtTime(start) + contentXAtTime(end)) / 2;
+    var centerPitch = (low + high) / 2;
+    viewport.scrollLeft = clamp(
+      centerX - ROLL.viewportWidth / 2,
+      0,
+      Math.max(0, ROLL.contentWidth - ROLL.viewportWidth)
+    );
+    viewport.scrollTop = clamp(
+      (127 - centerPitch + 0.5) * ROLL.rowHeight - ROLL.viewportHeight / 2,
+      0,
+      Math.max(0, ROLL.contentHeight - ROLL.viewportHeight)
+    );
+    queueDraw();
   }
 
   function playheadZoomAnchor() {
@@ -2155,6 +2427,13 @@
     }
     renderHorizontalScrollLock();
     drawPianoRoll();
+    // ROLL.contentWidth and viewport.scrollLeft just settled -- resize the
+    // visible lanes now rather than waiting for the next unrelated render(),
+    // or a zoom drag would show the ruler moving while the lanes sat still.
+    // When a detailed/global roll covers them, repainting every thumbnail is
+    // invisible duplicate work on a dense song; syncRollFocus will repaint
+    // them as soon as lanes are shown again.
+    if (!el('lanesView').hidden) { patchLanesView(); }
   }
 
   /* --------------------------------------------------------------- layout */
@@ -2302,21 +2581,48 @@
     return clamp(Number(timeMs) || 0, 0, duration) / duration * ROLL.contentWidth;
   }
 
-  function eachVisibleTick(step, minimumPixels, callback) {
+  function eachVisibleTick(step, minimumPixels, callback, scrollLeft, viewportWidth) {
     if (!isFinite(step) || step <= 0) { return; }
     var duration = Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1);
     var viewport = el('pianoRollViewport');
-    var startMs = viewport.scrollLeft / ROLL.contentWidth * duration;
-    var endMs = (viewport.scrollLeft + ROLL.viewportWidth) / ROLL.contentWidth * duration;
+    scrollLeft = scrollLeft === undefined ? viewport.scrollLeft : scrollLeft;
+    viewportWidth = viewportWidth === undefined ? ROLL.viewportWidth : viewportWidth;
+    var startMs = scrollLeft / ROLL.contentWidth * duration;
+    var endMs = (scrollLeft + viewportWidth) / ROLL.contentWidth * duration;
     var startTick = Math.max(0, tickAtTime(startMs));
     var endTick = Math.max(startTick, tickAtTime(endMs));
-    var maximumSamples = Math.max(2, Math.ceil(ROLL.viewportWidth / Math.max(1, minimumPixels)) + 2);
+    var maximumSamples = Math.max(2, Math.ceil(viewportWidth / Math.max(1, minimumPixels)) + 2);
     var stride = Math.max(1, Math.ceil((endTick - startTick) / step / maximumSamples));
     var actualStep = step * stride;
     var first = Math.max(0, Math.floor(startTick / actualStep) * actualStep);
     for (var tick = first; tick <= endTick + actualStep; tick += actualStep) {
-      callback(tick, contentXAtTime(timeAtTick(tick)) - viewport.scrollLeft);
+      callback(tick, contentXAtTime(timeAtTick(tick)) - scrollLeft);
     }
+  }
+
+  function timingLinesAt(scrollLeft, viewportWidth, gridDenominator) {
+    var timing = timingManifest();
+    var ticksPerBeat = Number(timing.ticks_per_beat) || 480;
+    gridDenominator = Math.max(1, Number(gridDenominator) || ROLL.gridDenominator);
+    var gridTicks = ticksPerBeat * 4 / gridDenominator;
+    var barTicks = ticksPerBeat * 4 / ROLL.meterDenominator * ROLL.meterNumerator;
+    var lines = { grid: [], bars: [] };
+    var lastGridX = -Infinity;
+    var lastBarX = -Infinity;
+
+    eachVisibleTick(gridTicks, 4, function (_tick, x) {
+      if (x >= -1 && x <= viewportWidth + 1 && x - lastGridX >= 4) {
+        lines.grid.push(x);
+        lastGridX = x;
+      }
+    }, scrollLeft, viewportWidth);
+    eachVisibleTick(barTicks, 18, function (tick, x) {
+      if (x >= -1 && x <= viewportWidth + 1 && x - lastBarX >= 18) {
+        lines.bars.push({ x: x, number: Math.round(tick / barTicks) + 1 });
+        lastBarX = x;
+      }
+    }, scrollLeft, viewportWidth);
+    return lines;
   }
 
   function timingLines() {
@@ -2333,25 +2639,7 @@
     if (RENDER.lineTimingSource === timing && RENDER.timingKey === key && RENDER.timingLines) {
       return RENDER.timingLines;
     }
-    var ticksPerBeat = Number(timing.ticks_per_beat) || 480;
-    var gridTicks = ticksPerBeat * 4 / ROLL.gridDenominator;
-    var barTicks = ticksPerBeat * 4 / ROLL.meterDenominator * ROLL.meterNumerator;
-    var lines = { grid: [], bars: [] };
-    var lastGridX = -Infinity;
-    var lastBarX = -Infinity;
-
-    eachVisibleTick(gridTicks, 4, function (_tick, x) {
-      if (x >= -1 && x <= ROLL.viewportWidth + 1 && x - lastGridX >= 4) {
-        lines.grid.push(x);
-        lastGridX = x;
-      }
-    });
-    eachVisibleTick(barTicks, 18, function (tick, x) {
-      if (x >= -1 && x <= ROLL.viewportWidth + 1 && x - lastBarX >= 18) {
-        lines.bars.push({ x: x, number: Math.round(tick / barTicks) + 1 });
-        lastBarX = x;
-      }
-    });
+    var lines = timingLinesAt(viewport.scrollLeft, ROLL.viewportWidth);
     RENDER.lineTimingSource = timing;
     RENDER.timingKey = key;
     RENDER.timingLines = lines;
@@ -2593,20 +2881,32 @@
   }
 
 
-  // The lane's own thumbnail: this track's notes only, black on the track's
-  // color, scaled to the clip's own box -- not the roll's zoom or scroll, so
-  // a lane stays readable at a glance no matter what the detailed roll shows.
-  function drawTrackClip(channel, canvas) {
-    var width = canvas.clientWidth;
-    var height = canvas.clientHeight;
+  // Each lane keeps a song-wide row for native scrolling, but paints only the
+  // visible slice into a viewport-sized canvas. At extreme zoom a full-song
+  // bitmap can be hundreds of thousands of pixels wide; allocating one for
+  // every track is both slow and eventually exceeds browser canvas limits.
+  function drawTrackClip(channel, canvas, width, height, contentWidth, scrollLeft, lines, palette) {
     if (width < 1 || height < 1) { return; }
-    sizeCanvas(canvas, width, height);
+    var source = previewDisplayEvents();
+    var resized = sizeCanvas(canvas, width, height);
+    // A normal render often reaches here only to refresh selection or mixer
+    // classes. Pixels are already correct in that case; keep the thumbnail
+    // rather than redrawing thousands of rectangles beneath a hidden roll.
+    if (!resized && canvas._snapmapClipSource === source &&
+        canvas._snapmapClipPart === channel.key &&
+        canvas._snapmapClipContentWidth === contentWidth &&
+        canvas._snapmapClipScrollLeft === scrollLeft &&
+        canvas._snapmapClipGridKey === laneGridKey()) { return; }
     var context = prepareContext(canvas);
     clearCanvas(context, canvas);
     var duration = Math.max(1, Number(STATE.preview && STATE.preview.duration_ms) || 1);
-    var events = previewDisplayEvents().filter(function (event) {
-      return String(event.part || (Number(event.channel) || 0)) === channel.key;
-    });
+    var events = laneDisplayEvents(channel.key);
+    canvas._snapmapClipSource = source;
+    canvas._snapmapClipPart = channel.key;
+    canvas._snapmapClipContentWidth = contentWidth;
+    canvas._snapmapClipScrollLeft = scrollLeft;
+    canvas._snapmapClipGridKey = laneGridKey();
+    drawLaneTimingGrid(context, lines, width, height, palette);
     if (!events.length) { return; }
     var lowest = Number(channel.lowest);
     var highest = Number(channel.highest);
@@ -2616,7 +2916,9 @@
     }
     var span = Math.max(1, highest - lowest + 1);
     var rowHeight = Math.max(1, height / span);
-    context.fillStyle = '#000';
+    var limited = [];
+    var trackColor = partColor(channel);
+    context.fillStyle = trackColor;
     events.forEach(function (event) {
       var pitch = Number(event.pitch);
       if (!isFinite(pitch)) { return; }
@@ -2625,18 +2927,85 @@
         event.midi_end !== undefined && event.midi_end !== null ? event.midi_end : event.end
       );
       var end = Math.max(start, isFinite(written) ? written : start);
-      var x = (start / duration) * width;
-      var w = Math.max(1, ((end - start) / duration) * width);
+      var x = (start / duration) * contentWidth - scrollLeft;
+      var w = Math.max(1, ((end - start) / duration) * contentWidth);
+      if (x + w < 0 || x > width) { return; }
       var y = height - ((pitch - lowest + 1) / span) * height;
-      context.globalAlpha = event.limited_by ? 0.3 : 0.8;
+      // Polyphony and voice limits refuse this note altogether. Keep its
+      // written position in the arrangement, but use the same hollow/dashed
+      // language as the detailed piano roll instead of a faint solid block.
+      if (event.limited_by) {
+        limited.push({ x: x, y: y, width: w, height: rowHeight });
+        return;
+      }
+      context.globalAlpha = 0.8;
       context.fillRect(x, y, w, rowHeight);
     });
     context.globalAlpha = 1;
+    if (limited.length) {
+      context.save();
+      context.globalAlpha = 0.9;
+      context.strokeStyle = trackColor;
+      context.lineWidth = 1;
+      context.setLineDash([3, 2]);
+      context.beginPath();
+      limited.forEach(function (block) {
+        context.rect(
+          Math.round(block.x) + 0.5,
+          Math.round(block.y) + 0.5,
+          Math.max(1, Math.round(block.width) - 1),
+          Math.max(1, Math.round(block.height) - 1)
+        );
+      });
+      context.stroke();
+      context.restore();
+    }
+  }
+
+  function laneGridKey() {
+    return [ROLL.laneGridDenominator, ROLL.meterNumerator, ROLL.meterDenominator].join('|');
+  }
+
+  function drawLaneTimingGrid(context, lines, width, height, palette) {
+    if (!lines || !palette) { return; }
+    context.save();
+    context.lineWidth = 1;
+    context.globalAlpha = 0.38;
+    context.strokeStyle = palette.rollGrid;
+    context.beginPath();
+    lines.grid.forEach(function (x) {
+      context.moveTo(Math.round(x) + 0.5, 0);
+      context.lineTo(Math.round(x) + 0.5, height);
+    });
+    context.stroke();
+    context.globalAlpha = 0.7;
+    context.strokeStyle = palette.rollBeat;
+    context.beginPath();
+    lines.bars.forEach(function (bar) {
+      context.moveTo(Math.round(bar.x) + 0.5, 0);
+      context.lineTo(Math.round(bar.x) + 0.5, height);
+    });
+    context.stroke();
+    context.restore();
+  }
+
+  function drawLaneGridFill(canvas, width, height, scrollLeft, lines, palette) {
+    if (width < 1 || height < 1) { return; }
+    var resized = sizeCanvas(canvas, width, height);
+    if (!resized && canvas._snapmapFillScrollLeft === scrollLeft &&
+        canvas._snapmapFillGridKey === laneGridKey() &&
+        canvas._snapmapFillHeight === height) { return; }
+    var context = prepareContext(canvas);
+    clearCanvas(context, canvas);
+    canvas._snapmapFillScrollLeft = scrollLeft;
+    canvas._snapmapFillGridKey = laneGridKey();
+    canvas._snapmapFillHeight = height;
+    drawLaneTimingGrid(context, lines, width, height, palette);
   }
 
   function noteVisual(record, palette) {
-    // The roll only ever loads the open track's notes (see rollDisplayEvents),
-    // so there is no second track here to fade against.
+    // A track roll has one part; the global roll may contain several. Note
+    // state, rather than a per-track fade, is what makes a note inactive.
     var inactive = record.muted || record.soloExcluded || !record.audible || !record.converted;
     var alpha = inactive ? 0.38 : 0.88;
     var labelAlpha = inactive ? 0.72 : 1;
@@ -2664,7 +3033,9 @@
         }
         if (visual.silenced) { silenced.push({ g: geometry, color: visual.color }); return; }
         batches[key].blocks.push(geometry);
-        if (geometry.cutX !== null) { cuts.push(geometry); }
+        if (geometry.cutX !== null) {
+          cuts.push({ geometry: geometry, shortenedBy: record.shortenedBy });
+        }
       });
       Object.keys(batches).forEach(function (key) {
         var batch = batches[key];
@@ -2677,7 +3048,9 @@
         context.fill();
       });
       context.globalAlpha = 1;
-      cuts.forEach(function (geometry) { shadeCutTail(context, geometry, palette); });
+      cuts.forEach(function (item) {
+        shadeCutTail(context, item.geometry, palette, item.shortenedBy, false);
+      });
       silenced.forEach(function (item) {
         outlineNoteBlock(context, item.g.x, item.g.y, item.g.width, item.g.height, 2, item.color);
       });
@@ -2708,7 +3081,7 @@
         visual.alpha,
         false
       );
-      shadeCutTail(context, geometry, palette);
+      shadeCutTail(context, geometry, palette, record.shortenedBy, true);
       drawNoteLabel(
         context,
         record,
@@ -2866,7 +3239,7 @@
         1,
         true
       );
-      shadeCutTail(context, geometry, palette);
+      shadeCutTail(context, geometry, palette, hovered.record.shortenedBy, true);
       drawNoteLabel(context, hovered.record, geometry, 1, visual.color);
       context.globalAlpha = 1;
     }
@@ -2933,9 +3306,14 @@
     });
   }
 
+  // #pianoRoll is position:sticky at left:0/top:0 inside #pianoRollViewport,
+  // so its rect.left always equals the viewport's own -- and the viewport's
+  // rect.left is also where #timeRuler and #lanesView start, both sharing
+  // its grid column. Reading it straight from the viewport (rather than the
+  // roll canvas specifically) is what lets the ruler and the lanes seek with
+  // the same math as the roll itself, not a copy that can drift from it.
   function positionFromClientX(clientX) {
-    var canvas = el('pianoRoll');
-    var rect = canvas.getBoundingClientRect();
+    var rect = el('pianoRollViewport').getBoundingClientRect();
     var x = clamp(clientX - rect.left + el('pianoRollViewport').scrollLeft, 0, ROLL.contentWidth);
     return x / ROLL.contentWidth * ((STATE.preview && STATE.preview.duration_ms) || 0);
   }
@@ -2962,11 +3340,20 @@
     if (ROLL.contentWidth <= ROLL.viewportWidth) { return; }
     var x = contentXAtTime(position);
     if (following) {
-      var leadingEdge = viewport.scrollLeft + ROLL.viewportWidth * 0.78;
-      var trailingEdge = viewport.scrollLeft + ROLL.viewportWidth * 0.18;
+      // Hold the moving playhead at the edge where it crossed, rather than
+      // jumping it back to a different anchor.  The old 78%-to-32% reset was
+      // conspicuous in lanes mode: the lane content would scroll, then the
+      // overlay line appeared to bounce back toward the left of the screen.
+      var leadingAnchor = ROLL.viewportWidth * 0.78;
+      var trailingAnchor = ROLL.viewportWidth * 0.18;
+      var leadingEdge = viewport.scrollLeft + leadingAnchor;
+      var trailingEdge = viewport.scrollLeft + trailingAnchor;
       if (x > leadingEdge || x < trailingEdge) {
-        var anchor = ROLL.viewportWidth * 0.32;
-        viewport.scrollLeft = clamp(x - anchor, 0, ROLL.contentWidth - ROLL.viewportWidth);
+        viewport.scrollLeft = clamp(
+          x - (x > leadingEdge ? leadingAnchor : trailingAnchor),
+          0,
+          ROLL.contentWidth - ROLL.viewportWidth
+        );
       }
     } else if (x < viewport.scrollLeft || x > viewport.scrollLeft + ROLL.viewportWidth) {
       viewport.scrollLeft = clamp(x - ROLL.viewportWidth / 2, 0, ROLL.contentWidth - ROLL.viewportWidth);
@@ -2981,7 +3368,7 @@
   }
 
   function canvasSeekScrollSpeed(clientX) {
-    var rect = el('pianoRoll').getBoundingClientRect();
+    var rect = el('pianoRollViewport').getBoundingClientRect();
     var edge = Math.min(56, rect.width * 0.14);
     if (clientX < rect.left + edge) {
       return -Math.min(28, Math.max(1, (rect.left + edge - clientX) / edge * 28));
@@ -3006,6 +3393,24 @@
     SEEK_DRAG.frame = requestAnimationFrame(continueCanvasSeekScroll);
   }
 
+  // Shared by the roll canvas, the ruler, and the lanes.  A lane captures on
+  // its individual row, rather than the lanes container, so a double-click
+  // keeps that row as its target when pointer capture ends.
+  function beginTimelineSeek(event, suppressMouse, captureTarget) {
+    if (!hasSong()) { return; }
+    // A lane also owns a dblclick listener that opens its track. Cancelling
+    // its pointerdown suppresses the compatibility mouse sequence that
+    // creates that dblclick, so only the canvas and ruler block it.
+    if (suppressMouse) { event.preventDefault(); }
+    var wasPlaying = AUDIO.playing;
+    pausePlayback();
+    var target = captureTarget || event.currentTarget;
+    SEEK_DRAG = { pointer: event.pointerId, resume: wasPlaying, clientX: event.clientX, frame: null, target: target };
+    target.setPointerCapture(event.pointerId);
+    setPosition(positionFromClientX(event.clientX), false);
+    SEEK_DRAG.frame = requestAnimationFrame(continueCanvasSeekScroll);
+  }
+
   function beginCanvasSeek(event) {
     if (!hasSong()) { return; }
     NOTE_POINTER = { clientX: event.clientX, clientY: event.clientY };
@@ -3016,30 +3421,30 @@
       openNoteInspector(hit.record.id);
       return;
     }
-    event.preventDefault();
-    var wasPlaying = AUDIO.playing;
-    pausePlayback();
-    SEEK_DRAG = { pointer: event.pointerId, resume: wasPlaying, clientX: event.clientX, frame: null };
-    el('pianoRoll').setPointerCapture(event.pointerId);
-    setPosition(positionFromCanvas(event), false);
-    SEEK_DRAG.frame = requestAnimationFrame(continueCanvasSeekScroll);
+    beginTimelineSeek(event, true);
+  }
+
+  function beginLaneTimelineSeek(event) {
+    var lane = event.target.closest(".lane-row");
+    beginTimelineSeek(event, false, lane);
   }
 
   function moveCanvasSeek(event) {
     if (!SEEK_DRAG || SEEK_DRAG.pointer !== event.pointerId) { return; }
     SEEK_DRAG.clientX = event.clientX;
-    setPosition(positionFromCanvas(event), false);
+    setPosition(positionFromClientX(event.clientX), false);
   }
 
   function endCanvasSeek(event) {
     if (!SEEK_DRAG || SEEK_DRAG.pointer !== event.pointerId) { return; }
     var resume = SEEK_DRAG.resume;
+    var target = SEEK_DRAG.target;
     if (SEEK_DRAG.frame !== null) { cancelAnimationFrame(SEEK_DRAG.frame); }
     SEEK_DRAG = null;
-    try { el('pianoRoll').releasePointerCapture(event.pointerId); } catch (_error) { /* already released */ }
+    try { target.releasePointerCapture(event.pointerId); } catch (_error) { /* already released */ }
     if (resume) { startPlayback(); }
     else if (event.type === 'pointercancel') { clearNotePointer(); }
-    else { updateNotePointer(event); }
+    else if (target === el('pianoRoll')) { updateNotePointer(event); }
   }
 
   /* --------------------------------------------------------------- audio */
@@ -3069,7 +3474,13 @@
   }
 
   function requiredAudioNames() {
-    return (STATE.preview && STATE.preview.sounds) || [];
+    var names = ((STATE.preview && STATE.preview.sounds) || []).slice();
+    if (AUDIO.playing && AUDIO.performance) {
+      (AUDIO.performance.sounds || []).forEach(function (name) {
+        if (names.indexOf(name) < 0) { names.push(name); }
+      });
+    }
+    return names;
   }
 
   function audioKey() {
@@ -3089,7 +3500,10 @@
 
   function invalidateAudio(clearBuffers) {
     PLAY_TOKEN += 1;
+    SETTINGS_AUDIO_REFRESH += 1;
     stopSources();
+    AUDIO.performance = null;
+    AUDIO.scheduledThrough = 0;
     AUDIO.key = '';
     AUDIO.prepareError = null;
     if (clearBuffers) {
@@ -3181,8 +3595,37 @@
   }
 
   function prepareSongAudio() {
-    if (!hasSong() || !STATE.audio || !STATE.audio.ready) { return; }
-    ensureSongAudio(true).catch(function () { renderAudio(); });
+    if (!hasSong() || !STATE.audio || !STATE.audio.ready) { return Promise.resolve(false); }
+    return ensureSongAudio(true).then(function () { return true; }, function () {
+      renderAudio();
+      return false;
+    });
+  }
+
+  function handoffPlaybackPreview() {
+    if (!AUDIO.playing) { return; }
+    // Everything through scheduledThrough has already been handed to Web
+    // Audio. Keep those sources untouched, then let the freshly converted
+    // event list take over immediately after that boundary. This makes edits
+    // audible without stopping a ringing note or duplicating queued notes.
+    var boundary = Math.max(currentPosition(), Number(AUDIO.scheduledThrough) || 0);
+    AUDIO.performance = capturePlaybackPreview();
+    AUDIO.nextIndex = firstFutureEvent(boundary + 0.001);
+    AUDIO.scheduledThrough = boundary;
+    scheduleAhead();
+  }
+
+  function refreshAudioAfterSettings() {
+    var refresh = ++SETTINGS_AUDIO_REFRESH;
+    AUDIO.key = '';
+    AUDIO.prepareError = null;
+    // requiredAudioNames includes both the old playing snapshot and the new
+    // conversion, so neither the ringing performance nor its replacement can
+    // lose a decoded sample during the handoff.
+    retainRequiredBuffers();
+    return prepareSongAudio().then(function (ready) {
+      if (refresh === SETTINGS_AUDIO_REFRESH && ready) { handoffPlaybackPreview(); }
+    });
   }
 
   function stopPlaybackClock() {
@@ -3212,19 +3655,55 @@
     source.buffer = buffer;
     var expressionGain = Math.pow(10, Number(event.volume_db || 0) / 20);
     var baseGain = 0.34 * expressionGain;
-    gain.gain.value = baseGain;
     var playbackRate = Number(event.playback_rate || 1);
-    source.playbackRate.value = playbackRate;
     source.connect(gain);
     gain.connect(AUDIO.master);
     var wallOffset = Math.max(0, (audiblePosition - event.start) / 1000);
-    var offset = wallOffset * playbackRate;
+    var attackSeconds = Math.max(0, Number(event.attack_ms || 0) / 1000);
+    if (attackSeconds > 0 && wallOffset < attackSeconds) {
+      gain.gain.setValueAtTime(0.001, when);
+      gain.gain.exponentialRampToValueAtTime(
+        Math.max(0.001, baseGain), when + attackSeconds - wallOffset
+      );
+    } else {
+      gain.gain.value = baseGain;
+    }
+    var glideSeconds = Math.max(0, Number(event.glide_ms || 0) / 1000);
+    var glideFromPitch = Number(event.glide_from_pitch);
+    var glideFromRate = isFinite(glideFromPitch)
+      ? Math.pow(2, glideFromPitch / 12)
+      : playbackRate;
+    var offset;
+    if (glideSeconds > 0 && glideFromRate !== playbackRate) {
+      var glideElapsed = Math.min(wallOffset, glideSeconds);
+      var glideProgress = glideElapsed / glideSeconds;
+      var currentRate = glideFromRate + (playbackRate - glideFromRate) * glideProgress;
+      source.playbackRate.setValueAtTime(currentRate, when);
+      if (glideElapsed < glideSeconds) {
+        source.playbackRate.linearRampToValueAtTime(
+          playbackRate,
+          when + glideSeconds - glideElapsed
+        );
+      }
+      // Integrate the linear playback-rate ramp so seeking into a gliding note
+      // begins at the corresponding sample position rather than jumping ahead
+      // as though the target rate had applied from its first millisecond.
+      offset = glideElapsed * (glideFromRate + currentRate) / 2;
+      if (wallOffset > glideSeconds) {
+        offset += (wallOffset - glideSeconds) * playbackRate;
+      }
+    } else {
+      source.playbackRate.value = playbackRate;
+      offset = wallOffset * playbackRate;
+    }
     var naturalDuration = buffer.duration / playbackRate;
     var stopAfter;
 
     if (event.sustained) {
-      var release = STATE.preview && !STATE.preview.hard_stop && !event.cut
-        ? Number(STATE.preview.release_s || 0)
+      var performance = playbackPreview();
+      var hardStop = event.hard_stop === undefined ? performance.hard_stop : !!event.hard_stop;
+      var release = !hardStop && !event.cut
+        ? Number(event.release_s === undefined ? performance.release_s : event.release_s) || 0
         : 0;
       var sounding = Math.max(0, (event.end - event.start) / 1000);
       var total = sounding + release;
@@ -3250,7 +3729,23 @@
       if (event.cut) {
         var untilCut = Math.max(0, (event.end - audiblePosition) / 1000);
         if (untilCut <= 0) { source.stop(); return; }
-        source.stop(when + Math.max(0.01, untilCut));
+        // A Sustain Limit is a deliberate release point, even for a one-shot.
+        // A voice steal remains abrupt: its emitter is already needed for the
+        // next attack. This mirrors the Timeline writer's fade/stop choice.
+        var sustainRelease = event.shortened_by === 'sustain' && !(
+          event.hard_stop === undefined ? playbackPreview().hard_stop : event.hard_stop
+        )
+          ? Number(event.release_s === undefined
+            ? playbackPreview().release_s : event.release_s) || 0
+          : 0;
+        if (sustainRelease > 0) {
+          var cutoffAt = when + untilCut;
+          gain.gain.setValueAtTime(baseGain, cutoffAt);
+          gain.gain.exponentialRampToValueAtTime(0.001, cutoffAt + sustainRelease);
+          source.stop(cutoffAt + sustainRelease);
+        } else {
+          source.stop(when + Math.max(0.01, untilCut));
+        }
       }
     }
     AUDIO.sources.push(source);
@@ -3258,7 +3753,7 @@
   }
 
   function firstFutureEvent(position) {
-    var events = previewEvents();
+    var events = playbackEvents();
     var low = 0;
     var high = events.length;
     while (low < high) {
@@ -3269,14 +3764,21 @@
   }
 
   function scheduleActiveAt(position) {
-    var events = previewEvents();
+    var events = playbackEvents();
+    var performance = playbackPreview();
     for (var index = 0; index < AUDIO.nextIndex; index += 1) {
       var event = events[index];
       var buffer = AUDIO.buffers[event.sound];
+      var hardStop = event.hard_stop === undefined ? performance.hard_stop : !!event.hard_stop;
       var end = event.sustained
-        ? event.end + (STATE.preview.hard_stop || event.cut ? 0 : Number(STATE.preview.release_s || 0) * 1000)
+        ? event.end + (hardStop || event.cut
+          ? 0 : (Number(event.release_s === undefined
+            ? performance.release_s : event.release_s) || 0) * 1000)
         : (event.cut
-          ? event.end
+          ? event.end + (event.shortened_by === 'sustain' && !hardStop
+            ? (Number(event.release_s === undefined
+              ? performance.release_s : event.release_s) || 0) * 1000
+            : 0)
           : (event.voice_end || (event.start + (buffer ? buffer.duration * 1000 / Number(event.playback_rate || 1) : 0))));
       if (end > position) { scheduleEvent(event, position, AUDIO.context.currentTime + 0.025); }
     }
@@ -3284,7 +3786,7 @@
 
   function scheduleAhead() {
     if (!AUDIO.playing || !AUDIO.context) { return; }
-    var events = previewEvents();
+    var events = playbackEvents();
     var position = currentPosition();
     var horizon = position + LOOKAHEAD_MS;
     while (AUDIO.nextIndex < events.length && events[AUDIO.nextIndex].start <= horizon) {
@@ -3298,6 +3800,7 @@
       scheduleEvent(event, audible, when);
       AUDIO.nextIndex += 1;
     }
+    AUDIO.scheduledThrough = horizon;
   }
 
   function animationTick() {
@@ -3314,22 +3817,34 @@
 
   function startPlayback() {
     if (!hasSong() || AUDIO.playing) { return; }
-    var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
+    var duration = Number(playbackPreview().duration_ms) || 0;
     if (AUDIO.position >= duration) { AUDIO.position = 0; }
     var token = ++PLAY_TOKEN;
-    ensureSongAudio().then(function () {
+    var context;
+    try {
+      context = ensureAudioContext();
+    } catch (error) {
+      fail(error);
+      return;
+    }
+    // Resume while this function is still running from the click/Space
+    // gesture. Waiting for sample preparation first can outlive the browser's
+    // user-activation window and make the first keyboard play appear dead.
+    Promise.resolve(context.resume()).then(function () {
       if (token !== PLAY_TOKEN) { return; }
-      return AUDIO.context.resume();
+      return ensureSongAudio();
     }).then(function () {
       if (token !== PLAY_TOKEN) { return; }
       // A completed song may still have a finite one-shot or release tail.
       // Starting it again deliberately replaces that tail; ordinary natural
       // completion below leaves it alone so preview matches SnapMap playback.
       stopSources();
+      AUDIO.performance = capturePlaybackPreview();
       AUDIO.playing = true;
       AUDIO.anchorPosition = AUDIO.position;
       AUDIO.anchorTime = AUDIO.context.currentTime;
       AUDIO.nextIndex = firstFutureEvent(AUDIO.position);
+      AUDIO.scheduledThrough = AUDIO.position;
       scheduleActiveAt(AUDIO.position);
       scheduleAhead();
       AUDIO.timer = setInterval(scheduleAhead, SCHEDULE_EVERY_MS);
@@ -3345,6 +3860,8 @@
     if (AUDIO.playing) { AUDIO.position = currentPosition(); }
     AUDIO.playing = false;
     stopSources();
+    AUDIO.performance = null;
+    AUDIO.scheduledThrough = AUDIO.position;
     renderTransportState();
     renderPosition(AUDIO.position, true);
   }
@@ -3353,6 +3870,8 @@
     PLAY_TOKEN += 1;
     AUDIO.playing = false;
     stopPlaybackClock();
+    AUDIO.performance = null;
+    AUDIO.scheduledThrough = 0;
     renderTransportState();
     setPosition(0);
   }
@@ -3388,7 +3907,10 @@
     var lock = el('horizontalScrollLock');
     var height = Math.max(0, viewport.offsetHeight - viewport.clientHeight);
     var width = Math.max(0, viewport.offsetWidth - viewport.clientWidth);
-    var locked = AUDIO.playing && height > 0 && ROLL.contentWidth > ROLL.viewportWidth;
+    // Lanes have no visible horizontal scrollbar to lock. Showing this cover
+    // above their overlay created an unexplained grey bar as soon as playback
+    // started, so it belongs to the detailed-roll view only.
+    var locked = (ROLL_PART || ROLL_GLOBAL) && AUDIO.playing && height > 0 && ROLL.contentWidth > ROLL.viewportWidth;
     lock.hidden = !locked;
     if (!locked) { return; }
     lock.style.height = height + 'px';
@@ -3503,6 +4025,7 @@
   function syncInspector() {
     var values = tuning();
     syncPair('maxSpeakersRange', 'maxSpeakersNumber', values.max_speakers || 32);
+    syncPair('songPolyphonyRange', 'songPolyphonyNumber', values.song_polyphony || 32);
     var polyOn = values.max_poly !== null && values.max_poly !== undefined;
     el('polyEnabled').checked = polyOn;
     syncPair('maxPolyRange', 'maxPolyNumber', polyOn ? values.max_poly : 16);
@@ -3538,6 +4061,11 @@
     INSPECTOR_OPEN = false;
     el('conversionInspector').hidden = true;
     el('conversionBtn').setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleInspector() {
+    if (INSPECTOR_OPEN) { closeInspector(); }
+    else { openInspector(); }
   }
 
   function openNotifications() {
@@ -3576,16 +4104,21 @@
   // block is genuinely shorter only when `end` falls before `midi_end`. Trimming
   // the ring after a note moves neither, and is not reported.
   function trackOutcomes(part) {
-    var out = { shortened: 0, lostToVoices: 0, lostToPolyphony: 0, notes: 0 };
+    var out = {
+      shortenedByVoices: 0,
+      shortenedBySustain: 0,
+      lostToVoices: 0,
+      lostToPolyphony: 0,
+      notes: 0
+    };
     if (!part) { return out; }
     previewDisplayEvents().forEach(function (event) {
       if (String(event.part) !== String(part.key)) { return; }
       out.notes += 1;
       if (event.limited_by === "voices") { out.lostToVoices += 1; return; }
       if (event.limited_by === "polyphony") { out.lostToPolyphony += 1; return; }
-      var written = Number(event.midi_end);
-      var heard = Number(event.end);
-      if (isFinite(written) && isFinite(heard) && heard < written) { out.shortened += 1; }
+      if (event.shortened_by === "voices") { out.shortenedByVoices += 1; }
+      if (event.shortened_by === "sustain") { out.shortenedBySustain += 1; }
     });
     return out;
   }
@@ -3594,36 +4127,17 @@
     return n + " " + (n === 1 ? one : many);
   }
 
-  // One shape, two limits. `key` is the per-track settings key, `fallbackKey`
-  // the song-wide value it inherits when the track has not overridden.
-  function syncChannelLimit(channel, key, fallbackKey, ids, describe) {
+  // Both track limits share an optional slider shape. Global Voices stays in
+  // Conversion settings as the hard ceiling for every track combined.
+  function syncChannelLimit(channel, key, fallbackKey, ids, describe, fallbackValue) {
     var saved = partEntry(channel);
     var own = saved[key];
     var on = own !== null && own !== undefined;
     var songWide = tuning()[fallbackKey];
     el(ids.enabled).checked = on;
     setDependent(ids.controls, on);
-    syncPair(ids.range, ids.number, on ? own : (songWide || 32));
+    syncPair(ids.range, ids.number, on ? own : (songWide || fallbackValue || 32));
     el(ids.help).textContent = describe(on ? own : null, songWide, trackOutcomes(channel));
-  }
-
-  function syncChannelVoices(channel) {
-    syncChannelLimit(channel, "voices", "max_speakers", {
-      enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
-      range: "channelVoicesRange", number: "channelVoicesNumber", help: "channelVoicesHelp"
-    }, function (own, songWide, seen) {
-      var said = [];
-      if (seen.lostToVoices) {
-        said.push(count(seen.lostToVoices, "note here never plays", "notes here never play")
-          + " because too many start at the same moment");
-      }
-      if (seen.shortened) {
-        said.push(count(seen.shortened, "note here stops", "notes here stop")
-          + " before its written end");
-      }
-      if (!said.length) { return "Nothing on this track is being cut short."; }
-      return said.join(", and ") + ".";
-    });
   }
 
   function syncChannelPoly(channel) {
@@ -3636,6 +4150,110 @@
       return count(seen.lostToPolyphony, "note here never plays", "notes here never play")
         + ", because the chords go thicker than this.";
     });
+  }
+
+  function syncChannelVoices(channel) {
+    syncChannelLimit(channel, "voices", "max_speakers", {
+      enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
+      range: "channelVoicesRange", number: "channelVoicesNumber", help: "channelVoicesHelp"
+    }, function (own, songWide, seen) {
+      var said = [];
+      if (own === 1) {
+        said.push("Monophonic: this track uses one pitch-controlled emitter");
+      }
+      if (seen.lostToVoices) {
+        said.push(count(seen.lostToVoices, "note here never plays", "notes here never play")
+          + " because too many start at the same moment");
+      }
+      if (seen.shortenedByVoices) {
+        said.push(count(seen.shortenedByVoices, "note here stops", "notes here stop")
+          + " before its written end");
+      }
+      if (!said.length) { return "Nothing on this track is being cut short."; }
+      return said.join(", and ") + ".";
+    });
+  }
+
+  function syncChannelSustain(channel) {
+    syncChannelLimit(channel, "sustain_ms", "cap_sustain_ms", {
+      enabled: "channelSustainEnabled", controls: "channelSustainControls",
+      range: "channelSustainRange", number: "channelSustainNumber", help: "channelSustainHelp"
+    }, function (own, songWide, seen) {
+      if (own === null && !songWide) {
+        return "Off, so sounds keep their natural duration unless a voice is stolen.";
+      }
+      if (!seen.shortenedBySustain) { return "No sounds on this track reach the limit."; }
+      return count(
+        seen.shortenedBySustain,
+        "sound is capped by this limit",
+        "sounds are capped by this limit"
+      ) + ".";
+    }, 1000);
+  }
+
+  function syncChannelAttack(channel) {
+    var saved = partEntry(channel);
+    var own = saved.attack_ms;
+    var on = own !== null && own !== undefined;
+    el("channelAttackEnabled").checked = on;
+    setDependent("channelAttackControls", on);
+    syncPair("channelAttackRange", "channelAttackNumber", on ? Number(own) : 80);
+    el("channelAttackHelp").textContent = on
+      ? "Fades each note in over " + Math.round(Number(own)) + " ms."
+      : "Off: each sound keeps its source attack and can stay on the shared path.";
+  }
+
+  function channelHardStop(channel) {
+    var own = partEntry(channel).hard_stop;
+    return own === null || own === undefined ? !!tuning().hard_stop : !!own;
+  }
+
+  function syncChannelHardStop(channel) {
+    var saved = partEntry(channel);
+    var own = saved.hard_stop;
+    var on = own !== null && own !== undefined;
+    var effective = channelHardStop(channel);
+    el("channelHardStopEnabled").checked = on;
+    el("channelHardStop").checked = effective;
+    setDependent("channelHardStopControls", on);
+    el("channelHardStopHelp").textContent = on
+      ? (effective ? "This track stops immediately at note-off." : "This track uses its Release fade.")
+      : (effective
+        ? "Inherited: Default Track Release stops notes immediately."
+        : "Inherited: Default Track Release uses its fade.");
+  }
+
+  function syncChannelRelease(channel) {
+    var saved = partEntry(channel);
+    var own = saved.release_s;
+    var on = own !== null && own !== undefined;
+    var fallback = Number(tuning().release_s);
+    if (!isFinite(fallback)) { fallback = 0.1; }
+    el("channelReleaseEnabled").checked = on;
+    syncPair("channelReleaseRange", "channelReleaseNumber", on ? Number(own) : fallback);
+    var hardStop = channelHardStop(channel);
+    setDependent("channelReleaseControls", on && !hardStop);
+    if (hardStop) {
+      el("channelReleaseHelp").textContent = "Track Hard Stop is on, so release fades are bypassed.";
+    } else if (on) {
+      el("channelReleaseHelp").textContent =
+        "This track fades for " + compactNumber(Number(own), 2) + " seconds after note-off.";
+    } else {
+      el("channelReleaseHelp").textContent =
+        "Using the " + compactNumber(fallback, 2) + " second default.";
+    }
+  }
+
+  function normalizedTrackVolume(value) {
+    return clamp(Math.round(Number(value) || 0), -60, 20);
+  }
+
+  function syncChannelVolume(channel) {
+    var value = normalizedTrackVolume(partEntry(channel).volume_db);
+    syncPair("channelVolumeRange", "channelVolumeNumber", value);
+    el("channelVolumeHelp").textContent = value
+      ? "Every note on this track is adjusted " + signed(value) + " dB."
+      : "Neutral: this track keeps its note and Global volume levels.";
   }
 
   function syncChannelPercussion(channel) {
@@ -3732,6 +4350,112 @@
     });
   }
 
+  function analyzedRoot(entry) {
+    var detected = Number(entry.detected_root_midi);
+    if (entry.detected_root_midi !== null && entry.detected_root_midi !== undefined &&
+        isFinite(detected)) { return detected; }
+    if ((entry.root_source === "detected" || entry.root_source === "palette_name") &&
+        entry.root_midi !== null && entry.root_midi !== undefined) {
+      detected = Number(entry.root_midi);
+      if (isFinite(detected)) { return detected; }
+    }
+    return null;
+  }
+
+  function syncChannelPitchControls(entry) {
+    var root = entry.root_midi === null || entry.root_midi === undefined
+      ? null : Number(entry.root_midi);
+    var detected = analyzedRoot(entry);
+    var transpose = Math.round(Number(entry.pitch_transpose || 0));
+    var savedDetuneCents = Math.round(Number(entry.fine_tune_cents || 0));
+    var glide = Math.round(Number(entry.glide_ms || 0));
+    var referenceCorrection = root === null || !isFinite(root) ? null : 60 - root;
+    var totalCalibrationCents = Math.round((referenceCorrection || 0) * 100);
+    var neutralReference = entry.root_source === "neutral";
+    var calibrationSemitones = totalCalibrationCents < 0
+      ? Math.ceil(totalCalibrationCents / 100)
+      : Math.floor(totalCalibrationCents / 100);
+    var calibrationCents = totalCalibrationCents - calibrationSemitones * 100;
+    syncPitchReferenceButton();
+    el("channelRootLabel").textContent = neutralReference
+      ? "Sample root (optional)"
+      : "Inferred sample natural note";
+    // The neutral C4 anchor is implementation detail, not a discovered sample
+    // root. Leave the optional field blank until analysis or the user supplies
+    // a real/manual reference, while retaining that anchor for Follow MIDI.
+    el("channelRootValue").value = root === null || !isFinite(root) || neutralReference
+      ? "" : pitchName(root);
+    el("channelRootDescription").textContent = neutralReference
+      ? "No sample root has been set. Follow MIDI note uses an internal " +
+        noteName(NEUTRAL_ROOT_MIDI) + " reference; the raw sound plays unchanged there."
+      : "Shows the analyzer result or the note inferred from manual sample tuning. Edit it only when you already know the sound's natural note. Correction equals the imported MIDI note minus this value.";
+    el("channelRootHelp").textContent = root === null || !isFinite(root)
+      ? "Enter a MIDI value such as 60 or a note such as C4. Flats are accepted."
+      : neutralReference
+        ? "No sample root is set. Follow MIDI note uses an internal " + pitchReference(root) +
+          " reference; the raw sound is unchanged there."
+      : "Natural sample note: " + pitchReference(root) +
+        (entry.root_source === "manual" ? " (manual). " : ". ") +
+        noteName(60) + " automatic correction: " +
+        pitchAdjustment(referenceCorrection) + ".";
+    syncPair("channelTransposeRange", "channelTransposeNumber", transpose);
+    syncPair("channelGlideRange", "channelGlideNumber", glide);
+    syncPair("channelCalibrationRange", "channelCalibrationNumber", calibrationSemitones);
+    syncPair(
+      "channelCalibrationCentsRange",
+      "channelCalibrationCentsNumber",
+      calibrationCents
+    );
+    el("channelCalibrationHelp").textContent = root === null || !isFinite(root)
+      ? "Starts from an assumed " + noteName(60) + ". Moving either tuning control enables Follow MIDI note and saves a manual calibration."
+      : neutralReference
+        ? "No sample root is set. Follow MIDI note uses an internal " + pitchReference(root) +
+          " reference; moving a tuning control replaces it with a manual calibration."
+      : noteName(60) + " sample correction: " + pitchAdjustment(referenceCorrection) +
+        ". Inferred natural note: " + pitchReference(root) + "." +
+        (savedDetuneCents
+          ? " Saved legacy track detune: " + pitchAdjustment(savedDetuneCents / 100) + "."
+          : "");
+
+    if (detected !== null) {
+      var confidence = Math.round(clamp(Number(entry.root_confidence || 0), 0, 1) * 100);
+      el("channelPitchAnalysis").textContent =
+        "Detected " + pitchReference(detected) + " with " + confidence + "% confidence.";
+    } else if (entry.root_source === "neutral") {
+      el("channelPitchAnalysis").textContent =
+        "Not analyzed. Follow MIDI note uses an assumed " + noteName(NEUTRAL_ROOT_MIDI) + " reference.";
+    } else {
+      el("channelPitchAnalysis").textContent = "Not analyzed yet.";
+    }
+
+    var adjustment = transpose + savedDetuneCents / 100;
+    if (entry.pitch_follow && root !== null && isFinite(root)) {
+      el("channelEffectivePitch").textContent =
+        "Pitch formula: imported MIDI note − " + pitchName(root) +
+        ". At " + noteName(60) + ", the final adjustment is " +
+        pitchAdjustment(referenceCorrection + adjustment) +
+        " after sample calibration and Track transpose." +
+        (savedDetuneCents
+          ? " A saved legacy detune adds " + pitchAdjustment(savedDetuneCents / 100) + "."
+          : "");
+    } else if (detected !== null) {
+      el("channelEffectivePitch").textContent =
+        "Natural playback after track controls: " + pitchReference(detected + adjustment) + ".";
+    } else {
+      el("channelEffectivePitch").textContent =
+        "The sound's natural note is unknown. Track controls apply " +
+        pitchAdjustment(adjustment) + ".";
+    }
+  }
+
+  function queueLaneDraw() {
+    if (LANE_DRAW_FRAME !== null || el("lanesView").hidden) { return; }
+    LANE_DRAW_FRAME = requestAnimationFrame(function () {
+      LANE_DRAW_FRAME = null;
+      patchLanesView();
+    });
+  }
+
   function syncChannelInspector() {
     if (!CHANNEL_INSPECTOR_OPEN) { return; }
     var channel = partByKey(SELECTED_PART);
@@ -3745,6 +4469,8 @@
     var root = entry.root_midi;
     var canFollow = root !== null && root !== undefined &&
       entry.root_source !== "detected_octave_pending";
+    el("channelPitchRegular").hidden = !exact;
+    el("channelPitchAdvanced").hidden = !exact;
     el("channelInspectorSubtitle").textContent =
       partLabel(channel) + " - MIDI channel " + (channel.channel + 1);
     el("channelSound").textContent = assignmentLabel(channel);
@@ -3759,6 +4485,11 @@
     // behind that return.
     syncChannelVoices(channel);
     syncChannelPoly(channel);
+    syncChannelSustain(channel);
+    syncChannelAttack(channel);
+    syncChannelHardStop(channel);
+    syncChannelRelease(channel);
+    syncChannelVolume(channel);
 
     // Available for every exact sound. A detected root makes following
     // musically faithful; without one it still works, against a neutral
@@ -3770,24 +4501,23 @@
       el("channelPitchModeHelp").textContent = channel.is_drums
         ? "Automatic percussion selects a dedicated sound for each MIDI key; channel-wide pitch following does not apply."
         : (entry.family
-          ? "This pitched instrument set always follows the imported MIDI notes."
-          : "Automatic musical mapping follows MIDI notes through the curated pitched palette.");
+          ? "Pitches this instrument set to match each imported MIDI note."
+          : "Pitches the automatic instrument mapping to match each imported MIDI note.");
       return;
     }
+    syncChannelPitchControls(entry);
 
     if (entry.pitch_follow) {
       el("channelPitchModeHelp").textContent = entry.root_source === "neutral"
-        ? "This sound follows the imported MIDI notes, treating " +
-          noteName(NEUTRAL_ROOT_MIDI) + " as its own pitch. No musical root was "
-          + "detected for it, so that reference is assumed rather than measured."
-        : "This sound follows the imported MIDI notes.";
+        ? "Pitches the sound to match each imported MIDI note, using " +
+          noteName(NEUTRAL_ROOT_MIDI) + " as an assumed starting pitch."
+        : "Pitches the sound to match each imported MIDI note.";
       return;
     }
     el("channelPitchModeHelp").textContent = canFollow
-      ? "This sound plays unchanged on every note."
-      : "This sound plays unchanged. No musical root was detected for it, so "
-        + "Follow MIDI note will make it rise and fall against a neutral " +
-        noteName(NEUTRAL_ROOT_MIDI) + ".";
+      ? "Plays the sound at its natural pitch on every note."
+      : "Plays the sound unchanged. Follow MIDI note uses an assumed " +
+        noteName(NEUTRAL_ROOT_MIDI) + " starting pitch.";
   }
 
   function openChannelInspector(partKey) {
@@ -3804,6 +4534,7 @@
   }
 
   function closeChannelInspector() {
+    stopPitchReferenceTone();
     CHANNEL_INSPECTOR_OPEN = false;
     el("channelInspector").hidden = true;
     if (hasSong()) { patchTracks(); }
@@ -3816,16 +4547,46 @@
     queueDraw();
   }
 
-  // A double-clicked lane opens the detailed roll scoped to that one track,
-  // and its settings alongside it -- double-clicking the already-open lane
-  // closes the roll again, back to the lanes-only view.
+  // A double-clicked lane or track label opens the detailed roll scoped to
+  // that one track. Double-clicking the already-open lane closes it again.
   // Opens the roll only -- track settings are their own click, on the row or
   // the lane, so a double-click to look at notes never also pops the
   // settings panel open over them.
   function toggleTrackRoll(partKey) {
     var channel = partByKey(partKey);
     if (!channel) { return; }
-    ROLL_PART = ROLL_PART === channel.key ? null : channel.key;
+    if (ROLL_PART === channel.key && !ROLL_GLOBAL) {
+      closeDetailedRoll();
+      return;
+    }
+    openTrackRoll(channel.key);
+  }
+
+  function openTrackRoll(partKey) {
+    var channel = partByKey(partKey);
+    if (!channel) { return; }
+    ROLL_GLOBAL = false;
+    ROLL_PART = channel.key;
+    invalidateRollAll();
+    syncRollFocus();
+    focusTrackRoll(channel);
+    patchTracks();
+    queueDraw();
+  }
+
+  function toggleGlobalRoll() {
+    ROLL_PART = null;
+    ROLL_GLOBAL = !ROLL_GLOBAL;
+    invalidateRollAll();
+    syncRollFocus();
+    patchTracks();
+    queueDraw();
+  }
+
+  function closeDetailedRoll() {
+    if (!ROLL_PART && !ROLL_GLOBAL) { return; }
+    ROLL_PART = null;
+    ROLL_GLOBAL = false;
     invalidateRollAll();
     syncRollFocus();
     patchTracks();
@@ -3838,24 +4599,50 @@
     var lanes = el('lanesView');
     var pitchRuler = el('pitchRuler');
     var channel = ROLL_PART ? partByKey(ROLL_PART) : null;
+    var open = !!channel || ROLL_GLOBAL;
+    var globalToggle = el('globalRollToggle');
     if (!chip || !lanes) { return; }
-    // The 72px pitch-ruler gutter (see .roll-pane--open in styles.css) only
-    // exists once a track is open -- otherwise it is dead space beside the
-    // lanes, which is the gap this class removes. The piano roll canvas
+    // The 72px pitch-ruler gutter (see .roll-pane--open in styles.css) exists
+    // only while either detailed roll is open -- otherwise it is dead space
+    // beside the lanes. The piano roll canvas
     // itself is never display:none'd (see .lanes-view's comment), so its
     // width just follows that column like any other grid content.
-    if (pane) { pane.classList.toggle('roll-pane--open', !!channel); }
-    lanes.hidden = !!channel;
+    if (pane) { pane.classList.toggle('roll-pane--open', open); }
+    lanes.hidden = open;
     // Inline, not a class: pitchRuler already carries an unconditional
     // `display: block` class rule, and an author rule beats [hidden] at
     // equal specificity, so only an inline style is guaranteed to win.
-    if (pitchRuler) { pitchRuler.style.display = channel ? '' : 'none'; }
-    chip.hidden = !channel;
+    if (pitchRuler) { pitchRuler.style.display = open ? '' : 'none'; }
+    chip.hidden = !open;
     if (channel) {
       el('rollTrackChipDot').style.background = partColor(channel);
       el('rollTrackChipLabel').textContent = partLabel(channel) + (channel.is_drums ? ' \u00b7 Percussion' : '');
+    } else if (ROLL_GLOBAL) {
+      el('rollTrackChipDot').style.background = css('--accent');
+      el('rollTrackChipLabel').textContent = 'All tracks';
     }
+    if (globalToggle) {
+      globalToggle.setAttribute('aria-pressed', ROLL_GLOBAL ? 'true' : 'false');
+      globalToggle.textContent = ROLL_GLOBAL ? 'Track lanes' : 'All tracks';
+      globalToggle.title = ROLL_GLOBAL
+        ? 'Return to the track lanes'
+        : 'Show all tracks in one piano roll';
+    }
+    syncGridResolution();
     resizeCanvas();
+  }
+
+  function activeGridDenominator() {
+    return ROLL_PART || ROLL_GLOBAL ? ROLL.gridDenominator : ROLL.laneGridDenominator;
+  }
+
+  function syncGridResolution() {
+    var control = el('gridResolution');
+    if (!control) { return; }
+    control.value = String(activeGridDenominator());
+    control.title = ROLL_PART || ROLL_GLOBAL
+      ? 'Piano roll grid resolution'
+      : 'Track lanes grid resolution';
   }
 
   function updateSelectedChannelPitchFollow(enabled) {
@@ -3878,13 +4665,333 @@
     applyPatch(partPatch(channel, body), true);
   }
 
+  function analyzeSelectedChannelPitch() {
+    var channel = partByKey(SELECTED_PART);
+    var saved = partEntry(channel);
+    if (!channel || !saved.sound || !api()) { return; }
+    var button = el("channelAnalyzePitch");
+    button.disabled = true;
+    button.textContent = "Analyzing...";
+    setBusy(true, "Analyzing sound pitch...");
+    api().sound_profile(saved.sound, channel.key, true).then(function (response) {
+      if (!response || !response.ok || !response.profile || !response.pitch_plan) {
+        throw new Error(response && response.error || "Pitch analysis was unavailable");
+      }
+      var profile = response.profile;
+      var plan = response.pitch_plan;
+      var detected = profile.pitchable && profile.root_midi !== null &&
+        profile.root_midi !== undefined ? Number(profile.root_midi) : null;
+      applyPatch(partPatch(channel, {
+        root_midi: Number(plan.root_midi),
+        detected_root_midi: detected !== null && isFinite(detected) ? detected : null,
+        root_confidence: Number(plan.root_confidence || 0),
+        root_source: plan.root_source || "neutral"
+      }), true);
+      toast(detected !== null && isFinite(detected)
+        ? "Detected " + pitchReference(detected) + "."
+        : "No stable root was detected; natural playback remains available.",
+      detected !== null && isFinite(detected) ? "ok" : "warn");
+    }).catch(fail).finally(function () {
+      setBusy(false);
+      button.disabled = false;
+      button.textContent = "Analyze sound";
+    });
+  }
+
+  function clearSelectedChannelPitch() {
+    var channel = partByKey(SELECTED_PART);
+    if (!channel || !partEntry(channel).sound) { return; }
+    stopPitchReferenceTone();
+    // This deliberately leaves Track Transpose and any explicit note edits in
+    // place. They are musical choices, while this button removes only the
+    // sample-root knowledge that produces automatic pitch compensation.
+    applyPatch(partPatch(channel, {
+      pitch_follow: false,
+      pitch_follow_preference: false,
+      root_midi: null,
+      detected_root_midi: null,
+      root_confidence: 0,
+      root_source: null,
+      fine_tune_cents: 0
+    }), true);
+    toast("Pitch analysis and calibration cleared. The sound now plays unchanged.");
+  }
+
+  function syncPitchReferenceButton() {
+    var button = el("channelPlayReference");
+    if (!button) { return; }
+    button.textContent = PITCH_REFERENCE_TONE
+      ? "Stop " + noteName(60) + " reference"
+      : "Play " + noteName(60) + " reference";
+    button.setAttribute("aria-label", button.textContent + ", MIDI 60, 261.63 hertz");
+    el("channelReferenceHelp").textContent = "MIDI 60 \u00b7 261.63 Hz";
+  }
+
+  function stopPitchReferenceTone() {
+    PITCH_REFERENCE_TOKEN += 1;
+    var tone = PITCH_REFERENCE_TONE;
+    PITCH_REFERENCE_TONE = null;
+    if (tone) {
+      var now = tone.context.currentTime;
+      try {
+        tone.gain.gain.cancelScheduledValues(now);
+        tone.gain.gain.setValueAtTime(Math.max(tone.gain.gain.value, 0.0001), now);
+        tone.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
+        tone.oscillator.stop(now + 0.04);
+      } catch (_error) { /* tone already ended */ }
+    }
+    syncPitchReferenceButton();
+  }
+
+  function playPitchReferenceTone() {
+    stopPitchReferenceTone();
+    var token = PITCH_REFERENCE_TOKEN;
+    var context;
+    try { context = ensureAudioContext(); } catch (error) { fail(error); return; }
+    context.resume().then(function () {
+      if (token !== PITCH_REFERENCE_TOKEN || !CHANNEL_INSPECTOR_OPEN) { return; }
+      var oscillator = context.createOscillator();
+      var gain = context.createGain();
+      var now = context.currentTime;
+      oscillator.type = "sine";
+      oscillator.frequency.value = 440 * Math.pow(2, (60 - 69) / 12);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+      oscillator.connect(gain);
+      gain.connect(AUDIO.master);
+      PITCH_REFERENCE_TONE = {
+        context: context,
+        oscillator: oscillator,
+        gain: gain
+      };
+      oscillator.onended = function () {
+        if (PITCH_REFERENCE_TONE && PITCH_REFERENCE_TONE.oscillator === oscillator) {
+          PITCH_REFERENCE_TONE = null;
+          syncPitchReferenceButton();
+        }
+      };
+      oscillator.start(now);
+      syncPitchReferenceButton();
+    }).catch(fail);
+  }
+
+  function togglePitchReferenceTone() {
+    if (PITCH_REFERENCE_TONE) { stopPitchReferenceTone(); }
+    else { playPitchReferenceTone(); }
+  }
+
+  function updateSelectedRoot(raw) {
+    var channel = partByKey(SELECTED_PART);
+    if (!channel) { return; }
+    var value = parsePitchReference(raw);
+    if (value === null) {
+      toast("Enter a whole MIDI value from 0 to 127, or a note such as D#3, E\u266d3, or C4 +25c.", "warn");
+      syncChannelInspector();
+      return;
+    }
+    applyPatch(partPatch(channel, {
+      root_midi: Math.round(value * 10000) / 10000,
+      root_source: "manual",
+      fine_tune_cents: 0
+    }), true);
+  }
+
+  function updateManualSampleCalibration() {
+    var channel = partByKey(SELECTED_PART);
+    if (!channel) { return; }
+    var semitones = clamp(
+      Math.round(Number(el("channelCalibrationNumber").value) || 0),
+      -24,
+      24
+    );
+    var cents = clamp(
+      Math.round(Number(el("channelCalibrationCentsNumber").value) || 0),
+      -100,
+      100
+    );
+    var correction = semitones + cents / 100;
+    var root = Math.round((NEUTRAL_ROOT_MIDI - correction) * 10000) / 10000;
+    el("channelPitchFollow").checked = true;
+    applyPatch(partPatch(channel, {
+      pitch_follow: true,
+      pitch_follow_preference: true,
+      root_midi: root,
+      root_confidence: 0,
+      root_source: "manual",
+      fine_tune_cents: 0
+    }), true);
+  }
+
+  function bindChannelPitchControls() {
+    var sendCalibration = debounce(updateManualSampleCalibration, 180);
+    var sendTranspose = debounce(function (value) {
+      var channel = partByKey(SELECTED_PART);
+      if (channel) { applyPatch(partPatch(channel, { pitch_transpose: value }), true); }
+    }, 180);
+    var sendGlide = debounce(function (value) {
+      var channel = partByKey(SELECTED_PART);
+      if (channel) { applyPatch(partPatch(channel, { glide_ms: value }), true); }
+    }, 180);
+    el("channelAnalyzePitch").addEventListener("click", analyzeSelectedChannelPitch);
+    el("channelClearPitch").addEventListener("click", clearSelectedChannelPitch);
+    el("channelPlayReference").addEventListener("click", togglePitchReferenceTone);
+    el("channelRootValue").addEventListener("change", function () {
+      updateSelectedRoot(this.value);
+    });
+    el("channelCalibrationRange").addEventListener("input", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), -24, 24);
+      el("channelCalibrationNumber").value = value;
+      sendCalibration();
+    });
+    el("channelCalibrationNumber").addEventListener("change", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), -24, 24);
+      this.value = value;
+      el("channelCalibrationRange").value = value;
+      sendCalibration();
+    });
+    el("channelCalibrationCentsRange").addEventListener("input", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), -100, 100);
+      el("channelCalibrationCentsNumber").value = value;
+      sendCalibration();
+    });
+    el("channelCalibrationCentsNumber").addEventListener("change", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), -100, 100);
+      this.value = value;
+      el("channelCalibrationCentsRange").value = value;
+      sendCalibration();
+    });
+    el("channelTransposeRange").addEventListener("input", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), -24, 24);
+      el("channelTransposeNumber").value = value;
+      sendTranspose(value);
+    });
+    el("channelTransposeNumber").addEventListener("change", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), -24, 24);
+      el("channelTransposeRange").value = value;
+      sendTranspose(value);
+    });
+    el("channelGlideRange").addEventListener("input", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), 0, 5000);
+      el("channelGlideNumber").value = value;
+      sendGlide(value);
+    });
+    el("channelGlideNumber").addEventListener("change", function () {
+      var value = clamp(Math.round(Number(this.value) || 0), 0, 5000);
+      el("channelGlideRange").value = value;
+      sendGlide(value);
+    });
+  }
+
+  function bindChannelVolume() {
+    var send = debounce(function (value) {
+      var part = partByKey(SELECTED_PART);
+      if (part) { applyPatch(partPatch(part, { volume_db: value }), true); }
+    }, 180);
+    el("channelVolumeRange").addEventListener("input", function () {
+      var value = normalizedTrackVolume(this.value);
+      el("channelVolumeNumber").value = value;
+      el("channelVolumeHelp").textContent = value
+        ? "Every note on this track is adjusted " + signed(value) + " dB."
+        : "Neutral: this track keeps its note and Global volume levels.";
+      send(value);
+    });
+    el("channelVolumeNumber").addEventListener("change", function () {
+      var value = normalizedTrackVolume(this.value);
+      this.value = value;
+      el("channelVolumeRange").value = value;
+      send(value);
+    });
+  }
+
+  function bindChannelRelease() {
+    var send = debounce(function (value) {
+      var part = partByKey(SELECTED_PART);
+      if (!part) { return; }
+      applyPatch(partPatch(part, { release_s: value }), true);
+    }, 180);
+    function normalized(value) {
+      return Math.round(clamp(Number(value) || 0, 0, 10) * 100) / 100;
+    }
+    el("channelReleaseEnabled").addEventListener("change", function () {
+      var part = partByKey(SELECTED_PART);
+      setDependent("channelReleaseControls", this.checked && !(part && channelHardStop(part)));
+      if (!this.checked) { send(null); return; }
+      var fallback = Number(tuning().release_s);
+      send(normalized(isFinite(fallback) ? fallback : 0.1));
+    });
+    el("channelReleaseRange").addEventListener("input", function () {
+      var value = normalized(this.value);
+      el("channelReleaseNumber").value = value;
+      send(value);
+    });
+    el("channelReleaseNumber").addEventListener("change", function () {
+      var value = normalized(this.value);
+      this.value = value;
+      el("channelReleaseRange").value = value;
+      send(value);
+    });
+  }
+
+  function bindChannelAttack() {
+    var send = debounce(function (value) {
+      var part = partByKey(SELECTED_PART);
+      if (part) { applyPatch(partPatch(part, { attack_ms: value }), true); }
+    }, 180);
+    function normalized(value) {
+      return clamp(Math.round(Number(value) || 0), 1, 5000);
+    }
+    el("channelAttackEnabled").addEventListener("change", function () {
+      setDependent("channelAttackControls", this.checked);
+      if (!this.checked) { send(null); return; }
+      send(normalized(el("channelAttackNumber").value || 80));
+    });
+    el("channelAttackRange").addEventListener("input", function () {
+      var value = normalized(this.value);
+      el("channelAttackNumber").value = value;
+      send(value);
+    });
+    el("channelAttackNumber").addEventListener("change", function () {
+      var value = normalized(this.value);
+      this.value = value;
+      el("channelAttackRange").value = value;
+      send(value);
+    });
+  }
+
+  function bindChannelHardStop() {
+    var send = debounce(function (value) {
+      var part = partByKey(SELECTED_PART);
+      if (part) { applyPatch(partPatch(part, { hard_stop: value }), true); }
+    }, 120);
+    function syncReleaseEnabled() {
+      var part = partByKey(SELECTED_PART);
+      var hardStop = el("channelHardStopEnabled").checked
+        ? el("channelHardStop").checked
+        : (part && channelHardStop(part));
+      setDependent(
+        "channelReleaseControls",
+        el("channelReleaseEnabled").checked && !hardStop
+      );
+    }
+    el("channelHardStopEnabled").addEventListener("change", function () {
+      setDependent("channelHardStopControls", this.checked);
+      if (!this.checked) { send(null); return; }
+      send(!!el("channelHardStop").checked);
+      syncReleaseEnabled();
+    });
+    el("channelHardStop").addEventListener("change", function () {
+      send(!!this.checked);
+      syncReleaseEnabled();
+    });
+  }
+
   function initChannelInspector() {
     el("closeChannelInspector").addEventListener(
       "click",
       closeChannelInspectorAndClearSelection
     );
     el("rollTrackChipClose").addEventListener("click", function () {
-      if (ROLL_PART) { toggleTrackRoll(ROLL_PART); }
+      closeDetailedRoll();
     });
     el("channelPercussion").addEventListener("change", function () {
       var channel = partByKey(SELECTED_PART);
@@ -3899,6 +5006,11 @@
       }
       updateSelectedChannelPitchFollow(this.checked);
     });
+    bindChannelPitchControls();
+    bindChannelVolume();
+    bindChannelRelease();
+    bindChannelAttack();
+    bindChannelHardStop();
     bindChannelLimit("voices", "max_speakers", {
       enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
       range: "channelVoicesRange", number: "channelVoicesNumber"
@@ -3907,13 +5019,17 @@
       enabled: "channelPolyEnabled", controls: "channelPolyControls",
       range: "channelPolyRange", number: "channelPolyNumber"
     });
+    bindChannelLimit("sustain_ms", "cap_sustain_ms", {
+      enabled: "channelSustainEnabled", controls: "channelSustainControls",
+      range: "channelSustainRange", number: "channelSustainNumber"
+    }, 1000);
   }
 
   // Unticking writes null rather than removing the key, because a patch merges:
   // an absent key means "leave it alone", so dropping it would leave the old
   // override in force while the box said otherwise. Null is how the settings
   // document spells "use the song's".
-  function bindChannelLimit(key, fallbackKey, ids) {
+  function bindChannelLimit(key, fallbackKey, ids, fallbackValue) {
     var send = debounce(function (value) {
       var part = partByKey(SELECTED_PART);
       if (!part) { return; }
@@ -3926,7 +5042,9 @@
       // the control the user just switched on disabled under their cursor.
       setDependent(ids.controls, this.checked);
       if (!this.checked) { send(null); return; }
-      send(Math.round(Number(el(ids.number).value) || tuning()[fallbackKey] || 32));
+      send(Math.round(
+        Number(el(ids.number).value) || tuning()[fallbackKey] || fallbackValue || 32
+      ));
     });
     el(ids.range).addEventListener("input", function () {
       el(ids.number).value = this.value;
@@ -3958,7 +5076,7 @@
 
   function signed(value) {
     value = Number(value) || 0;
-    return (value > 0 ? "+" : "") + String(value);
+    return (value > 0 ? "+" : "") + compactNumber(value, 2);
   }
 
   function normalizedMasterVolume(value) {
@@ -4003,19 +5121,27 @@
     el("noteSourcePitch").textContent =
       noteName(note.source_pitch) + " (" + note.source_pitch + ")";
     el("noteSound").textContent = String(note.sound || "");
-    syncPair("notePitchRange", "notePitchNumber", Number(note.pitch_modifier || 0));
+    var activePitch = note.pitch_semitones;
+    if (activePitch === null || activePitch === undefined) {
+      activePitch = note.pitch_follow && note.automatic_pitch !== null &&
+        note.automatic_pitch !== undefined
+        ? Number(note.automatic_pitch) + Number(note.pitch_offset || 0)
+        : Number(note.pitch_offset || 0);
+    }
+    syncPair("notePitchRange", "notePitchNumber", Math.round(Number(activePitch) || 0));
     el("notePitchMode").textContent =
       (note.pitch_follow ? "Follow MIDI" : "Manual") + " / semitones";
     syncPair("noteVolumeRange", "noteVolumeNumber", Number(note.note_volume_db || 0));
     el("noteVolumeReadout").textContent =
-      "Global " + signed(note.master_volume_db) +
+      "Track " + signed(note.track_volume_db) + " dB; Global " +
+      signed(note.master_volume_db) +
       " dB; output " + signed(note.volume_db) + " dB.";
 
     var limits = [];
     if (note.pitch_limited) {
       limits.push(
-        "Pitch requested " + signed(note.requested_pitch) +
-        " semitones and was clamped to " + signed(note.pitch_modifier) + "."
+        "Pitch requested " + pitchAdjustment(note.requested_pitch) +
+        " and was clamped to " + pitchAdjustment(note.pitch_modifier) + "."
       );
     }
     if (note.volume_limited) {
@@ -4023,6 +5149,16 @@
         "Volume requested " + signed(note.requested_volume_db) +
         " dB and was clamped to " + signed(note.volume_db) + " dB."
       );
+    }
+    if (note.shortened_by === 'sustain') {
+      limits.push("Sustain Limit caps this sound's audible duration.");
+    } else if (note.shortened_by === 'voices') {
+      limits.push("A later note reuses this track's voice before the written note-off.");
+    }
+    if (note.limited_by === 'polyphony') {
+      limits.push("This note never starts because of a polyphony limit.");
+    } else if (note.limited_by === 'voices') {
+      limits.push("This note never starts because too many notes begin at once for the voice limit.");
     }
     el("noteClampNotice").hidden = limits.length === 0;
     el("noteClampNotice").textContent = limits.join(" ");
@@ -4050,7 +5186,10 @@
     if (!STATE.settings || !noteId || !key) { return; }
     var pitchKey = key === "pitch_semitones" || key === "follow_pitch_semitones";
     var limits = pitchKey ? [-24, 24] : [-60, 20];
-    var value = clamp(Math.round(Number(rawValue) || 0), limits[0], limits[1]);
+    var numeric = Number(rawValue) || 0;
+    var value = pitchKey
+      ? clamp(Math.round(numeric), limits[0], limits[1])
+      : clamp(Math.round(numeric), limits[0], limits[1]);
     var notePatch = {};
     var entry = {};
     if (pitchKey) {
@@ -4115,10 +5254,11 @@
   }
 
   function initInspector() {
-    el('conversionBtn').addEventListener('click', openInspector);
+    el('conversionBtn').addEventListener('click', toggleInspector);
     el('menuConversion').addEventListener('click', function () { closeMenus(); openInspector(); });
     el('closeInspector').addEventListener('click', closeInspector);
     bindPair('maxSpeakersRange', 'maxSpeakersNumber', 'max_speakers', false);
+    bindPair('songPolyphonyRange', 'songPolyphonyNumber', 'song_polyphony', false);
     bindPair('maxPolyRange', 'maxPolyNumber', 'max_poly', false);
     bindPair('releaseRange', 'releaseNumber', 'release_s', true);
     bindPair('sustainRange', 'sustainNumber', 'cap_sustain_ms', false);
@@ -4138,19 +5278,16 @@
     });
     el('restoreDefaults').addEventListener('click', function () {
       if (!api()) { return; }
-      var resume = AUDIO.playing;
-      pausePlayback();
       var sequence = nextRequest();
       setBusy(true, 'Restoring defaults...');
       api().reset_tuning().then(function (response) {
         setBusy(false);
         if (!response || !response.ok) { fail(response); return; }
         adopt(response, sequence);
-        invalidateAudio(false);
         render();
-        prepareSongAudio();
+        refreshAudioAfterSettings();
+        reportSidecarStatus(response);
         toast('Conversion defaults restored', 'ok');
-        if (resume) { startPlayback(); }
       }, function (error) { setBusy(false); fail(error); });
     });
   }
@@ -4159,7 +5296,8 @@
 
   function afterLoad(response, sequence) {
     setBusy(false);
-    if (!response || !response.ok) { fail(response); return; }
+    setMidiLoading(false);
+    if (!response || !response.ok) { fail(response); render(); return; }
     pausePlayback();
     AUDIO.position = 0;
     invalidateAudio(true);
@@ -4170,6 +5308,7 @@
     adopt(response, sequence);
     render();
     prepareSongAudio();
+    requestAnimationFrame(focusWorkspaceKeyboard);
     if (response.sidecar_error) { toast(response.sidecar_error, 'warn'); }
     if (response.pitch_reconciled && response.pitch_reconciled.length) {
       toast('Updated saved automatic pitch settings for this song', 'ok');
@@ -4182,10 +5321,11 @@
     if (!api()) { toast('The file picker needs the desktop window', 'warn'); return; }
     var sequence = nextRequest();
     setBusy(true, 'Opening MIDI...');
+    setMidiLoading(true, 'Opening MIDI...');
     api().pick_midi().then(function (response) {
-      if (response && response.cancelled) { setBusy(false); return; }
+      if (response && response.cancelled) { setBusy(false); setMidiLoading(false); render(); return; }
       afterLoad(response, sequence);
-    }, function (error) { setBusy(false); fail(error); });
+    }, function (error) { setBusy(false); setMidiLoading(false); fail(error); render(); });
   }
 
   function reopenMidi() {
@@ -4193,7 +5333,8 @@
     if (!api() || !hasSong()) { return; }
     var sequence = nextRequest();
     setBusy(true, 'Reopening MIDI...');
-    api().load_midi(STATE.settings.midi).then(function (response) { afterLoad(response, sequence); }, function (error) { setBusy(false); fail(error); });
+    setMidiLoading(true, 'Reopening MIDI...');
+    api().load_midi(STATE.settings.midi).then(function (response) { afterLoad(response, sequence); }, function (error) { setBusy(false); setMidiLoading(false); fail(error); render(); });
   }
 
   function exportMap() {
@@ -4248,46 +5389,113 @@
     });
   }
 
-  function applyPatch(body, resumePlayback) {
+  function applyPatch(body, _resumePlayback) {
     if (!api()) { return Promise.resolve(); }
     var patch = JSON.parse(JSON.stringify(body || {}));
-    if (!resumePlayback) { PATCH_RESUME = false; }
-    else if (AUDIO.playing) { PATCH_RESUME = true; }
-    pausePlayback();
-    PATCH_PENDING += 1;
+    applyOptimisticMixPatch(patch);
+    PATCH_NEXT = mergePendingPatch(PATCH_NEXT, patch);
+    PATCH_PENDING = 1;
+    drainPatchQueue();
+    return PATCH_QUEUE;
+  }
 
-    function runPatch() {
-      var sequence = nextRequest();
-      setBusy(true, 'Updating conversion...');
-      return api().apply_settings(patch).then(function (response) {
-        setBusy(false);
-        if (!response || !response.ok) { fail(response); render(); return; }
-        adopt(response, sequence);
-        invalidateAudio(false);
-        AUDIO.position = clamp(
-          AUDIO.position,
-          0,
-          (STATE.preview && STATE.preview.duration_ms) || 0
-        );
-        render();
-        prepareSongAudio();
-      }, function (error) {
-        setBusy(false);
-        fail(error);
-        render();
+  function isMixOnlyPatch(patch) {
+    if (!patch || Object.keys(patch).length !== 1 || !patch.channels) { return false; }
+    return Object.keys(patch.channels).every(function (partKey) {
+      var entry = patch.channels[partKey];
+      if (!entry || typeof entry !== 'object') { return false; }
+      return Object.keys(entry).every(function (key) {
+        return (key === 'muted' || key === 'soloed') && typeof entry[key] === 'boolean';
       });
-    }
+    });
+  }
 
-    var operation = PATCH_QUEUE.then(runPatch, runPatch).finally(function () {
-      PATCH_PENDING = Math.max(0, PATCH_PENDING - 1);
-      if (PATCH_PENDING === 0) {
-        var shouldResume = PATCH_RESUME;
-        PATCH_RESUME = false;
-        if (shouldResume) { startPlayback(); }
+  function applyOptimisticMixPatch(patch) {
+    if (!isMixOnlyPatch(patch) || !STATE.settings || !STATE.preview) { return; }
+    // Mute and solo do not alter the conversion of an individual note. Update
+    // their mix flags from the already-loaded display events immediately, so a
+    // 6,000-note arrangement feels like a mixer rather than a round trip.
+    STATE.settings = mergePendingPatch(JSON.parse(JSON.stringify(STATE.settings)), patch);
+    var display = STATE.preview.display_events || [];
+    var soloActive = anySoloedChannel();
+    display.forEach(function (event) {
+      var part = partByKey(event.part);
+      var entry = partEntry(part);
+      event.muted = !!entry.muted;
+      event.solo_excluded = soloActive && !entry.soloed;
+    });
+    STATE.preview.events = display.filter(function (event) {
+      return event.converted && event.audible && !event.muted && !event.solo_excluded;
+    });
+    STATE.preview.sounds = STATE.preview.events.map(function (event) { return event.sound; })
+      .filter(function (sound, index, all) { return all.indexOf(sound) === index; }).sort();
+    invalidatePreviewRenderCache();
+    render();
+  }
+
+  function retainPendingSettings(patch) {
+    // A response may describe an older drag position while the latest one is
+    // queued. Keep controls at the position under the user's pointer until
+    // that latest conversion arrives instead of snapping them backward.
+    if (!patch || !STATE.settings) { return; }
+    STATE.settings = mergePendingPatch(JSON.parse(JSON.stringify(STATE.settings)), patch);
+  }
+
+  function mergePendingPatch(base, patch) {
+    var merged = base || {};
+    Object.keys(patch).forEach(function (key) {
+      var value = patch[key];
+      // Settings patches are records at the outer levels (notably tuning,
+      // channels and notes). Merge those records so a slider drag does not
+      // discard a click made while its previous value was being converted;
+      // arrays and scalar values deliberately remain last-write-wins.
+      var replaceWholeMap = key === 'drum_keys' || key === 'family_caps';
+      if (!replaceWholeMap && value && typeof value === 'object' && !Array.isArray(value)) {
+        merged[key] = mergePendingPatch(merged[key] && typeof merged[key] === 'object'
+          ? merged[key] : {}, value);
+      } else {
+        merged[key] = value;
       }
     });
+    return merged;
+  }
+
+  function drainPatchQueue() {
+    if (PATCH_IN_FLIGHT || !PATCH_NEXT) { return; }
+    var patch = PATCH_NEXT;
+    PATCH_NEXT = null;
+    PATCH_IN_FLIGHT = true;
+    var sequence = nextRequest();
+    setBusy(true, 'Updating conversion...');
+    var operation = api().apply_settings(patch).then(function (response) {
+      setBusy(false);
+      if (!response || !response.ok) { fail(response); render(); return; }
+      adopt(response, sequence);
+      reportSidecarStatus(response);
+      // Do not briefly paint an older mixer state between coalesced clicks.
+      // The next request already contains the user's newer mute/solo choice.
+      if (isMixOnlyPatch(PATCH_NEXT)) { applyOptimisticMixPatch(PATCH_NEXT); }
+      else { retainPendingSettings(PATCH_NEXT); }
+      AUDIO.position = clamp(
+        AUDIO.position,
+        0,
+        (STATE.preview && STATE.preview.duration_ms) || 0
+      );
+      render();
+    }, function (error) {
+      setBusy(false);
+      fail(error);
+      render();
+    }).finally(function () {
+      PATCH_IN_FLIGHT = false;
+      if (PATCH_NEXT) {
+        drainPatchQueue();
+        return;
+      }
+      PATCH_PENDING = 0;
+      refreshAudioAfterSettings();
+    });
     PATCH_QUEUE = operation.catch(function () { /* keep later edits live */ });
-    return operation;
   }
 
   function boot() {
@@ -4295,25 +5503,31 @@
     BOOTED = true;
     var sequence = nextRequest();
     setBusy(true, 'Opening workstation...');
+    setMidiLoading(true, 'Opening workstation...', 'Preparing the song workspace. Large songs may take a moment.');
     api().startup().then(function (response) {
       setBusy(false);
+      setMidiLoading(false);
       if (!response || !response.ok) { fail(response); render(); return; }
       adopt(response, sequence);
       render();
       prepareSongAudio();
+      requestAnimationFrame(focusWorkspaceKeyboard);
       if (response.error) { toast(response.error, 'warn'); }
       if (response.pitch_reconciled && response.pitch_reconciled.length) {
         toast('Updated saved automatic pitch settings for this song', 'ok');
       }
       setTimeout(refreshWindowState, 0);
-    }, function (error) { setBusy(false); fail(error); render(); });
+    }, function (error) { setBusy(false); setMidiLoading(false); fail(error); render(); });
   }
 
   /* --------------------------------------------------------------- chrome */
 
   function keyboardClick(node, action) {
     node.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action(); }
+      // Space is reserved for the arrangement transport, including while a
+      // custom title-bar control has focus. Enter remains the keyboard action
+      // for minimize, maximize/restore, and close.
+      if (event.key === 'Enter') { event.preventDefault(); action(); }
     });
   }
 
@@ -4439,14 +5653,16 @@
   function render() {
     var song = hasSong();
     syncRollSong();
-    el('emptyState').hidden = song;
-    el('workspace').hidden = !song;
+    el('midiLoadingState').hidden = !MIDI_LOADING;
+    el('emptyState').hidden = MIDI_LOADING || song;
+    el('workspace').hidden = MIDI_LOADING || !song;
     el('songName').textContent = song ? baseName(STATE.settings.midi) : '';
     el('menuExport').disabled = !song;
     el('exportBtn').disabled = !song;
     el('gridResolution').disabled = !song;
     el('timeSignature').disabled = !song;
     el('rollZoom').disabled = !song;
+    el('globalRollToggle').disabled = !song;
     el('masterVolume').disabled = !song;
     syncMasterVolume();
     if (song) { renderTracks(); syncRollFocus(); }
@@ -4469,10 +5685,19 @@
 
   function shortcut(event) {
     var target = event.target;
-    var editing = target && target.closest && target.closest('input, select, textarea');
+    // Space is the transport key even when a slider, numeric field, checkbox,
+    // select or button has focus. Only controls that can accept a literal
+    // space as text keep it for editing.
+    var typing = target && target.closest && target.closest(
+      'input[type="text"], input[type="search"], textarea, [contenteditable="true"]'
+    );
+    var editing = target && target.closest && target.closest(
+      'input, select, textarea, [contenteditable="true"]'
+    );
     if (event.key === 'Escape') {
       if (SOUND_BROWSER.open) { event.preventDefault(); closeSoundBrowser(); }
       else if (OPEN_MENU) { closeMenus(); }
+      else if (ROLL_PART || ROLL_GLOBAL) { event.preventDefault(); closeDetailedRoll(); }
       else if (NOTIFICATIONS_OPEN) { closeNotifications(); }
       else if (NOTE_INSPECTOR_OPEN) { closeNoteInspector(); }
       else if (CHANNEL_INSPECTOR_OPEN) { closeChannelInspector(); }
@@ -4488,8 +5713,15 @@
       else if (event.key === ',') { event.preventDefault(); openInspector(); }
       return;
     }
-    if (!editing && event.code === 'Space') { event.preventDefault(); togglePlayback(); }
+    if (!typing && event.code === 'Space') { event.preventDefault(); togglePlayback(); }
     if (!editing && event.key === 'Home') { event.preventDefault(); pausePlayback(); setPosition(0); }
+  }
+
+  function focusWorkspaceKeyboard() {
+    if (!hasSong()) { return; }
+    try { window.focus(); } catch (_windowError) { /* native host may own focus */ }
+    try { el('pianoRoll').focus({ preventScroll: true }); }
+    catch (_focusError) { el('pianoRoll').focus(); }
   }
 
   function initTransport() {
@@ -4517,25 +5749,45 @@
     canvas.addEventListener('pointerleave', clearNotePointer);
     canvas.addEventListener('pointerup', endCanvasSeek);
     canvas.addEventListener('pointercancel', endCanvasSeek);
+    // The ruler always seeks (nothing there to click-select), and it stays
+    // visible in lanes mode -- see .roll-pane in styles.css -- specifically
+    // so scrubbing is still possible while lanes are showing. The lanes
+    // themselves seek too, since "click the timeline to seek" is what a DAW
+    // does whether or not a track happens to be open.
+    var ruler = el('timeRuler');
+    ruler.addEventListener('pointerdown', function (event) { beginTimelineSeek(event, true); });
+    ruler.addEventListener('pointermove', moveCanvasSeek);
+    ruler.addEventListener('pointerup', endCanvasSeek);
+    ruler.addEventListener('pointercancel', endCanvasSeek);
+    var lanes = el('lanesView');
+    lanes.addEventListener('pointerdown', beginLaneTimelineSeek);
+    lanes.addEventListener('pointermove', moveCanvasSeek);
+    lanes.addEventListener('pointerup', endCanvasSeek);
+    lanes.addEventListener('pointercancel', endCanvasSeek);
     el('pianoRollViewport').addEventListener('scroll', handleRollScroll);
     el('horizontalScrollLock').addEventListener('wheel', forwardLockedScrollWheel, {
       passive: false
     });
     el('gridResolution').addEventListener('change', function () {
-      ROLL.gridDenominator = Math.max(1, Number(this.value) || 8);
+      var denominator = Math.max(1, Number(this.value) || 8);
+      if (ROLL_PART || ROLL_GLOBAL) { ROLL.gridDenominator = denominator; }
+      else { ROLL.laneGridDenominator = denominator; }
       invalidateRollTimeline();
+      queueLaneDraw();
       queueDraw();
     });
+    el('globalRollToggle').addEventListener('click', toggleGlobalRoll);
     el('timeSignature').addEventListener('change', function () {
       var meter = parseMeter(this.value);
       ROLL.meterNumerator = meter.numerator;
       ROLL.meterDenominator = meter.denominator;
       invalidateRollTimeline();
+      queueLaneDraw();
       queueDraw();
     });
     el('rollZoom').addEventListener('input', function () {
       var zoomAnchor = playheadZoomAnchor();
-      var stops = clamp(Number(this.value) || 0, 0, 60);
+      var stops = clamp(Number(this.value) || 0, 0, 53);
       ROLL.zoom = Math.pow(2, stops / 10) * 100;
       var label = Math.round(ROLL.zoom) + '%';
       el('rollZoomValue').textContent = label;

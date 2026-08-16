@@ -788,6 +788,105 @@ def test_a_capped_sustain_shades_rather_than_shortens_the_written_note(tmp_path)
 
     assert event["midi_end"] == 2000
     assert event["end"] <= 300
+    assert event["shortened_by"] == "sustain"
+
+
+def test_sustain_limit_caps_one_shot_resonance_in_the_preview(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="capped-piano-one-shot.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"cap_sustain_ms": 300}})
+    event = session.preview_manifest()["display_events"][0]
+
+    assert event["sustained"] is False
+    assert event["converted"] is True
+    assert event["cut"] is True
+    assert event["end"] == 300
+    assert event["shortened_by"] == "sustain"
+
+
+def test_track_sustain_limit_overrides_the_song_default(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+        ],
+        name="track-sustain.mid",
+    )
+    session = Session(midi=midi)
+    session.apply(
+        {
+            "tuning": {"cap_sustain_ms": 300},
+            "channels": {"0:0": {"sustain_ms": 700}},
+        }
+    )
+    event = session.preview_manifest()["display_events"][0]
+
+    assert event["midi_end"] == 2000
+    assert event["end"] == 700
+    assert event["shortened_by"] == "sustain"
+
+
+def test_track_release_is_exposed_to_preview_without_changing_note_off(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="track-release.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"channels": {"0:0": {"release_s": 0.35}}})
+
+    event = session.preview_manifest()["events"][0]
+    assert event["midi_end"] == 500
+    assert event["end"] == 500
+    assert event["release_s"] == 0.35
+
+
+def test_track_attack_is_exposed_to_preview_and_routes_a_one_shot(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="track-attack.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"channels": {"0:0": {"attack_ms": 250}}})
+    event = session.preview_manifest()["events"][0]
+
+    assert event["attack_ms"] == 250
+    assert event["converted"] is True
+
+
+def test_track_hard_stop_overrides_the_preview_default(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="track-hard-stop.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"hard_stop": True}, "channels": {"0:0": {"hard_stop": False}}})
+
+    assert session.preview_manifest()["events"][0]["hard_stop"] is False
 
 
 def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):
@@ -795,6 +894,86 @@ def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):
     session.apply({"tuning": {"max_poly": 1}})
     events = [event for event in session.preview_manifest()["events"] if event["channel"] == 3]
     assert [event["pitch"] for event in events] == [67]
+
+
+def test_global_polyphony_counts_shared_and_isolated_notes_together(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=480)
+
+    piano = mido.MidiTrack()
+    mid.tracks.append(piano)
+    piano.extend(
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_on", channel=0, note=64, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+        ]
+    )
+
+    strings = mido.MidiTrack()
+    mid.tracks.append(strings)
+    strings.extend(
+        [
+            mido.Message("program_change", channel=1, program=48, time=0),
+            mido.Message("note_on", channel=1, note=67, velocity=100, time=0),
+            mido.Message("note_off", channel=1, note=67, velocity=0, time=480),
+        ]
+    )
+    path = tmp_path / "shared-and-isolated-chord.mid"
+    mid.save(path)
+
+    session = Session(midi=path)
+    session.apply({"tuning": {"song_polyphony": 2}})
+    by_pitch = {
+        event["pitch"]: event for event in session.preview_manifest()["display_events"]
+    }
+
+    # E4 is a neutral automatic-piano one-shot on the shared path. G4 is a
+    # sustained string on an isolated emitter. The one song-wide budget sees
+    # both, keeps those upper notes, and refuses the shared C4 beneath them.
+    assert by_pitch[64]["converted"] is True
+    assert by_pitch[64]["sustained"] is False
+    assert by_pitch[67]["converted"] is True
+    assert by_pitch[67]["sustained"] is True
+    assert by_pitch[60]["converted"] is False
+    assert by_pitch[60]["limited_by"] == "global_polyphony"
+
+
+def test_polyphony_dims_dropped_neutral_notes_and_honors_track_override(tmp_path):
+    """Polyphony is for written MIDI note length, not just looping samples.
+
+    Piano one-shots used to bypass the filter because it ran only after the
+    sound-path split. The roll must retain those source notes as dimmed,
+    bottom-up drops so the user can see precisely what a limit changed.
+    """
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_on", channel=0, note=64, velocity=100, time=0),
+            mido.Message("note_on", channel=0, note=67, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+            mido.Message("note_off", channel=0, note=67, velocity=0, time=0),
+        ],
+        name="piano-chord.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"max_poly": 1}})
+    by_pitch = {event["pitch"]: event for event in session.preview_manifest()["display_events"]}
+    assert by_pitch[67]["converted"] is True
+    assert by_pitch[60]["converted"] is False
+    assert by_pitch[60]["limited_by"] == "polyphony"
+    assert by_pitch[64]["limited_by"] == "polyphony"
+
+    # A track setting takes precedence over the inherited song default.
+    session.apply({"channels": {"0": {"polyphony": 2}}})
+    by_pitch = {event["pitch"]: event for event in session.preview_manifest()["display_events"]}
+    assert by_pitch[67]["converted"] is True
+    assert by_pitch[64]["converted"] is True
+    assert by_pitch[60]["limited_by"] == "polyphony"
 
 
 # ---- opening a settings document ----
@@ -1242,6 +1421,25 @@ def test_master_volume_offsets_every_note_in_the_preview_manifest(tmp_path):
     assert event["volume_db"] == -4
 
 
+def test_track_volume_offsets_only_the_selected_tracks_notes(tmp_path):
+    song = _midi(
+        tmp_path,
+        _hits(0, 60, program=0, velocity=64) + _hits(1, 64, program=0, velocity=64),
+        name="track-volume.mid",
+    )
+    session = Session(midi=song)
+    selected = session.analysis_dict()["channels"][0]["key"]
+    session.apply({"channels": {selected: {"volume_db": -6}}})
+
+    events = session.preview_manifest()["events"]
+    by_part = {event["part"]: event for event in events}
+    assert by_part[selected]["track_volume_db"] == -6
+    assert by_part[selected]["requested_volume_db"] == -18
+    untouched = next(event for event in events if event["part"] != selected)
+    assert untouched["track_volume_db"] == 0
+    assert untouched["requested_volume_db"] == -12
+
+
 def test_per_note_offset_changes_playback_without_moving_the_midi_note(tmp_path):
     song = _midi(
         tmp_path,
@@ -1406,9 +1604,8 @@ def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp
 
 
 def test_running_out_of_speakers_is_reported(tmp_path):
-    """Voices are allocated per layer against `max_speakers`, and past it
-    `allocate_voices` steals the voice that frees earliest -- so the note it
-    stole from is truncated. Nothing in the map says so."""
+    """Global Voices steals the speaker that frees earliest, so the prior note
+    is truncated even when the two notes are on different tracks."""
     song = _midi(
         tmp_path,
         [
@@ -1422,45 +1619,39 @@ def test_running_out_of_speakers_is_reported(tmp_path):
     )
     session = Session(midi=song)
     session.apply({"tuning": {"max_speakers": 1}})
-    assert any("Channel 0 (Violin) used all 1 speakers" in w for w in _warnings(session))
+    assert any("The song used all 1 global voices" in w for w in _warnings(session))
 
     session.apply({"tuning": {"max_speakers": 32}})
     assert not any("speakers" in w for w in _warnings(session))
 
 
-def test_the_channel_that_ran_out_of_speakers_is_the_one_that_is_named(tmp_path):
-    """ "The busiest channel" was all the sentence could say, because
-    `compile_to_rawmap` reports the worst layer's voice count and not which
-    layer it was -- so the one thing the reader needs in order to act, which row
-    to go and thin, was the one thing missing. Channel 0 plays one note at a
-    time and channel 3 plays a triad; only one of them is against the ceiling.
-    """
-    session = Session(midi=_dense(tmp_path))
-    session.apply({"tuning": {"max_speakers": 2}})
-    assert [w for w in _warnings(session) if "speakers" in w] == [
-        "Channel 3 (Violin) used all 2 speakers, so its densest passages were thinned. "
-        "Raise max speakers, or cap the polyphony."
+def test_global_voice_warning_names_no_individual_channel(tmp_path):
+    """The shared pool can be consumed by several tracks, so naming one would
+    send the user to a random lane rather than the song-level control."""
+    session = Session(
+        midi=_midi(
+            tmp_path,
+            [
+                mido.Message("program_change", channel=0, program=40, time=0),
+                mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+                mido.Message("note_on", channel=0, note=64, velocity=100, time=0),
+                mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+                mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+            ],
+            name="global-warning.mid",
+        )
+    )
+    session.apply({"tuning": {"max_speakers": 1}})
+    assert [w for w in _warnings(session) if "global voices" in w] == [
+        "The song used all 1 global voices. Its densest passages may cut ringing notes short; "
+        "raise Global Voices, or cap Track Voices or track Polyphony."
     ]
 
 
-def test_capping_the_sustain_still_names_the_right_channel(tmp_path):
-    """The layers are rebuilt here to find out which one peaked, and a cap
-    shortens notes before they are allocated -- so a rebuild that ignored the
-    caps would count a concurrency the compile never had."""
+def test_raising_global_voices_clears_the_shared_pool_warning(tmp_path):
     session = Session(midi=_dense(tmp_path))
-    session.apply({"tuning": {"max_speakers": 2, "cap_sustain_ms": 50}})
-    assert any("Channel 3 (Violin) used all 2 speakers" in w for w in _warnings(session))
-
-
-def test_a_layer_count_that_disagrees_with_the_compile_names_no_channel(tmp_path, monkeypatch):
-    """The rebuilt layers are a hypothesis, and the compile's own `peak_voices`
-    is the fact. When the two disagree -- which is what a change to how the
-    compiler thins or caps would look like from here -- the sentence goes back
-    to naming no channel rather than naming the wrong one."""
-    session = Session(midi=_dense(tmp_path))
-    session.apply({"tuning": {"max_speakers": 2}})
-    monkeypatch.setattr(session_module, "allocate_voices", lambda notes, cap: 1)
-    assert any("The busiest channel used all 2 speakers" in w for w in _warnings(session))
+    session.apply({"tuning": {"max_speakers": 32}})
+    assert not any("global voices" in w for w in _warnings(session))
 
 
 def test_many_neutral_one_shots_do_not_create_a_voice_pressure_warning(tmp_path):

@@ -1,10 +1,10 @@
-# Proposal: the density controls are one idea wearing seven hats
+# Historical proposal: the density controls are one idea wearing seven hats
 
-Not implemented. This is a design note for whoever picks up the conversion settings panel,
-written immediately after fixing four bugs in it, while the reasons are still fresh.
-
-The bugs are fixed. What follows is the part that was **not** a bug: the controls are
-correct and still nearly unusable, and no further bug fixing will change that.
+This is a retained design note, not the current specification. Its proposed per-track Voices
+model was superseded: Global Voices is now one song-wide dedicated-speaker budget, defaulting to
+32, while Track Voices and Polyphony remain per-track controls. See [`limits.md`](limits.md) for
+the implemented behavior. The rest records the reasoning that led to the track-lane editor and
+should not be used as a description of current conversion settings.
 
 ## What the panel asks now
 

@@ -26,11 +26,10 @@ the analysis with it: the drums switch decides which channel is a kit, and
 opening a song changes which drum keys exist at all, so a window left to notice
 either for itself is a window showing the last song's keys.
 
-The settings sidecar is written here rather than in `Session`, because it is
-part of what the Export BUTTON means and not part of what a compile is. The
-command line writes maps and never a settings file; the window's export writes
-both, because a window is where the choices are made and closing it used to
-lose every one of them.
+The settings sidecar is written here rather than in `Session`, because it is a
+workstation persistence policy and not part of compilation. Every successful
+window edit autosaves the complete validated document, and Export writes it
+again beside the map. The command line writes maps and never a settings file.
 """
 
 from __future__ import annotations
@@ -157,7 +156,7 @@ class Bridge:
 
     # ---- payloads ----
 
-    def _state(self) -> dict:
+    def _state(self, *, interactive: bool = False) -> dict:
         """The four things the window redraws itself from.
 
         `stats` is null rather than absent or zeroed when no song is open. "No
@@ -166,6 +165,17 @@ class Bridge:
         is looking at the first.
         """
         analysis = self._session.analysis_dict()
+        if analysis is None:
+            stats = None
+            preview = None
+        else:
+            # Initial load and interactive edits need the rendered notes and
+            # headline status, not a freshly serialized rawmap. Doing a full
+            # compile here made a dense song parse once for export statistics
+            # and again for preview before the first useful frame appeared.
+            # Exact Timeline byte size remains available through Dry Run and
+            # Export, which are the only operations that consume it.
+            preview, stats = self._session.preview_manifest(with_stats=True)
         return {
             # Outside the settings document on purpose: it is an answer about
             # this person's kit, not about this song. It rides in the redraw
@@ -177,8 +187,8 @@ class Bridge:
             "settings": self._session.settings(),
             "analysis": analysis,
             "rulers": self._session.rulers(),
-            "stats": None if analysis is None else self._session.stats(),
-            "preview": None if analysis is None else self._session.preview_manifest(),
+            "stats": stats,
+            "preview": preview,
         }
 
     def _catalog(self) -> dict:
@@ -477,6 +487,11 @@ class Bridge:
             replacement = {
                 "pitch_follow": effective_follow,
                 "root_midi": plan["root_midi"],
+                "detected_root_midi": (
+                    plan["root_midi"]
+                    if plan["root_source"] in {"detected", "palette_name"}
+                    else None
+                ),
                 "root_confidence": plan["root_confidence"],
                 "root_source": plan["root_source"],
             }
@@ -582,7 +597,7 @@ class Bridge:
         except Exception as exc:
             return _fail(exc)
 
-    def sound_profile(self, sound, channel=None) -> dict:
+    def sound_profile(self, sound, channel=None, refresh=False) -> dict:
         """Return acoustic evidence and an absolute-pitch playback plan."""
         try:
             if not isinstance(sound, str) or not sound:
@@ -591,7 +606,13 @@ class Bridge:
                 raise ValueError("%r is not a valid DOOM Play_ event identifier" % sound)
             from snapmap_midi.audio import library
 
-            profile = library.pitch_profile(sound)
+            if not isinstance(refresh, bool):
+                raise ValueError("refresh has to be true or false")
+            profile = (
+                library.pitch_profile(sound, refresh=True)
+                if refresh
+                else library.pitch_profile(sound)
+            )
             result = {"ok": True, "profile": profile}
             if channel is not None:
                 # Validate that the supplied channel belongs to the open song,
@@ -672,7 +693,9 @@ class Bridge:
     def apply_settings(self, patch) -> dict:
         """Merge one change in, and answer with everything it can have moved.
 
-        Settings and statistics are obvious. Analysis remains here because
+        Settings and statistics are obvious. The complete validated document
+        is autosaved after the new preview succeeds, so sounds, expression and
+        every track/global lever have one persistence rule. Analysis remains here because
         drums mode can change whether a channel is interpreted as percussion;
         preview is here because every channel choice and conversion lever can
         change the events the global transport schedules.
@@ -680,7 +703,8 @@ class Bridge:
         try:
             self._session.apply(patch)
             payload = {"ok": True}
-            payload.update(self._state())
+            payload.update(self._state(interactive=True))
+            payload.update(self._save_sidecar())
             return payload
         except Exception as exc:
             return _fail(exc)
@@ -701,6 +725,7 @@ class Bridge:
             self._session.reanalyze()
             payload = {"ok": True}
             payload.update(self._state())
+            payload.update(self._save_sidecar())
             return payload
         except Exception as exc:
             return _fail(exc)
@@ -726,7 +751,7 @@ class Bridge:
             return _fail(exc)
 
     def export(self) -> dict:
-        """Write the map, and the settings that produced it beside the song.
+        """Write the map, and rewrite the settings that produced it beside the song.
 
         Two files and one deliverable. `rawmap.json` is what the loader reads;
         the sidecar is what makes tomorrow's session start where this one
@@ -825,7 +850,9 @@ class Bridge:
             if chosen is None:
                 return _cancelled()
             self._session.apply({"out_dir": chosen})
-            return {"ok": True, "settings": self._session.settings()}
+            payload = {"ok": True, "settings": self._session.settings()}
+            payload.update(self._save_sidecar())
+            return payload
         except Exception as exc:
             return _fail(exc)
 
@@ -842,7 +869,9 @@ class Bridge:
             if chosen is None:
                 return _cancelled()
             self._session.apply({"baseline": chosen})
-            return {"ok": True, "settings": self._session.settings()}
+            payload = {"ok": True, "settings": self._session.settings()}
+            payload.update(self._save_sidecar())
+            return payload
         except Exception as exc:
             return _fail(exc)
 

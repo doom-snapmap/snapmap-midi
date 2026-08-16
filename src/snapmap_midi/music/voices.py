@@ -1,8 +1,9 @@
-"""Voice allocation and density thinning.
+"""Voice allocation, glide ancestry, and density thinning.
 
-A speaker is monophonic per channel: starting a second note on one cuts the
-first. So overlapping sustained notes need separate speakers, and "how many
-speakers does this layer need" is exactly an interval-graph colouring.
+A concrete-channel Timeline emitter is monophonic: starting a second note on
+one prevents the first from overlapping. So overlapping adjusted or sustained
+notes need separate emitters, and "how many emitters does this layer need" is
+exactly an interval-graph colouring.
 
 Both functions here exist because of the same underlying limit: the engine
 recycles sound emitter slots under load, and a note whose slot is recycled can
@@ -28,32 +29,39 @@ def prepare_voice_layers(
     bass_cap_ms: int | None = None,
     family_caps: dict | None = None,
     duration_lookup: Callable[[str], int | None] | None = None,
+    part_glide_ms: dict | None = None,
+    part_attack_ms: dict | None = None,
+    part_voices: dict | None = None,
+    part_sustain_ms: dict | None = None,
 ):
-    """Apply duration policy and build the isolated per-channel voice layers.
+    """Apply duration policy and build the isolated per-track voice layers.
 
     Neutral one-shots remain on the shared timeline entity. Notes that need a
-    pitch or volume modifier must use a speaker of their own, so they reserve a
-    voice for the installed event duration (or a conservative fallback). This
-    function is shared by map export and browser preview so their cutoffs cannot
-    drift apart.
+    pitch or volume modifier must use an emitter voice of their own, so they
+    reserve it for the installed event duration (or a conservative fallback).
+    A Sustain Limit that would cut a one-shot's natural ring also routes that
+    note through an emitter: a shared Timeline start has no per-note stop.
+    A glide-enabled exact-sound track reserves all of its one-shots as well:
+    its zero-offset root note still has to travel through the same voice lane as
+    the adjusted notes around it. Any track that explicitly sets Track Voices
+    also routes every one-shot through that lane; otherwise a neutral root note
+    could escape to the shared path and overlap even when Track Voices is 1.
+    This function is shared by map export and browser preview so their cutoffs
+    cannot drift apart.
     """
 
     family_caps = family_caps or {}
-    if cap_sustain_ms or bass_cap_ms or family_caps:
-        for note in sustained:
-            cap = family_caps.get(note.fam, cap_sustain_ms or 10**9)
-            pitch = _note_pitch(note)
-            if bass_cap_ms and pitch < bass_pitch:
-                cap = min(cap, bass_cap_ms)
-            if note.duration > cap:
-                note.end = note.start + cap
+    part_sustain_ms = part_sustain_ms or {}
+    part_glide_ms = part_glide_ms or {}
+    part_attack_ms = part_attack_ms or {}
+    part_voices = part_voices or {}
 
-    expressive = [note for note in decaying if note.pitch_modifier != 0 or note.volume_db != 0]
-    expressive_ids = {id(note) for note in expressive}
-    shared = [note for note in decaying if id(note) not in expressive_ids]
-
+    # Cache the installed duration by Play event. Exact sounds commonly repeat
+    # hundreds of times in a part; querying Wwise metadata for every note made
+    # an otherwise simple cap slider feel needlessly expensive.
     durations = {}
-    for note in expressive:
+
+    def one_shot_end(note):
         if note.shader not in durations:
             durations[note.shader] = (
                 duration_lookup(note.shader) if duration_lookup is not None else None
@@ -61,20 +69,63 @@ def prepare_voice_layers(
         duration = durations[note.shader]
         if duration is None:
             duration = 750 if note.fam == "drums" else 1000
+        return note.start + pitched_duration_ms(duration, getattr(note, "pitch_modifier", 0))
+
+    if cap_sustain_ms or bass_cap_ms or family_caps or part_sustain_ms:
+        for note in sustained + decaying:
+            # Most-specific duration wins: a track override, then its sound
+            # category, then the song's default. The bass cap remains an
+            # additional ceiling because it deliberately targets register,
+            # independent of which track or instrument produced the note.
+            cap = _part_value(part_sustain_ms, note, None)
+            if cap is None:
+                cap = family_caps.get(note.fam, cap_sustain_ms)
+            pitch = _note_pitch(note)
+            if bass_cap_ms and pitch < bass_pitch:
+                cap = min(cap, bass_cap_ms) if cap is not None else bass_cap_ms
+            if cap is None:
+                continue
+
+            cap_end = note.start + cap
+            # A looping sound's duration is governed by MIDI note-off. A
+            # one-shot keeps playing after note-off, so compare its installed
+            # ring instead. Its scheduled end deliberately becomes the cap
+            # even when the written block is shorter; `midi_end` remains the
+            # visual/source note-off while this end is the audible stop.
+            current_end = note.end if note.sustained else one_shot_end(note)
+            if current_end > cap_end:
+                note.end = cap_end
+                note.sustain_limited = True
+
+    expressive = [
+        note
+        for note in decaying
+        if note.pitch_modifier != 0
+        or note.volume_db != 0
+        or (
+            _part_value(part_glide_ms, note, 0) > 0
+            and bool(getattr(note, "uses_exact_sound", False))
+        )
+        or _part_value(part_attack_ms, note, 0) > 0
+        or _part_value(part_voices, note, None) is not None
+        or bool(getattr(note, "sustain_limited", False))
+    ]
+    expressive_ids = {id(note) for note in expressive}
+    shared = [note for note in decaying if id(note) not in expressive_ids]
+
+    for note in expressive:
+        natural_end = one_shot_end(note)
         # Wwise voice pitch changes playback speed. Reserving the unpitched
         # duration makes low notes steal speakers too early while high notes
-        # reserve a silent tail.
-        duration = pitched_duration_ms(duration, note.pitch_modifier)
-        note.voice_end = note.start + duration
+        # reserve a silent tail. A deliberate sustain cap frees the isolated
+        # lane at that cap instead of at the now-inaudible natural tail.
+        note.voice_end = min(natural_end, note.end) if getattr(
+            note, "sustain_limited", False
+        ) else natural_end
 
-    # Keyed by PART -- (track, channel) -- and not by channel alone. A MIDI
-    # channel is not an identity: two tracks can write to the same one, and the
-    # window shows them as two rows because they are two parts. Keying the pool
-    # by channel put both rows in one pool, so one part's notes stole the
-    # other's speakers and each looked like it was being cut by the other's
-    # music. Same song exported with the second part on channel 2 instead of
-    # channel 1 then behaved completely differently, which is the bug report
-    # this comes from.
+    # Keyed by PART -- (track, channel) -- so per-track polyphony can be
+    # applied before the resulting isolated notes join the one global voice
+    # pool. A MIDI channel is not an identity: two tracks can write to it.
     layers = {}
     for note in sustained + expressive:
         layers.setdefault((getattr(note, "track", 0), note.chan), []).append(note)
@@ -117,7 +168,7 @@ def allocate_voices(notes, max_speakers: int) -> int:
     get a speaker at its onset is truncated to zero length, so it is silent
     while still being drawn as a shortened note rather than a deleted one.
     """
-    notes.sort(key=lambda n: (n.start, _note_pitch(n)))
+    notes.sort(key=lambda n: (n.start, _note_pitch(n), _voice_tie_key(n)))
     free_at: list[int] = []
     # When each voice's current sound began, so a tie on free time can be
     # settled by age rather than by which slot happens to come first.
@@ -132,9 +183,73 @@ def allocate_voices(notes, max_speakers: int) -> int:
             else:
                 voice = min(range(len(free_at)), key=lambda i: (free_at[i], began[i]))
         note.voice = voice
-        free_at[voice] = getattr(note, "voice_end", note.end)
+        free_at[voice] = _allocation_end(note)
         began[voice] = note.start
     return len(free_at)
+
+
+def apply_voice_cap(notes, max_voices: int):
+    """Apply a track's voice budget before notes enter the global pool.
+
+    A cap has two effects. Chord notes beyond it cannot start and are omitted;
+    later notes still start, but take a virtual voice from an older note in the
+    same track. ``voice_cap_end`` records that local steal so the later global
+    allocation and the event writer cannot accidentally let this track consume
+    spare speakers from the rest of the song.
+    """
+    kept = thin_simultaneous(notes, max_voices)
+    allocate_voices(kept, max_voices)
+    by_voice = {}
+    for note in kept:
+        # Global allocation below intentionally overwrites ``voice``. Keep the
+        # track-local lane: glide follows the previous note in this lane, not
+        # whichever unrelated track last occupied the physical emitter.
+        note.part_voice = note.voice
+        by_voice.setdefault(note.voice, []).append(note)
+    for voice_notes in by_voice.values():
+        voice_notes.sort(key=lambda note: note.start)
+        for index, note in enumerate(voice_notes[:-1]):
+            next_note = voice_notes[index + 1]
+            if next_note.start < _allocation_end(note):
+                note.voice_cap_end = next_note.start
+    return kept
+
+
+def apply_glides(notes, part_glide_ms: dict | None = None):
+    """Annotate each exact-sound note with its track-local glide start.
+
+    A physical emitter is a song-wide implementation detail and can move from
+    one track to another as the allocator reuses it. ``part_voice`` is the
+    musical lane. Following that lane makes Track Voices = 1 a conventional
+    monophonic portamento path, while wider tracks glide each voice
+    independently. Different shaders are never interpolated: automatic
+    pre-tuned instruments are separate recordings, not two pitch values of one
+    sample.
+    """
+    part_glide_ms = part_glide_ms or {}
+    previous = {}
+    ordered = sorted(notes, key=lambda n: (n.start, _note_pitch(n), _voice_tie_key(n)))
+    for note in ordered:
+        note.glide_ms = 0
+        glide_ms = int(_part_value(part_glide_ms, note, 0) or 0)
+        lane = (
+            getattr(note, "track", 0),
+            note.chan,
+            getattr(note, "part_voice", getattr(note, "voice", 0)),
+        )
+        prior = previous.get(lane)
+        if (
+            glide_ms > 0
+            and prior is not None
+            and bool(getattr(note, "uses_exact_sound", False))
+            and bool(getattr(prior, "uses_exact_sound", False))
+            and prior.shader == note.shader
+            and prior.pitch_modifier != note.pitch_modifier
+        ):
+            note.glide_ms = glide_ms
+            note.glide_from_pitch = prior.pitch_modifier
+        previous[lane] = note
+    return notes
 
 
 def thin_simultaneous(notes, max_voices: int):
@@ -166,9 +281,46 @@ def thin_simultaneous(notes, max_voices: int):
         if len(group) <= max_voices:
             kept.extend(group)
             continue
-        # Ties on pitch keep their existing order, which allocate_voices then
-        # sorts deterministically anyway.
-        kept.extend(sorted(group, key=lambda n: -_note_pitch(n))[:max_voices])
+        # Track/channel/note identity makes equal pitches deterministic too.
+        kept.extend(sorted(group, key=lambda n: (-_note_pitch(n), _voice_tie_key(n)))[:max_voices])
+    return kept
+
+
+def thin_global_polyphony(notes, max_poly: int):
+    """Admit at most ``max_poly`` written notes across the whole song.
+
+    This is deliberately strict and path-agnostic: a neutral one-shot on the
+    shared Timeline counts exactly like a sustained or pitch-controlled note on
+    an isolated emitter. Notes already playing retain their written duration;
+    when fewer slots remain than notes beginning together, the highest new
+    pitches are admitted and the rest never start.
+
+    Unlike voice stealing, a later note does not cut an earlier one short. That
+    distinction is what makes this a polyphony limit rather than another voice
+    allocator.
+    """
+    if not max_poly:
+        return list(notes)
+
+    ordered = sorted(notes, key=lambda n: (n.start, -_note_pitch(n), _voice_tie_key(n)))
+    active_ends: list[int] = []
+    kept = []
+    index = 0
+    while index < len(ordered):
+        onset = ordered[index].start
+        while active_ends and active_ends[0] <= onset:
+            heapq.heappop(active_ends)
+
+        group_end = index
+        while group_end < len(ordered) and ordered[group_end].start == onset:
+            group_end += 1
+        group = ordered[index:group_end]
+        available = max(0, max_poly - len(active_ends))
+        for note in group[:available]:
+            kept.append(note)
+            if note.end > onset:
+                heapq.heappush(active_ends, note.end)
+        index = group_end
     return kept
 
 
@@ -177,6 +329,26 @@ def _note_pitch(note) -> int:
     if pitch is not None:
         return int(pitch)
     return shader_pitch(note.shader) or 0
+
+
+def _allocation_end(note) -> int:
+    """When a voice is available again, including a track-level steal."""
+    natural_end = getattr(note, "voice_end", note.end)
+    return min(natural_end, getattr(note, "voice_cap_end", natural_end))
+
+
+def _voice_tie_key(note):
+    """A reproducible last tie-break for same-pitch simultaneous notes."""
+    return (getattr(note, "track", 0), getattr(note, "chan", 0), str(getattr(note, "id", "")))
+
+
+def _part_value(mapping, note, default=None):
+    """Most-specific part setting without importing MIDI and creating a cycle."""
+    track = getattr(note, "track", 0)
+    part = (track, note.chan)
+    if part in mapping:
+        return mapping[part]
+    return mapping.get(note.chan, default)
 
 
 #: One past the highest pitch a sound name can encode. The octave is a single

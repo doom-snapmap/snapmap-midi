@@ -113,6 +113,16 @@ def test_the_markup_links_the_style_and_the_behaviour_beside_it():
     assert 'src="app.js"' in _HTML
 
 
+def test_midi_import_has_a_visible_long_running_state():
+    """A dense import must not leave the unchanged Open card looking frozen."""
+    assert 'id="midiLoadingState"' in _HTML
+    assert 'role="status"' in _HTML
+    assert 'aria-live="polite"' in _HTML
+    assert ".midi-loading-spinner" in _CSS
+    assert "setMidiLoading(true, 'Opening MIDI...'" in _JS
+    assert "setMidiLoading(false)" in _JS
+
+
 def test_the_window_entrypoint_is_a_file_uri_and_not_a_loopback_server():
     assert web_url() == (_WEB / "index.html").as_uri()
     assert web_url().startswith("file:///")
@@ -426,12 +436,19 @@ def test_playhead_dragging_pans_and_playback_locks_only_the_horizontal_scrollbar
     assert "function renderHorizontalScrollLock()" in _JS
     assert "var height = Math.max(0, viewport.offsetHeight - viewport.clientHeight)" in _JS
     assert "var width = Math.max(0, viewport.offsetWidth - viewport.clientWidth)" in _JS
-    assert "var locked = AUDIO.playing && height > 0" in _JS
+    assert "var locked = (ROLL_PART || ROLL_GLOBAL) && AUDIO.playing && height > 0" in _JS
     assert "lock.style.right = width + 'px'" in _JS
+    # left:0 by default, same reasoning as .roll-pane::after: the 72px
+    # pitch-ruler gutter is open-mode only, so this only gets pushed over
+    # when .roll-pane--open is present.
     assert re.search(
         r"\.horizontal-scroll-lock\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*6;"
-        r"[^}]*left:\s*72px;[^}]*bottom:\s*0;[^}]*background:\s*var\(--scrollDisabled\);"
+        r"[^}]*left:\s*0;[^}]*bottom:\s*0;[^}]*background:\s*var\(--scrollDisabled\);"
         r"[^}]*cursor:\s*default;[^}]*pointer-events:\s*auto",
+        _CSS,
+    )
+    assert re.search(
+        r"\.roll-pane\.roll-pane--open \.horizontal-scroll-lock\s*\{[^}]*left:\s*72px",
         _CSS,
     )
 
@@ -457,14 +474,33 @@ def test_scroll_redraws_are_coalesced_and_preserve_vertical_wheel_input():
 
 
 def test_roll_grid_meter_and_zoom_are_view_controls_in_the_control_plane():
-    for control in ("gridResolution", "timeSignature", "rollZoom", "rollZoomValue"):
+    for control in (
+        "globalRollToggle",
+        "gridResolution",
+        "timeSignature",
+        "rollZoom",
+        "rollZoomValue",
+    ):
         assert 'id="%s"' % control in _HTML
     for resolution in ("1", "2", "4", "8", "16", "32"):
         assert 'option value="%s"' % resolution in _HTML
     for meter in ("2/4", "3/4", "4/4", "5/4", "6/8", "7/8", "9/8", "12/8"):
         assert 'option value="%s"' % meter in _HTML
-    assert 'id="rollZoom" min="0" max="60"' in _HTML
-    assert "ticksPerBeat * 4 / ROLL.gridDenominator" in _JS
+    # Above ~4,222% a browser canvas reaches a dimension it cannot render on
+    # some GPUs. Keep the control just under that point instead of accepting a
+    # zoom level that turns the lane clips white.
+    assert 'id="rollZoom" min="0" max="53"' in _HTML
+    assert "function toggleGlobalRoll()" in _JS
+    assert "ROLL_GLOBAL = !ROLL_GLOBAL" in _JS
+    assert "ROLL_GLOBAL ? source" in _JS
+    assert "globalRollToggle').addEventListener('click', toggleGlobalRoll)" in _JS
+    assert "ROLL_PART || ROLL_GLOBAL" in _JS
+    assert "gridDenominator = Math.max(1, Number(gridDenominator) || ROLL.gridDenominator);" in _JS
+    assert "ticksPerBeat * 4 / gridDenominator" in _JS
+    assert "laneGridDenominator: 1" in _JS
+    assert "var laneLines = timingLinesAt(scrollLeft, visibleWidth, ROLL.laneGridDenominator);" in _JS
+    assert "function activeGridDenominator()" in _JS
+    assert "return ROLL_PART || ROLL_GLOBAL ? ROLL.gridDenominator : ROLL.laneGridDenominator;" in _JS
     assert "ticksPerBeat * 4 / ROLL.meterDenominator * ROLL.meterNumerator" in _JS
     assert "timeAtTick(tick)" in _JS
     assert "Math.pow(2, stops / 10) * 100" in _JS
@@ -483,8 +519,11 @@ def test_zoomed_playback_follows_the_sweeping_playhead():
     assert "resizeCanvas(zoomAnchor)" in _JS
     assert "function revealPlayhead(position, following)" in _JS
     assert "if (AUDIO.playing) { revealPlayhead(position, true); }" in _JS
-    assert "var anchor = ROLL.viewportWidth * 0.32" in _JS
-    assert "viewport.scrollLeft = clamp(x - anchor" in _JS
+    # Following holds its screen position at the edge where it crossed; it
+    # must not snap the playhead back from 78% to a separate 32% anchor.
+    assert "var leadingAnchor = ROLL.viewportWidth * 0.78" in _JS
+    assert "var trailingAnchor = ROLL.viewportWidth * 0.18" in _JS
+    assert "x - (x > leadingEdge ? leadingAnchor : trailingAnchor)" in _JS
     assert "ROLL.contentWidth - ROLL.viewportWidth" in _JS
     assert "function contentXAtTime(timeMs)" in _JS
     assert "var startX = contentXAtTime(record.start)" in _JS
@@ -545,7 +584,14 @@ def test_clicking_a_note_opens_the_expression_inspector_and_empty_space_still_se
     assert "openNoteInspector(hit.record.id)" in _JS
     assert "pausePlayback();\n      openNoteInspector(hit.record.id)" in _JS
     assert "SEEK_DRAG = {" in _JS
-    assert "setPosition(positionFromCanvas(event), false)" in _JS
+    # Shared by the roll canvas, the ruler, and the lanes -- see
+    # beginTimelineSeek/moveCanvasSeek -- so a click on any of the three
+    # seeks the same way.
+    assert "setPosition(positionFromClientX(event.clientX), false)" in _JS
+    assert "function beginTimelineSeek(event, suppressMouse, captureTarget)" in _JS
+    assert "function beginLaneTimelineSeek(event)" in _JS
+    assert 'var lane = event.target.closest(".lane-row");' in _JS
+    assert "beginTimelineSeek(event, false, lane);" in _JS
     assert "applyPatch({ notes: notePatch }, true)" in _JS
     assert "notePatch[SELECTED_NOTE_ID] = null" in _JS
     assert ">Pitch</label>" in _HTML
@@ -570,15 +616,44 @@ def test_channel_strip_separates_focus_from_multi_solo_and_mute():
     # Focus is a PART, not a channel: two tracks can share channel 0, and
     # comparing channel numbers would select and dim both of them together.
     assert "openChannelInspector(channel.key)" in _JS
-    assert "SELECTED_PART = null;\n          closeChannelInspector();" in _JS
-    # The roll only ever loads the OPEN track's notes -- nothing else is there
-    # to click or fade against, structurally, not by a filter someone could
-    # forget at a call site. See rollDisplayEvents / eventRenderIndex.
+    assert re.search(r"SELECTED_PART = null;\s+closeChannelInspector\(\);", _JS)
+    # A detailed track roll filters structurally, while the global roll uses
+    # the exact same renderer with the complete event set.
     assert "var source = rollDisplayEvents();" in _JS
     assert "return String(event.part || (Number(event.channel) || 0)) === ROLL_PART;" in _JS
+    assert "var filtered = ROLL_GLOBAL ? source : ROLL_PART" in _JS
     assert "STATE.preview.display_events" in _JS
     assert "record.muted || record.soloExcluded || !record.audible || !record.converted" in _JS
     assert ".track-row.muted-track .track-channel" in _CSS
+
+
+def test_track_rows_double_click_to_toggle_roll_and_switch_on_click_when_open():
+    assert 'name.addEventListener("dblclick"' in _JS
+    assert 'row.addEventListener("dblclick"' in _JS
+    assert "toggleTrackRoll(channel.key);" in _JS
+    assert "if (ROLL_PART && !ROLL_GLOBAL)" in _JS
+    assert "function openTrackRoll(partKey)" in _JS
+    assert "use the gear for track settings" in _JS
+    assert "function focusTrackRoll(channel)" in _JS
+    assert "focusTrackRoll(channel);" in _JS
+    assert "setRollZoomPercent(100 * clamp(duration / span * 0.84, 1, 8));" in _JS
+
+
+def test_every_track_has_an_explicit_settings_action_in_both_roll_modes():
+    assert 'track-settings-button' in _JS
+    assert 'settingsButton.title = "Track settings"' in _JS
+    assert 'settingsButton.appendChild(iconElement("settings"))' in _JS
+    assert 'openChannelInspector(channel.key);' in _JS
+    assert 'closeChannelInspectorAndClearSelection();' in _JS
+    assert (
+        'trackSettingsButton.setAttribute("aria-pressed", settingsOpen ? "true" : "false")'
+        in _JS
+    )
+    assert (
+        'trackSettingsButton.title = settingsOpen ? "Close track settings" : "Track settings"'
+        in _JS
+    )
+    assert '.track-settings-button { opacity: .62; }' in _CSS
     assert ".track-mute-toggle.active" in _CSS
     assert re.search(r"\.track-row\s*\{[^}]*cursor:\s*pointer", _CSS)
 
@@ -596,13 +671,31 @@ def test_the_script_never_reads_a_name_it_does_not_declare():
     assert undeclared(_JS) == set()
 
 
-def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
+def test_channel_settings_exposes_analysis_calibration_and_track_pitch():
     for control in (
         "channelInspector",
         "closeChannelInspector",
         "channelInspectorSubtitle",
         "channelPitchFollow",
         "channelPitchModeHelp",
+        "channelPitchRegular",
+        "channelAnalyzePitch",
+        "channelClearPitch",
+        "channelPitchAnalysis",
+        "channelCalibrationRange",
+        "channelCalibrationNumber",
+        "channelCalibrationCentsRange",
+        "channelCalibrationCentsNumber",
+        "channelCalibrationHelp",
+        "channelRootLabel",
+        "channelRootValue",
+        "channelRootDescription",
+        "channelTransposeRange",
+        "channelTransposeNumber",
+        "channelGlideRange",
+        "channelGlideNumber",
+        "channelEffectivePitch",
+        "channelAdvancedSettings",
         "channelSound",
         "channelMidiRange",
         "channelNoteCount",
@@ -618,6 +711,28 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     # musical root for. Pitching an unmusical effect across the keyboard is
     # the point of the switch, and gating it on a detected root removed it.
     assert "follow.disabled = !exact;" in _JS
+    assert 'el("channelPitchRegular").hidden = !exact;' in _JS
+    assert 'el("channelPitchAdvanced").hidden = !exact;' in _JS
+    assert '<summary>Advanced track settings</summary>' in _HTML
+    advanced = _HTML.index('id="channelAdvancedSettings"')
+    for regular_control in (
+        "channelPitchFollow",
+        "channelAnalyzePitch",
+        "channelTransposeRange",
+        "channelVolumeRange",
+    ):
+        assert _HTML.index('id="%s"' % regular_control) < advanced
+    for advanced_control in (
+        "channelCalibrationRange",
+        "channelGlideRange",
+        "channelAttackRange",
+        "channelVoicesRange",
+        "channelPolyRange",
+        "channelSustainRange",
+        "channelReleaseRange",
+    ):
+        assert _HTML.index('id="%s"' % advanced_control) > advanced
+    assert ".channel-advanced-settings[open] > summary::after" in _CSS
     assert "var NEUTRAL_ROOT_MIDI = 60;" in _JS
     assert "follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums" in _JS
     # The rootless reference is written through the part key, not a bare channel
@@ -625,23 +740,78 @@ def test_channel_settings_exposes_pitch_mode_without_manual_calibration():
     assert "body.root_midi = NEUTRAL_ROOT_MIDI;" in _JS
     assert "body.root_confidence = 0;" in _JS
     assert 'body.root_source = "neutral";' in _JS
-    # The user's own Follow-MIDI choice survives a sound change.
+    # Follow MIDI remains an explicit setting after selection; choosing a new
+    # exact sound resets it instead of analyzing/tuning behind the user's back.
     assert "pitch_follow_preference: !!enabled" in _JS
-    assert 'savedPart.pitch_follow_preference' in _JS
+    assert "savedPart.pitch_follow_preference" not in _JS
     assert "Automatic percussion selects a dedicated sound for each MIDI key" in _JS
-    assert "make it rise and fall against a neutral" in _JS
+    assert "Follow MIDI note uses an assumed " in _JS
     assert "neutral C4 reference" not in _JS
     assert 'id="notePitchFollow"' not in _HTML
     assert 'id="noteRootNumber"' not in _HTML
-    assert "Advanced sound calibration" not in _HTML
-    assert "Sound's natural note" not in _HTML
-    assert 'id="channelPitchReferenceFields"' not in _HTML
-    assert 'id="channelRootNumber"' not in _HTML
-    assert 'id="channelRootName"' not in _HTML
-    assert 'root_source: "manual"' not in _JS
-    assert '"Unknown"' not in _JS
-    assert "Set its natural note" not in _JS
-    assert "This sound will play unchanged at its natural pitch." in _JS
+    assert "function analyzeSelectedChannelPitch()" in _JS
+    assert "function clearSelectedChannelPitch()" in _JS
+    assert 'el("channelClearPitch").addEventListener("click", clearSelectedChannelPitch)' in _JS
+    assert "Clear pitch setup removes analysis and manual calibration" in _HTML
+    assert "Pitch analysis and calibration cleared. The sound now plays unchanged." in _JS
+    assert "pitch_follow: false," in _JS
+    assert "root_midi: null," in _JS
+    assert "function parsePitchReference(raw)" in _JS
+    assert 'api().sound_profile(saved.sound, channel.key, true)' in _JS
+    assert 'root_source: "manual"' in _JS
+    assert 'id="notePitchRange" min="-24" max="24" step="1"' in _HTML
+    assert 'id="notePitchNumber" min="-24" max="24" step="1"' in _HTML
+    assert (
+        "Adjusts this note in whole semitones. Use Sample tuning fine adjustment "
+        "for cents across the track." in _HTML
+    )
+    assert 'return pitchName(value) + " (MIDI " + Math.round(Number(value)) + ")";' in _JS
+    assert "function pitchAdjustment(value)" in _JS
+    assert "? clamp(Math.round(numeric), limits[0], limits[1])" in _JS
+    assert "Finds the sound's natural note and cents offset." in _HTML
+    assert "Confidence shows how reliable the detection is." in _HTML
+    assert 'id="channelPlayReference">Play C4 reference</button>' in _HTML
+    assert "MIDI 60 \u00b7 261.63 Hz" in _HTML
+    assert "Loops a built-in pure tone until you press Stop." in _HTML
+    assert "function playPitchReferenceTone()" in _JS
+    assert 'oscillator.type = "sine"' in _JS
+    assert "440 * Math.pow(2, (60 - 69) / 12)" in _JS
+    assert "oscillator.stop(now + 1.52)" not in _JS
+    assert 'el("channelPlayReference").addEventListener("click", togglePitchReferenceTone)' in _JS
+    assert "stopPitchReferenceTone();\n    CHANNEL_INSPECTOR_OPEN = false;" in _JS
+    assert "Coarse sample tuning" in _HTML
+    assert "Positive pitches the sample higher; negative pitches it lower." in _HTML
+    assert "Sample tuning fine adjustment" in _HTML
+    assert 'id="channelCalibrationRange" min="-24" max="24" step="1"' in _HTML
+    assert 'id="channelCalibrationCentsRange" min="-100" max="100" step="1"' in _HTML
+    assert "function updateManualSampleCalibration()" in _JS
+    assert "var root = Math.round((NEUTRAL_ROOT_MIDI - correction) * 10000) / 10000" in _JS
+    assert "pitch_follow_preference: true" in _JS
+    assert 'root_source: "manual"' in _JS
+    assert "var sendCalibration = debounce(updateManualSampleCalibration, 180)" in _JS
+    assert 'placeholder="60 or C4 (optional)"' in _HTML
+    assert "Shows the analyzer result or the note inferred from manual sample tuning." in _HTML
+    assert "Edit it only when you already know the sound's natural note." in _HTML
+    assert "Correction equals the imported MIDI note minus this value." in _HTML
+    assert 'el("channelRootLabel").textContent = neutralReference' in _JS
+    assert "Sample root (optional)" in _JS
+    assert "No sample root has been set." in _JS
+    assert "root === null || !isFinite(root) || neutralReference" in _JS
+    assert 'noteName(NEUTRAL_ROOT_MIDI) + " reference; the raw sound plays unchanged there."' in _JS
+    assert "Not analyzed. Follow MIDI note uses an assumed" in _JS
+    assert 'noteName(60) + " automatic correction: "' in _JS
+    assert "pitchAdjustment(referenceCorrection)" in _JS
+    assert '"Pitch formula: imported MIDI note − " + pitchName(root)' in _JS
+    assert "pitchAdjustment(referenceCorrection + adjustment)" in _JS
+    assert "Moves every note on this track up or down in whole semitones." in _HTML
+    assert "channelFineTuneRange" not in _HTML
+    assert "channelFineTuneNumber" not in _HTML
+    assert 'partPatch(channel, { fine_tune_cents: value })' not in _JS
+    assert "Saved legacy track detune:" in _JS
+    assert "A saved legacy detune adds" in _JS
+    assert 'root_source: "manual",\n      fine_tune_cents: 0' in _JS
+    assert "Pitches the sound to match each imported MIDI note." in _JS
+    assert "Sound selected unchanged." in _JS
     assert "relative_anchor" not in _JS
     assert "Stable pitch detected for natural playback" not in _JS
     assert "function closeChannelInspectorAndClearSelection()" in _JS
@@ -666,17 +836,24 @@ def test_notes_advertise_clickability_only_when_pointer_hit_testing_finds_one():
 def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_them():
     assert "source.playbackRate.value = playbackRate" in _JS
     assert "var playbackRate = Number(event.playback_rate || 1)" in _JS
-    assert "var offset = wallOffset * playbackRate" in _JS
+    assert "offset = wallOffset * playbackRate" in _JS
+    assert "source.playbackRate.linearRampToValueAtTime(" in _JS
+    assert "var glideSeconds = Math.max(0, Number(event.glide_ms || 0) / 1000)" in _JS
     assert "var naturalDuration = buffer.duration / playbackRate" in _JS
     assert "if (wallOffset >= total) { return; }" in _JS
     assert "Math.pow(10, Number(event.volume_db || 0) / 20)" in _JS
-    assert "api().sound_profile(candidate.value, partKey)" in _JS
-    assert "body.root_midi = plan.root_midi !== null && plan.root_midi !== undefined" in _JS
-    assert "pitchPreference === null ? !!plan.pitch_follow : pitchPreference" in _JS
-    assert "body.root_source = plan.root_source || null" in _JS
-    assert "response.pitch_plan" in _JS
-    assert "This sound will play unchanged at its natural pitch." in _JS
-    assert "Number(note.pitch_modifier || 0)" in _JS
+    assert "api().sound_profile(candidate.value, partKey)" not in _JS
+    assert "body.pitch_follow = false;" in _JS
+    assert "body.pitch_follow_preference = false;" in _JS
+    assert "body.root_midi = null;" in _JS
+    assert "body.detected_root_midi = null;" in _JS
+    assert "body.fine_tune_cents = 0;" in _JS
+    assert (
+        "Sound selected unchanged. Analyze or tune it only when you want pitch following."
+        in _JS
+    )
+    assert "var activePitch = note.pitch_semitones;" in _JS
+    assert 'Math.round(Number(activePitch) || 0)' in _JS
     assert "function notePitchOverrideKey(noteId)" in _JS
     assert 'return note.pitch_follow ? "follow_pitch_semitones" : "pitch_semitones"' in _JS
     assert 'key === "pitch_semitones" || key === "follow_pitch_semitones"' in _JS
@@ -686,9 +863,13 @@ def test_preview_uses_the_compiler_pitch_and_volume_values_without_rederiving_th
     assert "notePitchOverrideKey(SELECTED_NOTE_ID)" in _JS
 
 
-def test_settings_edits_are_serialized_and_chrome_controls_use_expected_hover_states():
+def test_settings_edits_coalesce_stale_slider_values_and_chrome_hover_states():
     assert "var PATCH_QUEUE = Promise.resolve();" in _JS
-    assert "PATCH_QUEUE.then(runPatch, runPatch)" in _JS
+    assert "var PATCH_IN_FLIGHT = false;" in _JS
+    assert "var PATCH_NEXT = null;" in _JS
+    assert "PATCH_NEXT = mergePendingPatch(PATCH_NEXT, patch);" in _JS
+    assert "function drainPatchQueue()" in _JS
+    assert "key === 'drum_keys' || key === 'family_caps'" in _JS
     assert "pitch_follow_preference: !!enabled" in _JS
     assert ".menu-label { min-width: 36px; height: 24px;" in _CSS
     assert "border-radius: 5px; background: transparent" in _CSS
@@ -732,7 +913,11 @@ def test_natural_song_completion_does_not_hard_stop_finite_audio_tails():
     assert finish
     assert "stopPlaybackClock();" in finish.group("body")
     assert "stopSources();" not in finish.group("body")
-    assert "stopSources();\n      AUDIO.playing = true;" in _JS
+    assert re.search(
+        r"stopSources\(\);\s*AUDIO\.performance = capturePlaybackPreview\(\);\s*"
+        r"AUDIO\.playing = true;",
+        _JS,
+    )
 
 
 def test_octave_labels_are_a_display_only_view_preference():
@@ -759,7 +944,8 @@ def test_bottom_control_plane_exposes_the_persisted_master_volume():
     assert "applyPatch({ tuning: { master_volume_db: value } }, true)" in _JS
     assert "paintMasterVolume(tuning().master_volume_db)" in _JS
     assert "el('masterVolume').disabled = !song" in _JS
-    assert '"Global " + signed(note.master_volume_db)' in _JS
+    assert '"Track " + signed(note.track_volume_db)' in _JS
+    assert 'signed(note.master_volume_db)' in _JS
     assert '" dB; output " + signed(note.volume_db)' in _JS
 
 
@@ -775,6 +961,86 @@ def test_the_playhead_and_hover_use_lightweight_overlay_canvases():
     assert "if (RENDER.surfaceDirty) { drawStaticRoll(lines, palette); }" in _JS
     assert "drawRollOverlays(position, palette)" in _JS
     assert _JS.index("if (RENDER.surfaceDirty)") < _JS.rindex("drawRollOverlays(position, palette)")
+
+
+def test_track_lanes_expose_a_synchronized_horizontal_scrollbar():
+    assert re.search(r"\.lanes-view:not\(\[hidden\]\).*overflow:\s*auto", _CSS)
+    assert _CSS.count("scrollbar-gutter: stable") >= 2
+    assert "lanes.scrollLeft = viewport.scrollLeft" in _JS
+    assert "viewport.scrollLeft = lanes.scrollLeft" in _JS
+    assert "if (!el('lanesView').hidden) { patchLanesView(); }" in _JS
+    assert "function laneDisplayEvents(partKey)" in _JS
+    assert "var LANE_EVENTS_CACHE = { source: null, byPart: null };" in _JS
+    assert "var events = laneDisplayEvents(channel.key);" in _JS
+    assert "var laneLines = timingLinesAt(scrollLeft, visibleWidth, ROLL.laneGridDenominator);" in _JS
+    assert "function timingLinesAt(scrollLeft, viewportWidth, gridDenominator)" in _JS
+    assert "function drawLaneTimingGrid(context, lines, width, height, palette)" in _JS
+    assert "drawLaneTimingGrid(context, lines, width, height, palette);" in _JS
+    assert 'fill.className = "lane-grid-fill";' in _JS
+    assert "function drawLaneGridFill(canvas, width, height, scrollLeft, lines, palette)" in _JS
+    assert "var fillHeight = Math.max(0, container.clientHeight - usedHeight);" in _JS
+    assert ".lane-grid-fill {" in _CSS
+    assert "background: color-mix(in srgb, var(--track-color) 6%, var(--field));" in _CSS
+    assert "border-left: 2px solid var(--track-color);" in _CSS
+    assert "context.fillStyle = trackColor;" in _JS
+    assert "context.strokeStyle = trackColor;" in _JS
+    assert "var limited = [];" in _JS
+    assert "limited.push({ x: x, y: y, width: w, height: rowHeight });" in _JS
+    assert "context.setLineDash([3, 2]);" in _JS
+    assert "queueLaneDraw();\n      queueDraw();" in _JS
+    assert "var x = (start / duration) * contentWidth - scrollLeft" in _JS
+
+
+def test_space_is_reserved_for_transport_outside_typing_fields():
+    assert "input[type=\"text\"], input[type=\"search\"], textarea" in _JS
+    assert "if (!typing && event.code === 'Space')" in _JS
+    assert "Promise.resolve(context.resume())" in _JS
+    assert "if (event.key === 'Enter') { event.preventDefault(); action(); }" in _JS
+    chrome_keyboard = re.search(
+        r"function keyboardClick\(node, action\) \{(?P<body>.*?)\n  \}",
+        _JS,
+        re.DOTALL,
+    )
+    assert chrome_keyboard
+    assert "event.key === ' '" not in chrome_keyboard.group("body")
+
+
+def test_track_settings_expose_a_persisted_track_volume_layer():
+    assert 'id="channelVolumeRange" min="-60" max="20"' in _HTML
+    assert 'id="channelVolumeNumber" min="-60" max="20"' in _HTML
+    assert "applyPatch(partPatch(part, { volume_db: value }), true)" in _JS
+    assert "syncChannelVolume(channel)" in _JS
+
+
+def test_release_has_a_song_default_and_optional_track_override():
+    assert '<label for="releaseRange">Default Track Release</label>' in _HTML
+    assert "Fades sustained or looping notes after MIDI note-off" in _HTML
+    assert 'id="channelReleaseEnabled"' in _HTML
+    assert 'id="channelReleaseRange" min="0" max="2" step="0.01"' in _HTML
+    assert 'id="channelReleaseNumber" min="0" max="10" step="0.01"' in _HTML
+    assert "function syncChannelRelease(channel)" in _JS
+    assert "function bindChannelRelease()" in _JS
+    assert "applyPatch(partPatch(part, { release_s: value }), true)" in _JS
+    assert "event.release_s === undefined ? performance.release_s : event.release_s" in _JS
+
+
+def test_track_attack_and_hard_stop_are_optional_track_only_controls():
+    assert '<label for="channelAttackRange">Track Attack</label>' in _HTML
+    assert 'id="channelAttackEnabled"' in _HTML
+    assert 'id="channelAttackRange" min="10" max="5000"' in _HTML
+    assert "function syncChannelAttack(channel)" in _JS
+    assert "function bindChannelAttack()" in _JS
+    assert "partPatch(part, { attack_ms: value })" in _JS
+    assert "id=\"channelHardStopEnabled\"" in _HTML
+    assert "id=\"channelHardStop\"" in _HTML
+    assert "function syncChannelHardStop(channel)" in _JS
+    assert "function bindChannelHardStop()" in _JS
+    assert "partPatch(part, { hard_stop: value })" in _JS
+
+
+def test_conversion_toolbar_button_toggles_its_inspector():
+    assert "function toggleInspector()" in _JS
+    assert "el('conversionBtn').addEventListener('click', toggleInspector)" in _JS
 
 
 def test_dense_roll_rendering_is_indexed_cached_and_level_of_detail_aware():
@@ -794,7 +1060,7 @@ def test_dense_roll_rendering_is_indexed_cached_and_level_of_detail_aware():
 
 def test_rendering_caps_pixel_cost_and_throttles_nonvisual_transport_updates():
     assert "var MAX_CANVAS_PIXEL_RATIO = 2" in _JS
-    assert "Math.ceil(ROLL.viewportWidth / Math.max(1, minimumPixels)) + 2" in _JS
+    assert "Math.ceil(viewportWidth / Math.max(1, minimumPixels)) + 2" in _JS
     assert "markerAt(tempoRenderIndex(), tick, 'tick')" in _JS
     assert "markerAt(tempoRenderIndex(), timeMs, 'time_ms')" in _JS
     assert "RENDER.lineTimingSource === timing" in _JS
@@ -816,7 +1082,8 @@ def test_global_preview_uses_direct_song_scoped_audio_without_setup_extraction()
         "Song preview skips those events; exported maps still use their exact event strings." in _JS
     )
     assert "invalidateAudio(true)" in _JS, "a different song cannot reuse prior buffers"
-    assert "invalidateAudio(false)" in _JS, "settings changes retain overlapping buffers"
+    assert "refreshAudioAfterSettings()" in _JS
+    assert "AUDIO.performance = capturePlaybackPreview()" in _JS
     assert "prepareSongAudio();" in _JS
     assert re.search(
         r"function refreshAudio\(\).*?pausePlayback\(\).*?api\(\)\.audio_status\(\)"
@@ -825,6 +1092,21 @@ def test_global_preview_uses_direct_song_scoped_audio_without_setup_extraction()
         re.DOTALL,
     ), "refresh must stop transport and discard buffers from the previous source"
     assert "api().preview_manifest(" not in _JS, "startup already carries the manifest"
+
+
+def test_settings_edits_handoff_without_stopping_transport():
+    apply_body = re.search(
+        r"function applyPatch\(body, _resumePlayback\) \{(?P<body>.*?)\n  \}",
+        _JS,
+        re.DOTALL,
+    )
+    assert apply_body
+    assert "pausePlayback()" not in apply_body.group("body")
+    assert "function capturePlaybackPreview()" in _JS
+    assert "function playbackEvents()" in _JS
+    assert "function handoffPlaybackPreview()" in _JS
+    assert "AUDIO.scheduledThrough = horizon" in _JS
+    assert "AUDIO.nextIndex = firstFutureEvent(boundary + 0.001)" in _JS
 
 
 def test_header_commands_are_conventional_desktop_menus():
@@ -1075,3 +1357,45 @@ def test_a_drum_sound_row_leads_with_its_length():
     up voices and turns to mush -- so it has to be visible before the click,
     not discovered after an export."""
     assert 'var metadata = [event ? eventDuration(event) : "", entry.group];' in _JS
+
+
+def test_global_and_track_voice_controls_are_both_exposed():
+    """Global Voices caps the map; Track Voices budgets one part within it."""
+    assert '<label for="maxSpeakersRange">Global Voices</label>' in _HTML
+    assert '<span class="hint">entire song</span>' in _HTML
+    assert 'id="maxSpeakersRange" min="1" max="128" value="32"' in _HTML
+    assert 'id="maxSpeakersNumber" min="1" max="128" value="32"' in _HTML
+    assert '<label for="songPolyphonyRange">Global Polyphony</label>' in _HTML
+    assert 'id="songPolyphonyRange" min="1" max="128" value="32"' in _HTML
+    assert 'id="songPolyphonyNumber" min="1" max="128" value="32"' in _HTML
+    assert "including notes layered on the shared emitter" in _HTML
+    assert "Ringing sample tails do not consume this limit" in _HTML
+    assert "bindPair('songPolyphonyRange', 'songPolyphonyNumber', 'song_polyphony'" in _JS
+    assert (
+        "Sets the maximum number of dedicated sounds the whole song can play at once."
+        in _HTML
+    )
+    assert '<label for="channelVoicesRange">Track Voices</label>' in _HTML
+    assert 'id="channelVoicesRange" min="1" max="128"' in _HTML
+    assert "Caps how many Global Voices this track can use." in _HTML
+    assert "Extra low notes are muted and shown as dashed outlines" in _HTML
+    assert '<label for="polyEnabled">Default Track Polyphony</label>' in _HTML
+    assert (
+        "Sets the polyphony limit used by every track unless that track has its own setting."
+        in _HTML
+    )
+    assert '<label for="channelPolyRange">Track Polyphony</label>' in _HTML
+    assert '<label for="sustainEnabled">Default Track Sustain Limit</label>' in _HTML
+    assert '<label for="channelSustainRange">Track Sustain Limit</label>' in _HTML
+    assert 'id="channelSustainEnabled"' in _HTML
+    assert 'id="channelSustainRange" min="50" max="5000"' in _HTML
+    assert "It does not change how many voices the track can use." in _HTML
+    assert 'function syncChannelVoices(channel)' in _JS
+    assert 'function syncChannelSustain(channel)' in _JS
+    assert 'bindChannelLimit("voices", "max_speakers"' in _JS
+    assert 'bindChannelLimit("sustain_ms", "cap_sustain_ms"' in _JS
+    assert '<label for="channelGlideRange">Track glide</label>' in _HTML
+    assert 'id="channelGlideRange" min="0" max="5000" value="0"' in _HTML
+    assert 'id="channelGlideNumber" min="0" max="5000" value="0"' in _HTML
+    assert "Default: No glide (0 ms)." in _HTML
+    assert "Track Voices 1 gives monophonic portamento." in _HTML

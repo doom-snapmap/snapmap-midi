@@ -64,7 +64,7 @@ Yours loads instead of it. Run `sh_rawmaps_off` when you're done.
 | `--out-dir` | path | the loader's folder | write to this folder instead (filename stays `rawmap.json`) |
 | `--baseline` | path | none | add the song to this saved map instead of authoring a blank room |
 | `--settings` | path | none | take every lever from this settings file (see [`ui.md`](ui.md)) |
-| `--button` | text | `snapmap-midi-song` | display name of the switch that plays the song |
+| `--button` | text | legacy compatibility | accepted for older scripts; MIDI exports always name the interactive from the `.mid` filename |
 | `--remap` | text | none | retimbre families, e.g. `ins_guitar=ins_piano`; comma-separate several |
 | `--drums` | `auto` / `on` / `off` | `auto` | `auto` includes drums when the file has a channel-9 track |
 | `--max-speakers` | int | `32` | ceiling on dedicated speaker voices |
@@ -155,14 +155,16 @@ entries remain selectable for export and are clearly marked.
 
 The reference retail installation contains 7,589 Play events, of which 7,353 support local
 preview; those counts can vary with localization and edition. Exact assignment repeats the
-chosen event string for every note. On selection, a conservative all-leaf analysis accepts a
+chosen event string for every note. Selection itself preserves natural playback and performs no
+pitch analysis. When the user explicitly presses **Analyze sound**, a conservative all-leaf analysis accepts a
 root only for stable pitched media. Accepted roots keep their measured octave so MIDI pitch remains
 absolute. Tonal but root-ambiguous and nonmusical events keep natural playback by default. Users may
 explicitly enable Follow MIDI note for those events; the fallback is a fixed neutral C4 operational
-reference, not a claimed acoustic root or a value inferred from channel notes. The normal UI does not
-expose manual acoustic calibration. Infinite and Mixed Wwise events use the sustained path and
-receive a stop. One-shots with non-zero pitch or gain use duration-reserved speaker
-voices; neutral one-shots retain the shared fire-and-forget path. The full catalog remains a
+reference, not a claimed acoustic root or a value inferred from channel notes. Channel settings can
+explicitly refresh analysis, show its note/cents/confidence, and replace the playback reference when
+the detector is wrong. Infinite and Mixed Wwise events use the sustained path and
+receive a stop. One-shots with non-zero pitch or gain use duration-reserved generic Timeline
+emitters; neutral one-shots retain the shared fire-and-forget path. The full catalog remains a
 manual layer and does not widen General MIDI automatic mapping.
 
 ### Channel pitch mode
@@ -172,18 +174,20 @@ pitched instrument sets always follow MIDI through their curated samples; automa
 uses dedicated per-key sounds and has no channel-wide pitch mode. Exact events expose
 **Follow MIDI note** for every exact sound. A trusted acoustic root enables it automatically;
 otherwise the sound stays at natural playback until the user opts in, at which point a stable neutral
-C4 reference supplies predictable relative semitones. Automatic root selection remains internal;
-there is no raw reference-number control in the normal UI and no first-note, midpoint, or median
-fallback.
+C4 reference supplies predictable relative semitones. The analyzer button refreshes cached evidence;
+the playback reference accepts either MIDI-number or note-name input, including enharmonic flats.
+Track transpose applies a whole-note interval and Fine tune adds cents to every note. Neither uses a
+first-note, midpoint, or median fallback.
 
 ### Per-note pitch and dynamics
 
 Clicking a rendered note pauses transport and opens the Note expression inspector. It shows the
 immutable MIDI note, channel, exact event, Pitch, current note volume, and any clamp.
-Automatic pitch detection, reference choice, and subtraction stay internal.
+The resolved automatic value retains the analyzer's exact backend pitch. The interface presents
+that value as a whole note/MIDI number plus whole cents rather than a decimal semitone.
 
 - **Pitch** is an integer -24 through 24 semitones and affects playback only. The control displays
-  the active mode's exact modifier: automatic pitch (or its separate user adjustment) while Follow
+  the active mode's nearest whole-semitone modifier: automatic pitch (or its separate user adjustment) while Follow
   MIDI note is enabled, and the note's preserved manual value while it is disabled. Editing saves
   only the active mode. Toggling Follow MIDI never rewrites the other value, so disabling it restores
   prior manual work rather than resetting notes to zero. Pitch never moves the MIDI block or changes
@@ -249,7 +253,13 @@ remain library-only arguments to `compile_to_rawmap`.
 
 | Lever | CLI | Type | Reach for it when |
 |---|---|---|---|
-| `max_speakers` | `--max-speakers` | int | too many sustained or expressive voices in one channel; the cheapest global limit |
+| `max_speakers` | `--max-speakers` | int | too many sustained or expressive voices across the song; the global isolated-emitter limit |
+| `song_polyphony` | — | int | too many held MIDI notes across all tracks, including shared-emitter notes; defaults to 32 |
+| `part_voices` | — | dict | one track is monopolising the global pool; cap that track while preserving later attacks |
+| `part_sustain_ms` | — | dict | one track's held notes need an intentional maximum length independent of voice stealing |
+| `part_glide_ms` | — | dict | a fixed-sound track should slide from its previous pitch; pair with Track Voices 1 for monophonic portamento |
+| `part_attack_ms` | — | dict | one track needs a controlled fade-in at each note-on; optional because it uses isolated emitters |
+| `part_hard_stop` | — | dict | one track should stop immediately while other tracks retain their release fades |
 | `master_volume_db` | -- | int | the whole arrangement is too quiet or loud; offsets every note before the final clamp |
 | `release_s` | `--release` | seconds | note-offs sound abrupt, or notes bleed together |
 | `hard_stop` | `--hard-stop` | flag | a fade is still audible under the next phrase; cuts instead |
@@ -257,7 +267,7 @@ remain library-only arguments to `compile_to_rawmap`.
 | `family_overrides` | `--remap` | dict | an instrument picked the wrong-sounding family |
 | `drums` | `--drums` | mode | percussion is dominating, or is wanted and absent |
 | `max_poly` | — | int | a chord-heavy passage overruns the emitter budget |
-| `cap_sustain_ms` | — | ms | long held notes are the problem; truncates them |
+| `cap_sustain_ms` | — | ms | default audible-duration cap, including long one-shot rings, for tracks without a per-track override |
 | `bass_cap_ms` | — | ms | only the low register rings on; pairs with `bass_pitch` |
 | `bass_pitch` | — | note | where "bass" starts for `bass_cap_ms`; defaults to 78 |
 | `min_sustain_ms` | — | ms | very short sustained notes are wasting voices |
@@ -282,7 +292,7 @@ table's own answer. Applied the other way round it silently replaced the sound s
 just picked.
 
 The bottom control plane exposes `master_volume_db`. The Conversion inspector exposes
-`max_speakers`, `release_s`, `hard_stop`, `max_poly`, `cap_sustain_ms`, `bass_pitch`,
+`max_speakers`, `song_polyphony`, `release_s`, `hard_stop`, `max_poly`, `cap_sustain_ms`, `bass_pitch`,
 `bass_cap_ms`, `decaying_families`, and `family_caps`. Channel rows expose family/sound
 selection, mute, multi-solo, and click-to-focus inspection. Selecting an exact sound records a
 trusted pitch when available. Root-ambiguous and clearly nonmusical sounds keep natural playback
@@ -307,13 +317,13 @@ network nor the filesystem beyond reading the MIDI path you hand it.
 ```python
 from snapmap_midi.compile import compile_to_rawmap
 
-raw, stats = compile_to_rawmap("song.mid", button_name="my-song", max_poly=8)
+raw, stats = compile_to_rawmap("song.mid", max_poly=8)
 ```
 
 Pass baseline bytes as the second argument to add the song to a map you already have:
 
 ```python
-raw, stats = compile_to_rawmap("song.mid", my_level_bytes, button_name="my-song")
+raw, stats = compile_to_rawmap("song.mid", my_level_bytes)
 ```
 
 The timeline layer is usable on its own when you want to place sounds directly rather than

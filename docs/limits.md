@@ -33,15 +33,17 @@ notes live.
 Decay behavior no longer tells the whole allocation story:
 
 - A neutral decaying note has no pitch or gain modifier and remains on the shared Timeline
-  emitter. It holds no dedicated speaker and is effectively immune to this voice-pool limit.
-- A decaying note with pitch or gain expression needs isolation. It reserves a speaker through
+  emitter. It holds no dedicated pitch-controlled emitter and is effectively immune to this
+  voice-pool limit. Native pre-tuned shaders can form chords on this shared wildcard path.
+- A decaying note with pitch or gain expression needs isolation. It reserves a generic Timeline
+  emitter through
   installed-event duration, or 750 ms for drums and 1000 ms for other sounds when metadata is
   unavailable.
 
-**`max_speakers` is a voice count, and it applies to notes that START TOGETHER.** Those are the
-only notes competing for a speaker at one instant, so they are the only ones that can be
-genuinely unplayable. A chord wider than the voice count is thinned from the bottom, keeping
-the highest notes, which is what a hardware synth does when it runs out of voices. A kept note
+**Global Voices (`max_speakers`) is a song-wide voice count.** Notes from every track share the
+same isolated-emitter pool. Notes that start together beyond the limit are thinned from the bottom,
+keeping the highest notes; later overlapping notes reuse the emitter that frees first and cut its prior tail
+short. This is deterministic, so the same MIDI always keeps the same notes. A kept note
 rings its full tail; a dropped one does not play and the roll dims it.
 
 A note that arrives over an earlier note's ringing tail is a different case, and it is **not**
@@ -66,9 +68,9 @@ is, which is exactly how the broken version passed its first test.
 
 None of this stops sustained notes being shortened by the duration caps, which are a separate
 lever: **your notes do not overlap, but their sounds do.** A 124 ms note can trigger a
-4-second sample, so notes a beat apart are still both sounding — they just share one speaker
+4-second sample, so notes a beat apart are still both sounding — they just share one emitter
 instead of needing two.
-- A sustained note reserves a speaker until its capped note end and receives a stop or release.
+- A sustained note reserves an emitter until its capped note end and receives a stop or release.
 
 For an exact full-game assignment, installed Wwise metadata still decides decay behavior.
 OneShot events decay naturally; Infinite and Mixed events use the sustained path and receive a
@@ -83,8 +85,11 @@ that difference is the whole reason both exist.
 
 | | Mechanism | What a listener hears |
 |---|---|---|
-| **Voices** (`max_speakers`, per track `voices`) | a new note takes the speaker of whichever sound is closest to finishing | every note plays; the older one stops early |
+| **Global Voices** (`max_speakers`) | a song-wide ceiling after every track's own cap; the isolated pool reuses the emitter that frees soonest | prevents the map from authoring too many pitch-controlled emitters overall |
+| **Global Polyphony** (`song_polyphony`) | admits a fixed number of held notes across all tracks before shared/isolated routing | shared-emitter chords and isolated notes consume the same musical-note budget; sample tails do not count |
+| **Track Voices** (per track `voices`) | caps one track's virtual emitters before it joins the global pool; at 1 it is monophonic | later notes play and older tails on that track stop early; oversized chords keep their highest notes |
 | **Polyphony** (`max_poly`, per track `polyphony`) | notes past the limit are refused | those notes never sound; the ones that do keep their full length |
+| **Sustain Limit** (`cap_sustain_ms`, per track `sustain_ms`) | intentionally caps a sound's audible duration; a track value overrides the song default | looping notes and long one-shot rings end at the chosen duration even when voices remain available |
 
 A block chord cannot tell them apart — both keep the top of it. The case that separates them is
 notes overlapping *without* sharing an onset, which is most sustained writing. Four held notes
@@ -97,16 +102,38 @@ same as a muted track — `converted: false` in the preview manifest.
 **Voices is the lever for a long sample ringing under the next note**, because stealing is what
 silences the previous one. Polyphony would only delete notes and leave the ringing.
 
-**Both are per track**, and both always were — each layer is allocated separately, so the
-song-wide sliders were never a song-wide budget, only the same number applied to every track.
-A track that sets neither uses the song's. `tests/test_compile.py` pins that a per-track limit
-touches only that track, and that voices leaves the event count alone while polyphony reduces it.
+**Sustain Limit is the deliberate note-length lever.** It does not change how many voices exist.
+Use it when notes should end sooner even without voice pressure; use Voices when each new attack
+should be preserved and an older sound may give way only when the track is full.
+
+**Global Voices is for the entire song.** It limits the dedicated Timeline emitters authored in the map,
+regardless of which track requested them. **Track Voices and Polyphony remain per track.** Use
+Track Voices to stop one instrument monopolising the pool while keeping later attacks, or use
+Polyphony when a deliberate chord reduction is preferable. Global Voices then enforces the
+overall isolated-emitter budget after those track decisions.
+
+**Global Polyphony is also song-wide, but counts notes rather than emitters.** It runs before the
+shared/isolated split, so C-E-G layered on one shared Timeline still consumes three of its slots.
+Notes already playing are never shortened by this control. If a new simultaneous group is larger
+than the remaining capacity, its highest notes are admitted. Ringing sample tails are excluded;
+counting them is the retired behavior that made sequential melodies lose later attacks.
+
+**Track Glide is for a fixed/exact sound.** Automatic instruments can choose a separately tuned
+recording for each key, so there is no single sample pitch to interpolate between. A fixed-sound
+track does have one sample and one pitch coordinate system. Its glide value (0–5000 ms) ramps each
+track-local voice from its prior pitch; use Track Voices 1 for conventional monophonic portamento.
 
 ## The editor's timeline size ceiling
 
 **A timeline past about 1 MB serialized loads and plays correctly, but the SnapMap editor
 cannot open it.** The editor says "could not open this timeline" and nothing else. The map is
 fine. The music is fine. Only editing is lost.
+
+Export currently keeps one master Timeline and one listener target. If that master exceeds the
+editor budget, the map still loads and plays but the editor may refuse to open its Timeline, and
+the workstation warns accordingly. Automatic Timeline sharding is retained behind the disabled
+`ENABLE_TIMELINE_SHARDING` feature gate for possible later use; it is not part of current export
+behavior.
 
 The two paths are different, which is why every symptom points away from the cause. Loading a
 map streams the whole document in and builds entities, with no per-entity buffer anywhere.

@@ -160,8 +160,8 @@ There is one Play/Pause control for the whole converted song. Its playhead sweep
 entire note surface and can be dragged to seek, as can the transport scrubber. The note under the
 pointer brightens whether playback is running or paused; playback itself does not change note
 colors. Clicking a note pauses playback and opens the Note expression inspector. It shows the
-immutable MIDI note, selected event, exact SnapMap pitch, and current note volume. Automatic pitch
-resolution stays internal. Pitch changes playback without moving the block, changing its
+immutable MIDI note, selected event, whole-semitone pitch control, and current note volume. Pitch changes
+playback without moving the block, changing its
 channel, or selecting another sample. Note volume starts at the level derived from the imported
 MIDI velocity and can be set directly, including back to 0 dB. The bottom-panel Volume control
 offsets the whole arrangement without rewriting any note level. Exact sounds with a stable root
@@ -173,7 +173,10 @@ Follow MIDI note enabled, an unedited note shows its automatic modifier; with it
 shows its preserved manual value, initially zero. Moving the slider saves only the active mode's
 value. Enabling Follow MIDI therefore leaves every manual edit intact, and disabling it restores
 those edits instead of resetting the channel's notes to zero. A separately adjusted Follow MIDI
-value is restored when that mode is enabled again. Channel settings shows the resulting pitch mode,
+value is restored when that mode is enabled again. For an exact sound, Channel settings can rerun
+the analyzer, show the detected note/whole cents/confidence, accept a manual whole MIDI-number or note-name
+reference (including flats), transpose the whole track by semitones, and fine-tune it in cents.
+The effective-pitch readout incorporates those controls immediately. Channel settings shows the resulting pitch mode,
 while the Note expression inspector remains strictly per-note. Clicking or dragging empty roll space
 continues to seek.
 
@@ -276,22 +279,43 @@ level, and only the output sent to SnapMap is clamped. An unedited Pitch control
 resolved automatic modifier in Follow MIDI mode and the preserved manual value otherwise. Editing
 stores the active mode's exact per-note SnapMap value without overwriting the other mode,
 independently of the MIDI row and curated sample choice.
-SnapMap receives pitch in semitones (-24 through 24) and volume in dB (-60 through 20). The
+SnapMap receives floating-point pitch in semitones (-24 through 24) and volume in dB (-60 through 20). The
 preview uses the matching resampling rate: +12 semitones plays twice as fast and -12 plays at
-half speed. One-shot speaker reservations use that pitch-adjusted duration, keeping preview and
+half speed. One-shot emitter reservations use that pitch-adjusted duration, keeping preview and
 export aligned. The arrangement then uses three scheduling paths:
 
 - **Neutral decaying sounds** need no pitch or gain change. They stay on the cheap, fully
   polyphonic shared Timeline path.
-- **Expressive decaying sounds** need independent pitch or gain. They receive isolated speaker
-  voices reserved for the installed event duration, then decay naturally without a note-off.
-- **Sustained notes** receive isolated speaker voices plus an explicit stop or release at note
+- **Expressive decaying sounds** need independent pitch or gain. They receive isolated generic
+  Timeline emitters reserved for the installed event duration, then decay naturally without a
+  note-off.
+- **Sustained notes** receive isolated Timeline emitters plus an explicit stop or release at note
   end.
 
-Voice pools are allocated per MIDI channel, so one instrument cannot steal another channel's
-voice. Preview and export share this same preparation and expression model. Empty time after the
+The isolated voices enter one song-wide reusable emitter pool after each track's own limit is
+applied. These are ordinary `idTarget_Timeline` entities, not SnapMap Speaker entities: live-engine
+tests proved that `fadePitch` reaches the generic entity but not the Speaker override. Track Voices
+1 is the monophonic option. On a fixed-sound track, Track Glide can ramp each new pitch from its
+track-local predecessor; 0 ms keeps the proven immediate pitch-before-start order. Preview and
+export share this same preparation and expression model. Empty time after the
 last note needs no map event: the Timeline is already silent. The workstation may complete the
 last visual measure, but export neither stretches the last note nor adds a synthetic sound event.
+
+Track Sustain Limit is independent of that voice pool. It intentionally caps how long held notes
+on one track may sound; the conversion-level Sustain Limit is the fallback for tracks without an
+override. Voice stealing still shortens an older note only when a new attack needs an occupied
+voice.
+
+Global Polyphony is the separate musical-note ceiling. It counts held notes across every track
+before routing them to the shared or isolated path, so one shared Timeline cannot hide a large
+chord from the song-wide limit. Ringing sample tails do not count, preserving every attack in a
+sequential melody.
+
+The SnapMap editor's Timeline buffer is per entity. Export currently keeps one master Timeline and
+one listener target even when its serialized size exceeds the conservative 1 MiB editor budget.
+Such a map still loads and plays, but SnapMap may not be able to open that Timeline for editing;
+the workstation warns when this happens. The automatic sharding implementation remains in the
+codebase behind a disabled feature gate for possible later use.
 
 ### The map is built from nothing
 
@@ -327,7 +351,7 @@ Full detail in [`docs/limits.md`](docs/limits.md).
 ```python
 from snapmap_midi.compile import compile_to_rawmap
 
-raw, stats = compile_to_rawmap("song.mid", button_name="my-song")
+raw, stats = compile_to_rawmap("song.mid")
 ```
 
 The map-authoring core underneath knows nothing about music and is usable on its own — see

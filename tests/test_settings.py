@@ -81,6 +81,7 @@ def test_the_named_defaults_are_the_ones_the_docs_promise():
     tuning = settings.defaults()["tuning"]
     assert tuning["master_volume_db"] == 0
     assert tuning["max_speakers"] == 32
+    assert tuning["song_polyphony"] == 32
     assert tuning["release_s"] == 0.1
     assert tuning["hard_stop"] is False
     assert tuning["max_poly"] is None
@@ -469,6 +470,106 @@ def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
     }
 
 
+def test_track_pitch_controls_and_detected_root_preserve_decimals():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    doc = _patch(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60.22,
+                    "detected_root_midi": 60.22,
+                    "root_confidence": 0.78,
+                    "root_source": "detected",
+                    "pitch_transpose": -2,
+                    "fine_tune_cents": 17.5,
+                    "glide_ms": 275,
+                }
+            },
+            "notes": {"0:60:1": {"follow_pitch_semitones": -2.375}},
+        }
+    )
+
+    channel = doc["channels"]["0"]
+    assert channel["detected_root_midi"] == 60.22
+    assert channel["pitch_transpose"] == -2.0
+    assert channel["fine_tune_cents"] == 17.5
+    assert channel["glide_ms"] == 275
+    assert doc["notes"]["0:60:1"]["follow_pitch_semitones"] == -2.375
+    assert settings.to_compile_kwargs(doc)["channel_pitch_profiles"][0][
+        "fine_tune_cents"
+    ] == 17.5
+    assert settings.to_compile_kwargs(doc)["part_glide_ms"] == {0: 275}
+
+
+def test_version_twelve_sidecar_migrates_without_requiring_new_pitch_fields():
+    old = settings.defaults()
+    old["version"] = 12
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+
+
+def test_version_thirteen_sidecar_migrates_with_glide_off():
+    old = settings.defaults()
+    old["version"] = 13
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_glide_ms"] == {}
+
+
+def test_version_fourteen_sidecar_migrates_with_track_sustain_using_the_default():
+    old = settings.defaults()
+    old["version"] = 14
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_sustain_ms"] == {}
+
+
+def test_version_fifteen_sidecar_migrates_with_global_polyphony_at_32():
+    old = settings.defaults()
+    old["version"] = 15
+    old["tuning"].pop("song_polyphony")
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["song_polyphony"] == 32
+
+
+def test_version_sixteen_sidecar_migrates_with_neutral_track_volume():
+    old = settings.defaults()
+    old["version"] = 16
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_volume_db"] == {}
+
+
+def test_version_seventeen_sidecar_migrates_with_default_track_release():
+    old = settings.defaults()
+    old["version"] = 17
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_release_s"] == {}
+
+
+@pytest.mark.parametrize("value", [-1, 5001, 1.5, "250", True])
+def test_track_glide_outside_whole_millisecond_bounds_is_refused(value):
+    sound = palette.sounds_in_category("ins_piano")[0]
+    with pytest.raises(settings.SettingsError, match="glide_ms"):
+        _patch({"channels": {"0": {"sound": sound, "glide_ms": value}}})
+
+
 def test_legacy_relative_reference_is_not_valid_in_a_current_document():
     sound = palette.sounds_in_category("amb_air")[0]
     with pytest.raises(settings.SettingsError, match="root_source"):
@@ -720,7 +821,7 @@ def test_max_speakers_outside_its_bounds_is_refused(value):
         _patch({"tuning": {"max_speakers": value}})
 
 
-@pytest.mark.parametrize("lever", ["voices", "polyphony"])
+@pytest.mark.parametrize("lever", ["polyphony"])
 def test_a_track_limit_is_absent_until_it_is_set_and_null_puts_it_back(lever):
     """Absent is how a track says "use the song's", so the key must not appear
     on its own. Writing `null` into every track would change every settings
@@ -738,7 +839,7 @@ def test_a_track_limit_is_absent_until_it_is_set_and_null_puts_it_back(lever):
     assert doc["channels"]["0"]["family"] == "ins_piano"
 
 
-@pytest.mark.parametrize("lever", ["voices", "polyphony"])
+@pytest.mark.parametrize("lever", ["polyphony"])
 @pytest.mark.parametrize("value", [0, -1, 129, "8", 2.5, True])
 def test_a_track_limit_outside_its_bounds_is_refused(lever, value):
     """Same bounds as the song-wide count, because it names the same thing:
@@ -747,21 +848,120 @@ def test_a_track_limit_outside_its_bounds_is_refused(lever, value):
         _patch({"channels": {"0": {lever: value}}})
 
 
-def test_a_track_limit_reaches_the_compiler_keyed_by_part(tmp_path):
+def test_a_track_polyphony_limit_reaches_the_compiler_keyed_by_part(tmp_path):
     """Only overriding tracks appear, so an untouched song hands the compiler
     an empty mapping and compiles exactly as it did before this existed."""
-    doc = _patch({"channels": {"0:1": {"voices": 2}, "3": {"polyphony": 6}}})
+    doc = _patch({"channels": {"3": {"polyphony": 6}}})
     levers = settings.to_compile_kwargs(doc)
-    assert levers["part_voices"] == {(0, 1): 2}
     assert levers["part_polyphony"] == {3: 6}
 
     bare = settings.to_compile_kwargs(_patch({"channels": {"0": {"muted": True}}}))
-    assert bare["part_voices"] == {} and bare["part_polyphony"] == {}
+    assert bare["part_polyphony"] == {}
+
+
+def test_a_legacy_per_track_voice_limit_is_preserved_during_migration():
+    old = settings.defaults()
+    old["version"] = 11
+    old["channels"] = {"0:1": {"voices": 2, "family": "ins_piano"}}
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["channels"]["0:1"]["voices"] == 2
+
+
+def test_a_per_track_voice_limit_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"voices": 2}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["voices"] == 2
+    assert levers["part_voices"] == {(0, 1): 2}
+
+
+def test_a_per_track_sustain_limit_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"sustain_ms": 650}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["sustain_ms"] == 650
+    assert levers["part_sustain_ms"] == {(0, 1): 650}
+
+
+def test_a_per_track_release_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"release_s": 0.35}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["release_s"] == 0.35
+    assert levers["part_release_s"] == {(0, 1): 0.35}
+    assert settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"release_s": None}}}, base=doc)
+    )["part_release_s"] == {}
+
+
+def test_track_attack_and_hard_stop_reach_the_compiler():
+    doc = _patch({"channels": {"0:1": {"attack_ms": 250, "hard_stop": True}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["attack_ms"] == 250
+    assert doc["channels"]["0:1"]["hard_stop"] is True
+    assert levers["part_attack_ms"] == {(0, 1): 250}
+    assert levers["part_hard_stop"] == {(0, 1): True}
+
+    cleared = settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"attack_ms": None, "hard_stop": None}}}, base=doc)
+    )
+    assert cleared["part_attack_ms"] == {}
+    assert cleared["part_hard_stop"] == {}
+
+
+@pytest.mark.parametrize("value", [0, -1, 5001, "250", True])
+def test_track_attack_uses_bounded_whole_milliseconds(value):
+    with pytest.raises(settings.SettingsError, match="attack_ms"):
+        _patch({"channels": {"0": {"attack_ms": value}}})
+
+
+@pytest.mark.parametrize("value", [-0.01, 10.01, "0.1", True])
+def test_a_per_track_release_uses_the_release_bounds(value):
+    with pytest.raises(settings.SettingsError, match="release_s"):
+        _patch({"channels": {"0": {"release_s": value}}})
+
+
+def test_a_per_track_volume_offset_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"volume_db": -6}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["volume_db"] == -6
+    assert levers["part_volume_db"] == {(0, 1): -6}
+    assert settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"volume_db": 0}}})
+    )["part_volume_db"] == {}
+
+
+@pytest.mark.parametrize("value", [-61, 21, 1.5, "3", True])
+def test_a_per_track_volume_offset_uses_snapmap_db_bounds(value):
+    with pytest.raises(settings.SettingsError, match="volume_db"):
+        _patch({"channels": {"0": {"volume_db": value}}})
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, "500", True])
+def test_a_per_track_sustain_limit_requires_positive_whole_milliseconds(value):
+    with pytest.raises(settings.SettingsError, match="sustain_ms"):
+        _patch({"channels": {"0": {"sustain_ms": value}}})
 
 
 def test_max_speakers_at_its_bounds_is_accepted():
     assert _patch({"tuning": {"max_speakers": 1}})["tuning"]["max_speakers"] == 1
     assert _patch({"tuning": {"max_speakers": 128}})["tuning"]["max_speakers"] == 128
+
+
+def test_song_polyphony_at_its_bounds_is_accepted():
+    assert _patch({"tuning": {"song_polyphony": 1}})["tuning"]["song_polyphony"] == 1
+    assert _patch({"tuning": {"song_polyphony": 128}})["tuning"]["song_polyphony"] == 128
+
+
+@pytest.mark.parametrize("value", [0, 129, 2.5, "32", True])
+def test_song_polyphony_requires_a_whole_value_inside_the_voice_range(value):
+    with pytest.raises(settings.SettingsError, match="song_polyphony"):
+        _patch({"tuning": {"song_polyphony": value}})
 
 
 def test_a_release_that_runs_backwards_is_refused():

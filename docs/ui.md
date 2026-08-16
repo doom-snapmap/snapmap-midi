@@ -77,7 +77,7 @@ control plane. Opening it shows every warning without covering the channel list.
 
 Opening another song clears channel sound/root choices, sparse note overrides, and
 percussion-key overrides, because channel numbers and note ids in two files do not mean the
-same parts. General conversion limits, output location, button name, and optional baseline
+same parts. General conversion limits, output location, and optional baseline
 remain session preferences. A valid sidecar beside the new MIDI is then applied.
 
 ## Control plane and notifications
@@ -91,9 +91,9 @@ controls for the piano roll. Zoom uses the same label-slider-value order, sizing
 Volume.
 
 Volume is a global integer dB offset from -60 through +20, with 0 dB as the neutral default.
-It is added to every current note volume before the final SnapMap clamp. It never rewrites or
-normalizes the note values themselves. The control updates the complete preview and exported
-timeline, persists in the settings sidecar, and is disabled until a song is open.
+It is added after the current note and Track Volume levels, before the final SnapMap clamp. It
+never rewrites or normalizes either underlying value. The control updates the complete preview
+and exported timeline, persists in the settings sidecar, and is disabled until a song is open.
 
 When warnings exist, the button uses the shared warning color and carries their count.
 Clicking it opens a nonblocking inspector at the right side of the workstation. Every
@@ -107,8 +107,8 @@ never stack. The audio-source banner remains separate because it reports preview
 rather than a conversion warning.
 
 Grid choices are `1`, `1/2`, `1/4`, `1/8`, `1/16`, and `1/32`. They select the musical note
-value used for faint vertical subdivisions. The marks use the MIDI file's real tempo map, so
-they remain aligned when tempo changes. Grid is a view control: changing it does not
+value used for faint vertical subdivisions in both the piano roll and Track lanes. The marks use
+the MIDI file's real tempo map, so they remain aligned when tempo changes. Grid is a view control: changing it does not
 quantize, move, or resize a note.
 
 Time signature starts from the source MIDI and offers common simple and compound meters.
@@ -165,7 +165,9 @@ instrument identity or chromatic coverage, so widening family selection would tu
 arbitrary effects. Automatic and Pitched instrument set remain on the curated pitch index;
 the full catalog is an explicit manual event override.
 
-Selecting an exact event analyzes its local media root before committing the choice. Curated
+Selecting an exact event commits it immediately at natural playback without decoding or analyzing
+its media. Analysis is opt-in through **Analyze sound**; manual calibration is opt-in through the
+C4 reference and sample-tuning controls. Curated
 palette names use their authoritative nominal pitch. Other direct-media events are decoded in
 bounded memory, and every available leaf must agree before the event is marked pitchable. A
 pitchable exact event keeps the same Play string on every note but receives a root-relative
@@ -173,7 +175,8 @@ SnapMap semitone modifier. Its detected natural note retains the measured octave
 result matches the piano roll. Tonal media whose fundamental is ambiguous plays naturally rather
 than accepting a false upper partial as a root. Speech, noise, impacts, and variable containers
 also play naturally by default. The application never pretends that a grunt, impact, or spoken
-line has an acoustic root, and the normal UI does not ask users to calibrate one.
+line has an acoustic root. The analyzer reports failure honestly and still permits an intentional
+manual reference or neutral-C4 pitch-following effect.
 
 Installed Wwise duration metadata independently determines whether the event decays or needs a
 paired stop. Mixed events are treated as looping so an infinite branch cannot leak a speaker
@@ -184,18 +187,49 @@ Muted channels and channels excluded by an active solo remain on the piano roll 
 gray treatment, so the score never appears to lose data. They are omitted from preview and
 export without forgetting their assignments.
 
-### Channel settings and focus
+### Track settings and focus
 
-Click a channel row to focus its notes and open **Channel settings**. The first setting is the
-channel-wide **Follow MIDI note** checkbox. Automatic mappings and pitched instrument sets show
+Use a track's settings button to open **Track settings**. Everyday controls remain immediately
+visible: **Track type**, **Drum keys** when applicable, **Follow MIDI note**, **Analyze sound**,
+**Track transpose**, and **Track Volume**. **Advanced track settings** is collapsed by default and
+contains manual sample calibration, Track Glide, Track Voices, Track Polyphony, Track Sustain
+Limit, and Track Release. Collapsing this section changes only the presentation; its values still
+persist and compile normally.
+
+The first pitch setting is the track-wide **Follow MIDI note** checkbox. Automatic mappings and pitched instrument sets show
 it checked and disabled because melodic pitch following is intrinsic to those mappings. Automatic
 percussion shows it off and disabled because each MIDI key selects a dedicated drum sound instead.
 Every exact event makes the checkbox editable. A trusted acoustic root enables it automatically;
 without one, the event starts unchecked and plays unchanged. Enabling it explicitly uses a fixed
-neutral C4 operational reference. Channel settings does not show a natural-note number, an Unknown
-state, detector confidence, pitch math, or a manual calibration prompt. It never substitutes the
-channel's first note, lowest note, highest note, midpoint, median, or any other property of the
-imported song. Per-note exceptions stay in Note expression.
+neutral C4 operational reference. **Analyze sound** refreshes the acoustic measurement and displays
+its note, whole cents, whole MIDI value, and confidence. **Sample root or Follow MIDI reference**
+shows the analyzer result or the root derived from tune-by-ear controls; before either exists, its
+optional field remains blank rather than claiming an acoustic sample root. It accepts either a whole MIDI value
+or a note name (sharps and flats are enharmonic input) as an advanced override for someone who
+already knows the acoustic root; the raw detection remains available for comparison. This is a
+calibration input: naming a higher natural sample note produces more downward compensation when
+matching the same imported MIDI note. The inspector shows the exact semitone/cents correction at
+MIDI 60 and the formula `imported MIDI note - natural sample note`, so this inverse compensation is
+visible before playback. **Play C4 reference** generates a local 261.63-Hz sine tone for tuning by
+ear and continues until **Stop C4 reference** is pressed or Track Settings is closed. It uses no
+game asset, does not alter settings, and follows the selected C3/C4 display label while MIDI 60 and
+its physical frequency remain fixed. **Track transpose** is the direct audible up/down control and adds -24 through +24
+semitones. For a sound the analyzer cannot identify, **Coarse sample tuning** and **Sample tuning fine adjustment** directly
+raise or lower the sample against the MIDI-60 reference. Moving either establishes a manual root,
+enables Follow MIDI note, and leaves Track transpose free for later musical changes. The effective
+readout reaccounts for both controls. None substitutes the channel's first note, range, midpoint, or median.
+Per-note exceptions stay in Note expression.
+
+**Clear pitch setup** removes the selected exact sound's analyzer result and any manual sample
+calibration, turns off Follow MIDI note, and restores natural (zero root-relative) sample playback.
+It intentionally leaves Track transpose and explicit per-note expression values alone, because
+those are separate musical choices.
+
+Turning **Follow MIDI note** back on without analyzing creates an internal MIDI-60 reference.
+Its displayed octave name follows **View > Octave labels** (C4 by default, or C3 in the alternate
+convention). That does not identify the sound as that note: the raw sample is left unchanged at
+MIDI 60 and is shifted only by the interval to every other MIDI note. The optional sample-root
+field remains blank until analysis or manual calibration supplies an actual root.
 
 Other channels dim and stop accepting note clicks until focus is cleared, which makes dense
 arrangements readable without changing what plays or exports. Click the focused row again to
@@ -349,13 +383,14 @@ The inspector presents the musical controls and resolved output without exposing
 |---|---|
 | MIDI note | immutable note name and number from the imported file |
 | Sound | exact Play event used by this note |
-| Pitch | exact SnapMap semitone modifier for the active Manual or Follow MIDI mode |
+| Pitch | whole-semitone modifier for the active Manual or Follow MIDI mode |
 | Note volume | current pre-master level; initially derived from imported MIDI velocity |
-| Volume calculation | note volume + global volume = final SnapMap dB |
+| Volume calculation | note volume + track volume + global volume = final SnapMap dB |
 | Clamp notice | requested value and the -24..24 pitch or -60..20 volume limit applied |
 
-**Pitch** is an integral -24 through 24 semitones and **Note volume** is an integral -60 through
-20 dB. The Pitch control always shows the exact modifier for the active channel mode. While Follow
+**Pitch** is an integer -24 through 24 semitones and **Note volume** is an integral -60 through
+20 dB. Fractional semitone math remains internal; visible tuning uses whole semitones and whole
+cents. While Follow
 MIDI note is enabled, an unedited note shows its resolved automatic pitch; editing the slider saves
 a separate Follow MIDI value. While Follow MIDI is disabled, the slider shows that note's preserved
 manual value, initially zero, and edits only the manual value. Toggling the channel option never
@@ -364,13 +399,14 @@ Follow MIDI adjustment or derives the automatic value when none exists. Pitch ch
 and never moves the note, changes its channel, or selects another curated sample. The root
 calculation, detector confidence, and calibration basis remain internal. An unedited note volume
 starts at its MIDI-velocity-derived level; editing replaces that level directly, so 0 dB is a
-meaningful saved choice. Global volume is added afterward and does not modify it. **Reset note**
+meaningful saved choice. Track Volume and Global Volume are added afterward and do not modify it.
+**Reset note**
 removes both pitch-mode values and the selected note's volume override, returning Follow MIDI to its
 automatic value, Manual to zero, and volume to the imported velocity-derived level.
 
-Only the final output is clamped. For example, a note saved at +2 dB with global volume at
-+20 dB requests +22 dB and plays/exports at SnapMap's +20 dB limit. Returning global volume to
-0 dB reveals the unchanged +2 dB note again; no normalization rewrites the note.
+Only the final output is clamped. For example, a note saved at +2 dB with Track Volume at -4 dB
+and Global Volume at +20 dB requests +18 dB. Returning either track or global volume to 0 dB
+reveals the unchanged +2 dB note again; no normalization rewrites the note.
 
 Notes are identified as `channel:source-pitch:occurrence` before mute or sound mapping, so an
 edit stays attached while the channel is retimbred. The block remains on its imported MIDI row;
@@ -384,11 +420,17 @@ There are no per-channel song controls. The sound browser's audition button play
 for identification and never starts a channel or arrangement.
 
 Preview uses the same resolved sound/root, imported MIDI pitch, playback-only offsets,
-current note volume, global volume, clamps, duration caps, polyphony thinning, channel mix state,
+current note volume, track volume, global volume, clamps, duration caps, polyphony thinning, channel mix state,
 speaker allocation, voice stealing, hard stops, and releases as export. Web Audio
 receives the final compiler values: `2 ** (pitch_modifier / 12)` playback rate and
 `10 ** (volume_db / 20)` gain. When a later note reuses a SnapMap speaker, preview hard-cuts
 the earlier note at that same point just as the exported timeline does.
+
+Editing conversion controls does not stop the transport. The currently scheduled performance
+continues while Python coalesces and rebuilds the settings changes and any newly required sample
+is prepared. The new event list takes over after the existing audio look-ahead boundary; already
+ringing notes are not cut and queued notes are not duplicated. Consequently, a control change is
+heard on subsequent notes rather than by restarting the note already in progress.
 
 The package contains no audio. When the workstation starts or imports a song, it finds the
 user's DOOM installation and indexes the language-neutral retail banks plus one installed
@@ -429,11 +471,16 @@ Sliders are paired with exact numeric fields where a bounded number is meaningfu
 
 | Control | Shape | Effect |
 |---|---|---|
-| **Maximum speakers** | slider + integer, 1-128 | isolated voices available per channel to sustained notes and expressive one-shots |
-| **Limit maximum polyphony** | enable checkbox + slider + integer | keeps at most this many simultaneous notes in a layer, preferring higher notes |
+| **Global Voices** | slider + integer, 1-128 (default 32) | isolated voices available across the entire song to sustained notes and expressive one-shots |
+| **Global Polyphony** | slider + integer, 1-128 (default 32) | strict held-note ceiling across all tracks, including shared-emitter notes; sample tails do not count |
+| **Track Voices** | per-track enable checkbox + slider + integer | reserves no more than this track's share of Global Voices; later notes cut this track's older ringing notes |
+| **Track Glide** | per-track slider + milliseconds field, 0-5000 | fixed-sound tracks slide from the prior pitch; 0 is immediate and Track Voices 1 is monophonic portamento |
+| **Default Track Polyphony** | enable checkbox + slider + integer | default per-track note limit; a Track Polyphony override takes precedence |
+| **Track Polyphony** | per-track enable checkbox + slider + integer | strict held-note ceiling per track; lower rejected notes remain as dashed hollow blocks in the piano roll and Track lanes |
+| **Track Sustain Limit** | per-track enable checkbox + milliseconds pair | intentionally caps held-note length on one track without changing its voice count |
 | **Hard stop notes** | checkbox | cuts at note-off instead of fading |
-| **Release** | slider + seconds field | note-off fade; disabled while Hard stop is on |
-| **Limit sustained-note duration** | enable checkbox + milliseconds pair | caps every sustained note |
+| **Default Track Release** | slider + seconds field | inherited note-off fade; disabled while Hard stop is on |
+| **Default Track Sustain Limit** | enable checkbox + milliseconds pair | caps held notes on tracks without their own Sustain Limit |
 | **Limit bass-note duration** | enable checkbox + milliseconds pair | caps notes below the selected MIDI threshold |
 | **Below MIDI note** | integer + note name | defines bass for the preceding control |
 
@@ -442,7 +489,7 @@ categorical choices rather than sliders:
 
 - **Fire and forget** classifies the category as naturally decaying, so it receives no
   later note-off. A note that needs pitch or gain still uses an isolated, duration-reserved
-  speaker; a neutral note stays on the shared Timeline path.
+  generic Timeline emitter; a neutral note stays on the shared Timeline path.
 - **Sustain cap** gives that category its own maximum duration in milliseconds.
 
 Every accepted change immediately rebuilds statistics, warnings, the preview manifest, and
@@ -459,6 +506,12 @@ writes `rawmap.json` to the current output directory, which defaults to the load
 `%LOCALAPPDATA%\snapmap-plus\`. The filename is fixed because that is the only filename the
 loader reads. The window reports when an existing map was replaced.
 
+The generated interactive is always named from the imported MIDI filename, including its `.mid`
+extension. Saved probe names and the legacy sidecar `button` field cannot leak into a later export.
+The master Timeline/Unknown is placed 64 units to the interactive's right, and auxiliary
+Timeline/Unknown entities follow at 32-unit intervals. Large groups wrap only when the room boundary
+requires another nearby column.
+
 The exported map does **not** contain an audio library or a soundbank. It contains timeline
 references only to event strings used by the current converted arrangement. DOOM already owns
 the sound data and resolves those names when the map plays. Installed-bank preview and the
@@ -470,12 +523,13 @@ song.mid.snapmap.json` reproduces them without opening the window.
 
 ## The settings sidecar
 
-For `song.mid`, the sidecar is `song.mid.snapmap.json`. It is ordinary JSON and may be
+For `song.mid`, the sidecar is `song.mid.snapmap.json`. Every successful workstation settings edit
+autosaves the complete validated document, and Export writes it again. It is ordinary JSON and may be
 versioned with a project or edited by hand. A typical file is:
 
 ```json
 {
-  "version": 9,
+  "version": 19,
   "midi": "D:/music/song.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
@@ -490,8 +544,10 @@ versioned with a project or edited by hand. A typical file is:
       "pitch_follow": true,
       "pitch_follow_preference": true,
       "root_midi": 60,
+      "detected_root_midi": 60,
       "root_confidence": 1.0,
-      "root_source": "palette_name"
+      "root_source": "palette_name",
+      "pitch_transpose": 0
     },
     "2": {
       "family": null,
@@ -515,6 +571,7 @@ versioned with a project or edited by hand. A typical file is:
   },
   "tuning": {
     "max_speakers": 32,
+    "song_polyphony": 32,
     "master_volume_db": 0,
     "release_s": 0.1,
     "hard_stop": false,
@@ -530,26 +587,36 @@ versioned with a project or edited by hand. A typical file is:
 
 Within a channel, `family` and `sound` are mutually exclusive. `family: null` with no
 `sound` means Automatic. `muted` and `soloed` default to false. Exact sounds may also carry
-`pitch_follow`, `root_midi` (0 through 127), `root_confidence` (0 through 1), and `root_source`
+`pitch_follow`, `root_midi` (0 through 127), `detected_root_midi`, `root_confidence` (0 through 1), and `root_source`
 (`palette_name`, `detected`, `manual`, or `neutral`). Palette, detected, and manual roots identify
 the sound's actual natural note in MIDI-number space. A `neutral` root is always MIDI 60/C4 and is
 only an operational basis for an explicit Follow MIDI choice; it is not acoustic evidence.
-`manual` remains a settings-file/library integration option rather than a normal UI control.
+`manual` records an explicit sample-natural-note correction. `pitch_transpose` is the track-wide
+semitone shift. The backend still accepts legacy `fine_tune_cents` values and discloses any nonzero
+value as a saved detune; the normal UI no longer creates them, and a new manual calibration clears
+the legacy detune. Optional `voices`, `polyphony`, and
+`sustain_ms` and `release_s` values override the corresponding song defaults for that track. `hard_stop`
+is an optional per-track override of the song's immediate-stop choice. `attack_ms` is an optional
+1–5000 ms note-on fade for that track; enabling it routes its notes through isolated emitters.
+Channel `volume_db`
+is an integer -60 through 20 dB track offset; zero is neutral and is omitted from normalized
+sidecars.
 Tonal ambiguity and clearly nonmusical sounds preserve natural playback by default. Legacy
 `detected_octave` and `relative` references migrate to a safe disabled state because they could
 preserve intervals while shifting absolute playback by an octave.
 
 `pitch_follow_preference`, when present, records an explicit choice made in Channel settings.
-It survives exact-sound, pitched-family, and Automatic assignments. A new exact sound still gets
-new `root_midi`, confidence, and source fields because those describe its media rather than the
-channel; the preserved preference applies to any new exact sound.
+Choosing a new exact sound resets it to false and clears the old sound's acoustic profile. The new
+sound plays unchanged until the user explicitly analyzes it, enables Follow MIDI note, or moves a
+manual calibration control. Pitched-family and Automatic assignments keep their intrinsic mapping.
 
 The `notes` object is sparse. Its key is `channel:source-pitch:occurrence`, assigned from the
 imported MIDI before mute or sound mapping so the edit survives retimbre. `pitch_semitones` is the
 preserved manual-mode modifier; absent means zero. `follow_pitch_semitones` is an optional absolute
 override used only while Follow MIDI note is enabled; absent means derive the automatic modifier.
-Both accept integral -24 through 24 SnapMap semitones and coexist so toggling the channel mode cannot
-destroy the value belonging to the other mode. `volume_db` is the absolute -60 through 20 pre-master
+Both accept backend decimal -24 through 24 SnapMap semitones for compatibility, but the UI writes
+whole semitones. They coexist so toggling the channel mode cannot destroy the value belonging to
+the other mode. `volume_db` is the absolute -60 through 20 pre-master
 note level. Explicit zero values are preserved because they can be intentional edits. Legacy
 sidecars may retain a relative `pitch_offset` as a compatibility fallback until the relevant mode is
 edited. Pitch modifies playback but never the note's piano-roll row or curated sample selection.
@@ -572,9 +639,14 @@ visible version-6 Follow MIDI note choice as a channel preference and changes no
 whole-map replacement to sparse record merges. Version 8 adds the neutral opt-in reference and
 absolute `pitch_semitones` overrides; legacy relative note pitch continues to compile identically
 until edited. Version 9 makes the version-8 absolute value the preserved Manual state and adds a
-separate `follow_pitch_semitones` override, so switching channel pitch mode is reversible. Automatic
+separate `follow_pitch_semitones` override, so switching channel pitch mode is reversible. Version
+13 adds `detected_root_midi`, `pitch_transpose`, `fine_tune_cents`, and fractional pitch export. Automatic
 roots are revalidated against current acoustic evidence when the song opens; a stale result is
 repaired in memory and saved on the next export. Manual roots and stored disabled states are retained.
+Version 17 adds the neutral per-track volume offset; version-16 sidecars migrate with no audible
+change. Version 18 adds optional per-track release; version-17 sidecars inherit the 0.1-second
+default. Version 19 adds optional per-track Attack and Hard Stop; older sidecars inherit the song
+defaults and keep their existing playback.
 
 `master_volume_db` is an integer -60 through 20 dB and defaults to zero. `null` disables
 optional duration and polyphony limits. `decaying_families` and

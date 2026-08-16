@@ -210,13 +210,31 @@ def test_baseline_flag_adds_to_a_supplied_map(tmp_path, minimal_timeline_map):
         main(["compile", TINY_MIDI, "--baseline", str(baseline), "--out-dir", str(tmp_path)]) == 0
     )
     obj = deserialize((tmp_path / "rawmap.json").read_bytes())
-    # The supplied map's own timeline was reused, not a second one authored.
+    # The supplied map's own timeline was reused as the master scheduler.
+    # Pitch-controlled voices are auxiliary Timeline emitters, not additional
+    # schedulers and not Speaker-class entities.
     timelines = [
         e
         for e in obj["entities"]
         if (e.get("entityDef") or {}).get("className") == "idTarget_Timeline"
     ]
-    assert len(timelines) == 1
+    masters = [
+        entity
+        for entity in timelines
+        if (entity.get("entityDef") or {}).get("inherit") == "snapmaps/logic/timeline"
+    ]
+    emitters = [
+        entity
+        for entity in timelines
+        if entity.get("displayName", "").startswith("snapmap-midi-v")
+    ]
+    assert len(masters) == 1 and masters[0]["uniqueId"] == 1
+    assert len(emitters) == 2
+    assert not any(
+        (entity.get("entityDef") or {}).get("className")
+        == "idSnapMapGameEntity_Speaker"
+        for entity in obj["entities"]
+    )
     assert timelines[0]["uniqueId"] == 1  # the id the fixture gave it
 
 

@@ -41,7 +41,7 @@ from snapmap_midi.sound import palette
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 11
+SETTINGS_VERSION = 19
 
 
 #: Stable operational pitch basis for rootless exact sounds. This is not an
@@ -80,8 +80,17 @@ _CHANNEL_KEYS = frozenset(
         "pitch_follow_preference",
         "soloed",
         "root_midi",
+        "detected_root_midi",
         "root_confidence",
         "root_source",
+        "pitch_transpose",
+        "fine_tune_cents",
+        "glide_ms",
+        "attack_ms",
+        "release_s",
+        "hard_stop",
+        "sustain_ms",
+        "volume_db",
         "voices",
         "polyphony",
     }
@@ -126,6 +135,7 @@ _PLAY_EVENT = re.compile(r"(?i)^play_[a-z0-9_-]{1,59}$")
 _TUNING_DEFAULTS = {
     "master_volume_db": 0,
     "max_speakers": 32,
+    "song_polyphony": 32,
     "release_s": 0.1,
     "hard_stop": False,
     "max_poly": None,
@@ -291,8 +301,8 @@ def _optional_whole(value, what: str, low: int, high=None) -> int | None:
     nothing. Both are silence that looks like a setting.
 
     `high` is optional because most of these levers are open-ended durations. A
-    per-track voice count is not: it names speakers the map has to author, so it
-    takes the same ceiling the song-wide count does.
+    Polyphony has no practical upper ceiling; global voices does, because it
+    names the finite number of speakers the map may author.
     """
     return None if value is None else _whole(value, what, low, high)
 
@@ -369,26 +379,43 @@ def _channels(section, families, sounds) -> dict:
             "muted": _flag(entry.get("muted", False), "channel %s: muted" % channel),
             "soloed": _flag(entry.get("soloed", False), "channel %s: soloed" % channel),
         }
-        # Only a track that overrides carries the key. Absent means "use the
-        # song's voice count", which is what every track says until someone
-        # decides otherwise -- so a document written before this lever existed
-        # loads unchanged, and one written after it is byte-identical unless a
-        # track actually set something. Validated whenever it IS present.
+        volume_db = _whole(
+            entry.get("volume_db", 0),
+            "channel %s: volume_db" % channel,
+            _MIN_VOLUME_DB,
+            _MAX_VOLUME_DB,
+        )
+        if volume_db:
+            normalized["volume_db"] = volume_db
+        # Track Voices prevents one part monopolising the shared Global Voices
+        # pool. Polyphony is separate: it refuses excess written notes rather
+        # than cutting a currently ringing one short.
         voices = _optional_whole(
             entry.get("voices"), "channel %s: voices" % channel, 1, _MAX_SPEAKERS
         )
         if voices is not None:
             normalized["voices"] = voices
-        # Same shape, different lever. Voices decides what happens when a track
-        # runs out of speakers -- the oldest-finishing sound is cut. Polyphony
-        # decides how many notes are allowed to sound at all; the rest are muted
-        # and keep their full length. Per track for the same reason voices is:
-        # a dense piano part and a melody line want different answers.
         polyphony = _optional_whole(
             entry.get("polyphony"), "channel %s: polyphony" % channel, 1, _MAX_SPEAKERS
         )
         if polyphony is not None:
             normalized["polyphony"] = polyphony
+        sustain_ms = _optional_whole(
+            entry.get("sustain_ms"), "channel %s: sustain_ms" % channel, 1
+        )
+        if sustain_ms is not None:
+            normalized["sustain_ms"] = sustain_ms
+        if entry.get("release_s") is not None:
+            normalized["release_s"] = _release(entry["release_s"])
+        if entry.get("hard_stop") is not None:
+            normalized["hard_stop"] = _flag(
+                entry["hard_stop"], "channel %s: hard_stop" % channel
+            )
+        attack_ms = _optional_whole(
+            entry.get("attack_ms"), "channel %s: attack_ms" % channel, 1, 5000
+        )
+        if attack_ms is not None:
+            normalized["attack_ms"] = attack_ms
         if "pitch_follow_preference" in entry:
             normalized["pitch_follow_preference"] = _flag(
                 entry["pitch_follow_preference"],
@@ -401,7 +428,11 @@ def _channels(section, families, sounds) -> dict:
                 "sound",
                 "muted",
                 "soloed",
+                "volume_db",
                 "pitch_follow_preference",
+                "release_s",
+                "hard_stop",
+                "attack_ms",
             }
             if any(key in entry for key in expression_fields):
                 pitch_follow = _flag(
@@ -419,8 +450,40 @@ def _channels(section, families, sounds) -> dict:
                         "channel %s: pitch_follow needs a root_midi between 0 and 127" % channel
                     )
                 normalized["pitch_follow"] = pitch_follow
+                pitch_transpose = _number(
+                    entry.get("pitch_transpose", 0),
+                    "channel %s: pitch_transpose" % channel,
+                    -24,
+                    24,
+                )
+                fine_tune_cents = _number(
+                    entry.get("fine_tune_cents", 0),
+                    "channel %s: fine_tune_cents" % channel,
+                    -100,
+                    100,
+                )
+                glide_ms = _whole(
+                    entry.get("glide_ms", 0),
+                    "channel %s: glide_ms" % channel,
+                    0,
+                    5000,
+                )
+                if pitch_transpose:
+                    normalized["pitch_transpose"] = pitch_transpose
+                if fine_tune_cents:
+                    normalized["fine_tune_cents"] = fine_tune_cents
+                if glide_ms:
+                    normalized["glide_ms"] = glide_ms
                 if root_midi is not None:
                     normalized["root_midi"] = root_midi
+                    detected_root = _optional_number(
+                        entry.get("detected_root_midi"),
+                        "channel %s: detected_root_midi" % channel,
+                        0,
+                        _MAX_NOTE,
+                    )
+                    if detected_root is not None:
+                        normalized["detected_root_midi"] = detected_root
                     normalized["root_confidence"] = _number(
                         entry.get("root_confidence", 1.0),
                         "channel %s: root_confidence" % channel,
@@ -486,7 +549,7 @@ def _notes(section) -> dict:
         unknown = sorted(set(entry) - _NOTE_KEYS)
         if unknown:
             raise SettingsError("note %s: unknown setting(s): %s" % (note_id, ", ".join(unknown)))
-        pitch_offset = _whole(
+        pitch_offset = _number(
             entry.get("pitch_offset", 0), "note %s: pitch_offset" % note_id, -24, 24
         )
         if "volume_db" in entry and "volume_trim_db" in entry:
@@ -497,14 +560,14 @@ def _notes(section) -> dict:
         if pitch_offset:
             normalized["pitch_offset"] = pitch_offset
         if "pitch_semitones" in entry:
-            normalized["pitch_semitones"] = _whole(
+            normalized["pitch_semitones"] = _number(
                 entry["pitch_semitones"],
                 "note %s: pitch_semitones" % note_id,
                 -24,
                 24,
             )
         if "follow_pitch_semitones" in entry:
-            normalized["follow_pitch_semitones"] = _whole(
+            normalized["follow_pitch_semitones"] = _number(
                 entry["follow_pitch_semitones"],
                 "note %s: follow_pitch_semitones" % note_id,
                 -24,
@@ -604,6 +667,9 @@ def _tuning(section, families) -> dict:
         out["master_volume_db"], "master_volume_db", _MIN_VOLUME_DB, _MAX_VOLUME_DB
     )
     out["max_speakers"] = _whole(out["max_speakers"], "max_speakers", 1, _MAX_SPEAKERS)
+    out["song_polyphony"] = _whole(
+        out["song_polyphony"], "song_polyphony", 1, _MAX_SPEAKERS
+    )
     out["release_s"] = _release(out["release_s"])
     out["hard_stop"] = _flag(out["hard_stop"], "hard_stop")
     out["max_poly"] = _optional_whole(out["max_poly"], "max_poly", 1)
@@ -635,11 +701,27 @@ def _release(value) -> float:
 def _migrate(doc: dict) -> dict:
     """Upgrade older sidecars while preserving their stored user choices.
 
-    Version 10 gives each track its own optional voice count. There is nothing
-    to move: an absent `voices` means the track uses the song-wide count, which
-    is exactly what every version-10 track was already doing. The bump exists so
-    a document carrying per-track voices cannot be opened by a build that would
-    silently ignore them and export a different arrangement.
+    Version 16 adds a strict song-wide audible-note limit. Older documents use
+    the new default of 32 notes.
+
+    Version 15 adds an optional per-track sustain-duration override. Missing
+    values continue to use the song's default sustain limit, which is off in a
+    new document.
+
+    Version 18 adds an optional per-track note-off release. Version 17
+    sidecars inherit the 0.1-second song default.
+
+    Version 17 adds a neutral-by-default per-track volume offset. Version 16
+    sidecars therefore migrate without needing a new field.
+
+    Version 14 adds an optional per-track glide duration for exact sounds.
+    Version 13 preserves fractional pitch through Timeline export and adds
+    per-track semitone transpose, cents fine tune, and the raw detected root.
+    Older sidecars default those controls to zero.
+
+    Version 12 makes Global Voices a genuine song-wide pool while retaining
+    the optional per-track `voices` cap. Older sidecars already spell the
+    track setting that way, so migration preserves it.
 
     Version 9 separates each note's preserved manual pitch from its optional
     Follow MIDI override. Version-8 pitch_semitones values become the manual
@@ -676,7 +758,9 @@ def _migrate(doc: dict) -> dict:
     """
 
     version = doc.get("version", SETTINGS_VERSION)
-    if isinstance(version, bool) or version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+    if isinstance(version, bool) or version not in (
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+    ):
         return doc
 
     migrated = copy.deepcopy(doc)
@@ -883,6 +967,20 @@ def merge(base, patch) -> dict:
     return validate(merged)
 
 
+def _compile_pitch_profile(entry: Mapping) -> dict:
+    profile = {
+        "pitch_follow": entry.get("pitch_follow", False),
+        "root_midi": entry.get("root_midi"),
+        "root_confidence": entry.get("root_confidence"),
+        "root_source": entry.get("root_source"),
+    }
+    if entry.get("pitch_transpose"):
+        profile["pitch_transpose"] = entry["pitch_transpose"]
+    if entry.get("fine_tune_cents"):
+        profile["fine_tune_cents"] = entry["fine_tune_cents"]
+    return profile
+
+
 def to_compile_kwargs(doc) -> dict:
     """The document as keyword arguments for `compile_to_rawmap`.
 
@@ -903,9 +1001,25 @@ def to_compile_kwargs(doc) -> dict:
         "button_name": doc["button"],
         "drums": {"auto": "auto", "on": True, "off": False}[doc["drums"]],
         "master_volume_db": tuning["master_volume_db"],
+        "part_volume_db": {
+            part_selector(c): entry["volume_db"]
+            for c, entry in channels.items()
+            if entry.get("volume_db")
+        },
         "max_speakers": tuning["max_speakers"],
+        "song_polyphony": tuning["song_polyphony"],
         "release_s": tuning["release_s"],
+        "part_release_s": {
+            part_selector(c): entry["release_s"]
+            for c, entry in channels.items()
+            if entry.get("release_s") is not None
+        },
         "hard_stop": tuning["hard_stop"],
+        "part_hard_stop": {
+            part_selector(c): entry["hard_stop"]
+            for c, entry in channels.items()
+            if entry.get("hard_stop") is not None
+        },
         "cap_sustain_ms": tuning["cap_sustain_ms"],
         "bass_pitch": tuning["bass_pitch"],
         "bass_cap_ms": tuning["bass_cap_ms"],
@@ -923,12 +1037,7 @@ def to_compile_kwargs(doc) -> dict:
             if entry.get("sound") is not None
         },
         "channel_pitch_profiles": {
-            part_selector(channel): {
-                "pitch_follow": entry.get("pitch_follow", False),
-                "root_midi": entry.get("root_midi"),
-                "root_confidence": entry.get("root_confidence"),
-                "root_source": entry.get("root_source"),
-            }
+            part_selector(channel): _compile_pitch_profile(entry)
             for channel, entry in channels.items()
             if entry.get("sound") is not None
         },
@@ -943,9 +1052,6 @@ def to_compile_kwargs(doc) -> dict:
         # channel-wide wildcard. The parser accepts either spelling.
         "channel_mutes": {part_selector(c): entry["muted"] for c, entry in channels.items()},
         "channel_solos": {part_selector(c): entry["soloed"] for c, entry in channels.items()},
-        # Only tracks that actually override appear. An empty mapping is the
-        # whole song on `max_speakers`, which is what every document said before
-        # this lever existed and what the compiler still does on its own.
         "part_voices": {
             part_selector(c): entry["voices"]
             for c, entry in channels.items()
@@ -955,6 +1061,21 @@ def to_compile_kwargs(doc) -> dict:
             part_selector(c): entry["polyphony"]
             for c, entry in channels.items()
             if entry.get("polyphony") is not None
+        },
+        "part_sustain_ms": {
+            part_selector(c): entry["sustain_ms"]
+            for c, entry in channels.items()
+            if entry.get("sustain_ms") is not None
+        },
+        "part_glide_ms": {
+            part_selector(c): entry["glide_ms"]
+            for c, entry in channels.items()
+            if entry.get("glide_ms") is not None
+        },
+        "part_attack_ms": {
+            part_selector(c): entry["attack_ms"]
+            for c, entry in channels.items()
+            if entry.get("attack_ms") is not None
         },
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},
     }

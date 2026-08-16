@@ -10,12 +10,18 @@ from __future__ import annotations
 import json
 
 import pytest
+from tools.create_timeline_sync_probe import PRODUCTION_TARGETS, STRESS_TARGETS
+from tools.create_timeline_sync_probe import build as build_timeline_sync_probe
 
 from snapmap_midi import paths
 from snapmap_midi.rawmap.codec import deserialize
 from snapmap_midi.rawmap.document import SnapMapDocument
 from snapmap_midi.rawmap.palette_refs import PRODUCT_PALETTE_REFS
-from snapmap_midi.rawmap.template import TIMELINE_INHERIT
+from snapmap_midi.rawmap.template import (
+    TIMELINE_INHERIT,
+    timeline_position,
+    timeline_position_after_interactive,
+)
 from snapmap_midi.sound.timeline import (
     DEFAULT_CHANNEL,
     add_button,
@@ -30,6 +36,35 @@ KICK = "play_noise_kick_tight"
 HAT = "play_noise_hat"
 CLAP = "play_noise_clap"
 BEAT = 400
+
+
+def test_unknown_timeline_nodes_use_distinct_grid_positions():
+    """Master, voices, shards, and the 165-target probe must be selectable.
+
+    They all render as Unknown in SnapMap because that is the portable stock
+    inherit for a saved Timeline.  Sharing one position made them look like a
+    single node even though the map contained many independent schedulers.
+    """
+    positions = [timeline_position(index) for index in range(166)]
+
+    assert len(set(positions)) == len(positions)
+    assert positions[0] == (-1276.0, 1226.0, 0.5)
+    assert positions[1] == (-1276.0, 1290.0, 0.5)
+    assert positions[2][1] - positions[1][1] == 32.0
+    assert all(1290.0 <= position[1] <= 3826.0 for position in positions[1:])
+    assert all(-1276.0 <= position[0] <= -1212.0 for position in positions[1:])
+
+
+def test_midi_unknowns_start_to_the_right_of_the_interactive():
+    anchor = (-1301.0, 1409.0, 0.5)
+    positions = [timeline_position_after_interactive(anchor, index) for index in range(4)]
+
+    assert positions == [
+        (-1276.0, 1473.0, 0.5),
+        (-1276.0, 1505.0, 0.5),
+        (-1276.0, 1537.0, 0.5),
+        (-1276.0, 1569.0, 0.5),
+    ]
 
 
 def _groove_events():
@@ -204,6 +239,68 @@ def test_add_button_authors_its_reference_slots(minimal_timeline_map):
     after = len(doc.data["references"]["entityEntRefs"]["values"])
     assert after == before + 1  # the switch pair is (1, 0)
     assert doc.get_connections_for_source(switch_uid)
+
+
+def test_one_button_can_start_several_timeline_shards(minimal_timeline_map):
+    doc = _doc(minimal_timeline_map)
+    switch_uid = add_button(
+        doc,
+        ["0_blank/timeline_1", "0_blank/timeline_2", "0_blank/timeline_3"],
+        "sharded-song",
+    )
+    listener_uid = doc.get_connections_for_source(switch_uid)[0]
+    listener = doc.find_entity(listener_uid)
+    targets = listener["entityDef"]["state"]["edit"]["targets"]
+
+    assert targets == {
+        "item[0]": "0_blank/timeline_1",
+        "item[1]": "0_blank/timeline_2",
+        "item[2]": "0_blank/timeline_3",
+        "num": 3,
+    }
+
+
+def test_timeline_sync_probe_exercises_first_to_last_fanout(tmp_path):
+    output = tmp_path / "timeline-sync-probe.rawmap.json"
+    build_timeline_sync_probe(output)
+    data = deserialize(output.read_bytes())
+
+    listeners = [
+        entity
+        for entity in data["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idSnapMapListener_Simple"
+    ]
+    assert len(listeners) == 1
+    targets = listeners[0]["entityDef"]["state"]["edit"]["targets"]
+    # One reference scheduler, three chord shards, then both fanout tests.
+    assert targets["num"] == 1 + 3 + PRODUCTION_TARGETS + STRESS_TARGETS
+
+    timelines = {
+        entity.get("displayName"): entity
+        for entity in data["entities"]
+        if (entity.get("entityDef") or {}).get("className") == "idTarget_Timeline"
+    }
+    def self_events(timeline):
+        return timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"][
+            "item[0]"
+        ]["events"]
+
+    for label, count, time_ms in (
+        ("D production-33", PRODUCTION_TARGETS, 12000),
+        ("E stress-128", STRESS_TARGETS, 16000),
+    ):
+        first = timelines[f"{label} fanout target 001"]
+        middle = timelines[f"{label} fanout target {count // 2:03d}"]
+        last = timelines[f"{label} fanout target {count:03d}"]
+        assert self_events(first)["num"] == 1
+        assert self_events(first)["item[0]"]["eventTime"] == time_ms
+        assert self_events(middle)["num"] == 0
+        assert self_events(last)["num"] == 1
+        assert self_events(last)["item[0]"]["eventTime"] == time_ms
+    assert not any(
+        (entity.get("entityDef") or {}).get("className") == "idSoundEmitter"
+        for entity in data["entities"]
+    )
 
 
 def test_no_button_when_name_is_none(minimal_timeline_map):

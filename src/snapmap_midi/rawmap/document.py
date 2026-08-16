@@ -223,8 +223,21 @@ class SnapMapDocument:
         # stem already varied with `owning_instance` while the reference string
         # said instance 0 regardless, so a timeline on any instance but the
         # first named a module/instance pair that does not exist.
+        # Timelines use the stock ``snapmaps/unknown`` inherit, so the editor
+        # draws every one as an Unknown node.  Count the existing schedulers and
+        # give the new one its own deterministic grid slot rather than placing
+        # all voice emitters and storage shards on top of the master.
+        layout_index = sum(
+            1
+            for existing in self.data.get("entities", [])
+            if (existing.get("entityDef") or {}).get("className")
+            == _template.TIMELINE_CLASS
+        )
         entity = _template.timeline_entity(
-            unique_id, self.module_stem(owning_instance), instance=owning_instance
+            unique_id,
+            self.module_stem(owning_instance),
+            instance=owning_instance,
+            layout_index=layout_index,
         )
         self.data["entities"].append(entity)
         self.extend_instance_entities(unique_id, owning_instance)

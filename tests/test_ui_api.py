@@ -262,6 +262,22 @@ def test_loading_a_song_returns_the_analysis_the_settings_and_the_rulers():
     assert payload["rulers"]["0:0"]["cells"][0]["note"] == 60
 
 
+def test_loading_a_song_does_not_serialize_a_rawmap_for_status(monkeypatch):
+    """Initial paint uses preview statistics; exact map size belongs to export."""
+    bridge = Bridge()
+    monkeypatch.setattr(
+        bridge._session,
+        "stats",
+        lambda: pytest.fail("initial MIDI load performed a full rawmap compile"),
+    )
+
+    payload = bridge.load_midi(TINY_MIDI)
+
+    assert payload["ok"] is True
+    assert payload["stats"]["notes"]
+    assert payload["preview"]["events"]
+
+
 def test_a_song_that_is_not_there_is_an_answer_that_names_it(tmp_path):
     result = Bridge().load_midi(tmp_path / "nope.mid")
     assert result["ok"] is False
@@ -452,6 +468,31 @@ def test_root_pitch_profile_crosses_the_bridge_as_numeric_evidence(monkeypatch):
         "ok": True,
         "profile": profile,
     }
+
+
+def test_explicit_analyze_refreshes_the_cached_pitch_profile(monkeypatch):
+    from snapmap_midi.audio import library
+
+    calls = []
+    profile = {
+        "classification": "pitched",
+        "pitchable": True,
+        "root_midi": 60.375,
+        "confidence": 0.82,
+        "source": "detected",
+    }
+
+    def pitch_profile(name, refresh=False):
+        calls.append((name, refresh))
+        return dict(profile)
+
+    monkeypatch.setattr(library, "pitch_profile", pitch_profile)
+
+    result = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Tone", 0, True)
+
+    assert result["ok"] is True
+    assert result["pitch_plan"]["root_midi"] == 60.375
+    assert calls == [("Play_Custom_Tone", True)]
 
 
 def test_unpitched_sound_profile_offers_an_opt_in_neutral_reference(monkeypatch):
@@ -962,6 +1003,20 @@ def test_applying_answers_with_fresh_statistics():
     assert payload["stats"]["notes"] < before
 
 
+def test_an_interactive_patch_does_not_compile_a_map_before_replying(monkeypatch):
+    """Dense slider drags need a preview answer, not map serialisation per tick."""
+    bridge = Bridge(midi=TINY_MIDI)
+
+    def unexpected_compile():
+        raise AssertionError("interactive setting update compiled a rawmap")
+
+    monkeypatch.setattr(bridge._session, "stats", unexpected_compile)
+    payload = bridge.apply_settings({"channels": {"0": {"muted": True}}})
+    assert payload["ok"] is True
+    assert payload["stats"]["notes"]
+    assert payload["preview"]["display_events"]
+
+
 def test_applying_answers_with_the_analysis_and_the_rulers_as_well():
     """A drums change rewrites `is_drums` and the whole drum-key list, and
     neither is in the settings document. Without them in this answer the window
@@ -1039,6 +1094,32 @@ def test_export_writes_the_settings_sidecar_beside_the_song(tmp_path):
     sidecar = Path(result["sidecar"])
     assert sidecar == settings_module.sidecar_path(tmp_path / "song.mid")
     assert settings_module.load(sidecar)["channels"]["0"]["family"] == "ins_marimba"
+
+
+def test_every_successful_settings_edit_autosaves_the_complete_sidecar(tmp_path):
+    bridge = _bridge(tmp_path)
+    sound = palette.sounds_in_category("ins_piano")[0]
+    result = bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "volume_db": -6,
+                    "voices": 2,
+                    "polyphony": 3,
+                    "sustain_ms": 700,
+                    "release_s": 0.35,
+                }
+            },
+            "tuning": {"max_speakers": 12, "master_volume_db": -3},
+            "notes": {"0:60:1": {"volume_db": -9}},
+        }
+    )
+
+    assert result["ok"] is True
+    sidecar = Path(result["sidecar"])
+    assert sidecar.exists()
+    assert settings_module.load(sidecar) == bridge.get_settings()["settings"]
 
 
 def test_reopening_a_song_restores_the_choices_it_was_exported_with(tmp_path):
@@ -1174,7 +1255,9 @@ def test_a_sidecar_that_cannot_be_written_does_not_fail_the_export(tmp_path):
     gone away -- none of them are a reason to tell someone their map failed
     when it is sitting on disk."""
     bridge = _bridge(tmp_path)
-    settings_module.sidecar_path(tmp_path / "song.mid").mkdir()
+    sidecar = settings_module.sidecar_path(tmp_path / "song.mid")
+    sidecar.unlink()
+    sidecar.mkdir()
 
     result = bridge.export()
     assert result["ok"] is True
