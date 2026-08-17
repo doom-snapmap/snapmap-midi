@@ -1068,6 +1068,61 @@ def test_fresh_note_ons_never_lose_their_attack_fade_to_scheduling_jitter():
     assert "audible +=" not in fn
 
 
+def test_track_attack_survives_a_note_also_shortened_by_release():
+    """`scheduleEvent` used to anchor a cut note's release hold at `when` --
+    the exact same automation instant Track Attack's own fade-in anchors at.
+    Two `setValueAtTime` calls at one time collide, and the release always
+    won, silently erasing the attack fade on any note also shortened by a
+    Sustain Limit or a stolen voice (proven live: every note in a chord
+    lost its attack once a Sustain Limit's release applied to it). Both the
+    one-shot release and the sustained-note release must wait for the
+    attack fade to actually finish (`attackEndsAt`) before writing their
+    own anchor."""
+    fn = _JS.split("function scheduleEvent(event, audiblePosition, when) {", 1)[1]
+    fn = fn.split("\n  function firstFutureEvent", 1)[0]
+    assert "var attackEndsAt" in fn
+    assert (
+        "var fadeAt = Math.max(\n"
+        "              attackEndsAt, when + Math.max(0, (fadeStartsAt - audiblePosition) / 1000)\n"
+        "            );"
+    ) in fn
+    assert "var releaseStartsAt = Math.max(noteEndAt, attackEndsAt);" in fn
+
+
+def test_toggling_a_limit_off_and_back_on_remembers_its_number():
+    """Every "Enable"/"Set for this track" checkbox has no value of its own
+    to fall back to while off, so the sync functions used to show a
+    hardcoded placeholder (16, 1000, 750, 80, or the global default) the
+    instant the box was unchecked -- and since re-checking sends whatever
+    number is currently on screen, that placeholder silently replaced
+    whatever the user had actually set. `rememberLimit`/`recallLimit` fix
+    this for all seven affected controls: Default Track Polyphony, Default
+    Track Sustain Limit, Limit bass-note duration (Conversion settings),
+    and Track Voices, Track Polyphony, Track Attack, Track Sustain Limit
+    (Track settings)."""
+    assert "function rememberLimit(scope, value)" in _JS
+    assert "function recallLimit(scope, fallback)" in _JS
+
+    limit_fn = _JS.split("function syncChannelLimit(channel, key, fallbackKey, ids, describe, fallbackValue) {", 1)[1]
+    limit_fn = limit_fn.split("\n  function syncChannelPoly", 1)[0]
+    assert "if (on) { rememberLimit(scope, own); }" in limit_fn
+    assert "recallLimit(scope, songWide || fallbackValue || 32)" in limit_fn
+
+    attack_fn = _JS.split("function syncChannelAttack(channel) {", 1)[1]
+    attack_fn = attack_fn.split("\n  function bindChannel", 1)[0]
+    assert "if (on) { rememberLimit(scope, Number(own)); }" in attack_fn
+    assert "recallLimit(scope, 80)" in attack_fn
+
+    inspector_fn = _JS.split("function syncInspector() {", 1)[1]
+    inspector_fn = inspector_fn.split("\n  function openInspector", 1)[0]
+    assert "rememberLimit('max_poly', values.max_poly)" in inspector_fn
+    assert "recallLimit('max_poly', 16)" in inspector_fn
+    assert "rememberLimit('cap_sustain_ms', values.cap_sustain_ms)" in inspector_fn
+    assert "recallLimit('cap_sustain_ms', 1000)" in inspector_fn
+    assert "rememberLimit('bass_cap_ms', values.bass_cap_ms)" in inspector_fn
+    assert "recallLimit('bass_cap_ms', 750)" in inspector_fn
+
+
 def test_conversion_toolbar_button_toggles_its_inspector():
     assert "function toggleInspector()" in _JS
     assert "el('conversionBtn').addEventListener('click', toggleInspector)" in _JS

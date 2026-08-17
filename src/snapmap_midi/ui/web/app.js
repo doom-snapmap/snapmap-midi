@@ -3668,7 +3668,8 @@
     gain.connect(AUDIO.master);
     var wallOffset = Math.max(0, (audiblePosition - event.start) / 1000);
     var attackSeconds = Math.max(0, Number(event.attack_ms || 0) / 1000);
-    if (attackSeconds > 0 && wallOffset < attackSeconds) {
+    var attackActive = attackSeconds > 0 && wallOffset < attackSeconds;
+    if (attackActive) {
       gain.gain.setValueAtTime(0.001, when);
       gain.gain.exponentialRampToValueAtTime(
         Math.max(0.001, baseGain), when + attackSeconds - wallOffset
@@ -3676,6 +3677,13 @@
     } else {
       gain.gain.value = baseGain;
     }
+    // Where the attack fade actually reaches baseGain, so a release fade
+    // below can hold at `when` without both landing on the exact same
+    // automation instant -- two setValueAtTime calls at one time fight over
+    // which value the ramp runs from, and the release always won, silently
+    // erasing the attack on any note that also gets cut short by a Sustain
+    // Limit or a stolen voice.
+    var attackEndsAt = attackActive ? when + attackSeconds - wallOffset : when;
     var glideSeconds = Math.max(0, Number(event.glide_ms || 0) / 1000);
     var glideFromPitch = Number(event.glide_from_pitch);
     var glideFromRate = isFinite(glideFromPitch)
@@ -3725,12 +3733,18 @@
       }
       stopAfter = Math.max(0.01, total - Math.max(0, (audiblePosition - event.start) / 1000));
       var noteEndAt = when + Math.max(0, (event.end - audiblePosition) / 1000);
+      var stopAt = when + stopAfter;
       if (release > 0 && noteEndAt >= AUDIO.context.currentTime) {
-        gain.gain.setValueAtTime(baseGain, noteEndAt);
-        gain.gain.exponentialRampToValueAtTime(0.001, noteEndAt + release);
+        // Never let the release's own hold-then-fade anchor land before the
+        // attack fade above has actually reached baseGain -- see the note by
+        // `attackEndsAt`.
+        var releaseStartsAt = Math.max(noteEndAt, attackEndsAt);
+        gain.gain.setValueAtTime(baseGain, releaseStartsAt);
+        gain.gain.exponentialRampToValueAtTime(0.001, releaseStartsAt + release);
+        stopAt = Math.max(stopAt, releaseStartsAt + release);
       }
       source.start(when, offset);
-      source.stop(when + stopAfter);
+      source.stop(stopAt);
     } else {
       if (offset >= buffer.duration) { return; }
       source.start(when, offset);
@@ -3755,10 +3769,19 @@
           var fadeStartsAt = event.end - fadeDuration * 1000;
           var cutoffAt = when + untilCut;
           if (audiblePosition < fadeStartsAt) {
-            var fadeAt = when + Math.max(0, (fadeStartsAt - audiblePosition) / 1000);
-            gain.gain.setValueAtTime(baseGain, when);
+            // Hold at baseGain no earlier than the attack fade above actually
+            // reaches it -- otherwise this anchor lands on the same instant
+            // as the attack's own `setValueAtTime(0.001, when)` and wins,
+            // snapping the note straight to full volume and erasing the fade.
+            var fadeAt = Math.max(
+              attackEndsAt, when + Math.max(0, (fadeStartsAt - audiblePosition) / 1000)
+            );
+            if (fadeAt <= when) {
+              gain.gain.setValueAtTime(baseGain, when);
+            }
             gain.gain.setValueAtTime(baseGain, fadeAt);
-            gain.gain.exponentialRampToValueAtTime(0.001, cutoffAt);
+            gain.gain.exponentialRampToValueAtTime(0.001, Math.max(cutoffAt, fadeAt + fadeDuration));
+            cutoffAt = Math.max(cutoffAt, fadeAt + fadeDuration);
           } else {
             // When seeking into a release, start at its current level rather
             // than jumping the note back to full volume.
@@ -4065,19 +4088,24 @@
     syncPair('maxSpeakersRange', 'maxSpeakersNumber', values.max_speakers || 32);
     syncPair('songPolyphonyRange', 'songPolyphonyNumber', values.song_polyphony || 32);
     var polyOn = values.max_poly !== null && values.max_poly !== undefined;
+    if (polyOn) { rememberLimit('max_poly', values.max_poly); }
     el('polyEnabled').checked = polyOn;
-    syncPair('maxPolyRange', 'maxPolyNumber', polyOn ? values.max_poly : 16);
+    syncPair('maxPolyRange', 'maxPolyNumber', polyOn ? values.max_poly : recallLimit('max_poly', 16));
     setDependent('polyControls', polyOn);
     el('hardStop').checked = !!values.hard_stop;
     syncPair('releaseRange', 'releaseNumber', Number(values.release_s || 0));
     setDependent('releaseControls', !values.hard_stop);
     var sustainOn = values.cap_sustain_ms !== null && values.cap_sustain_ms !== undefined;
+    if (sustainOn) { rememberLimit('cap_sustain_ms', values.cap_sustain_ms); }
     el('sustainEnabled').checked = sustainOn;
-    syncPair('sustainRange', 'sustainNumber', sustainOn ? values.cap_sustain_ms : 1000);
+    syncPair(
+      'sustainRange', 'sustainNumber', sustainOn ? values.cap_sustain_ms : recallLimit('cap_sustain_ms', 1000)
+    );
     setDependent('sustainControls', sustainOn);
     var bassOn = values.bass_cap_ms !== null && values.bass_cap_ms !== undefined;
+    if (bassOn) { rememberLimit('bass_cap_ms', values.bass_cap_ms); }
     el('bassEnabled').checked = bassOn;
-    syncPair('bassRange', 'bassNumber', bassOn ? values.bass_cap_ms : 750);
+    syncPair('bassRange', 'bassNumber', bassOn ? values.bass_cap_ms : recallLimit('bass_cap_ms', 750));
     setDependent('bassControls', bassOn);
     setDependent('bassPitchControls', bassOn);
     el('bassPitchNumber').value = String(values.bass_pitch === undefined ? 78 : values.bass_pitch);
@@ -4165,6 +4193,23 @@
     return n + " " + (n === 1 ? one : many);
   }
 
+  // An "Enable"/"Set for this track" checkbox has no value of its own to fall
+  // back to while it is off -- unlike Track Release, which shows the
+  // meaningful inherited default, these limits have nothing to inherit. This
+  // remembers the last number each one actually held so switching a limit
+  // off and back on restores what was there, instead of resetting to
+  // whatever placeholder happened to be on screen at the moment it was
+  // re-enabled.
+  var REMEMBERED_LIMITS = {};
+
+  function rememberLimit(scope, value) {
+    if (value !== null && value !== undefined) { REMEMBERED_LIMITS[scope] = value; }
+  }
+
+  function recallLimit(scope, fallback) {
+    return REMEMBERED_LIMITS[scope] !== undefined ? REMEMBERED_LIMITS[scope] : fallback;
+  }
+
   // Both track limits share an optional slider shape. Global Voices stays in
   // Conversion settings as the hard ceiling for every track combined.
   function syncChannelLimit(channel, key, fallbackKey, ids, describe, fallbackValue) {
@@ -4172,9 +4217,11 @@
     var own = saved[key];
     var on = own !== null && own !== undefined;
     var songWide = tuning()[fallbackKey];
+    var scope = channel.key + ':' + key;
+    if (on) { rememberLimit(scope, own); }
     el(ids.enabled).checked = on;
     setDependent(ids.controls, on);
-    syncPair(ids.range, ids.number, on ? own : (songWide || fallbackValue || 32));
+    syncPair(ids.range, ids.number, on ? own : recallLimit(scope, songWide || fallbackValue || 32));
     el(ids.help).textContent = describe(on ? own : null, songWide, trackOutcomes(channel));
   }
 
@@ -4233,9 +4280,11 @@
     var saved = partEntry(channel);
     var own = saved.attack_ms;
     var on = own !== null && own !== undefined;
+    var scope = channel.key + ':attack_ms';
+    if (on) { rememberLimit(scope, Number(own)); }
     el("channelAttackEnabled").checked = on;
     setDependent("channelAttackControls", on);
-    syncPair("channelAttackRange", "channelAttackNumber", on ? Number(own) : 80);
+    syncPair("channelAttackRange", "channelAttackNumber", on ? Number(own) : recallLimit(scope, 80));
     el("channelAttackHelp").textContent = on
       ? "Fades each note in over " + Math.round(Number(own)) + " ms."
       : "Off: each sound keeps its source attack and can stay on the shared path.";
