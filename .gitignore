@@ -12,6 +12,12 @@ dist/
 .ruff_cache/
 # test_compile.py writes a transient MIDI here; it must never reach a diff
 tests/fixtures/_tmp_*
+# A settings sidecar records the ABSOLUTE path of the MIDI it sits beside, plus
+# whatever baseline map that machine happened to pick. Committed once, it put a
+# developer's home directory in the repository and dirtied the working tree on
+# every test run. `tests/test_ui_api.py` now drives a temporary copy instead;
+# this keeps a stray one from ever reaching a diff again.
+tests/fixtures/*.snapmap.json
 
 # Local editor / agent config (per-machine; not part of the package)
 .claude/

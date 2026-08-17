@@ -1,6 +1,6 @@
 {
   "version": 13,
-  "midi": "D:\\GitHub\\snapmap-midi\\examples\\fractional_pitch_ab.mid",
+  "midi": "fractional_pitch_ab.mid",
   "button": "snapmap-midi-song",
   "out_dir": null,
   "baseline": null,

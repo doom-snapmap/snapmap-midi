@@ -44,9 +44,10 @@ The supplied MIDI and probe files are in `examples`:
 | `pitch_overlap_probe.rawmap.json` | One emitter versus several emitters and shared chords |
 | `timeline_sync_probe.rawmap.json` | Listener fanout synchronization and stress test |
 
-For a dense real-world MIDI, use:
-
-`C:\Users\mfloy\Downloads\Verve - Bitter Sweet Symphony.mid`
+The steps below also want a dense real-world MIDI, which this repository does
+not ship: a commercial transcription is not ours to redistribute. Supply your
+own — a multi-track pop or orchestral arrangement of several hundred notes, so
+the voice, polyphony and timeline-size limits are actually under pressure.
 
 The rawmap probe installer replaces the active SnapMap Plus rawmap, but first creates a timestamped backup:
 

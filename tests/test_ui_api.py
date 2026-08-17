@@ -38,6 +38,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -50,8 +51,24 @@ from snapmap_midi.sound import palette
 from snapmap_midi.ui.api import Bridge
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-TINY_MIDI = str(FIXTURES / "tiny.mid")
 WEB = Path(__file__).resolve().parents[1] / "src" / "snapmap_midi" / "ui" / "web"
+
+#: The fixture song, copied OUT of the repository once for the whole module.
+#:
+#: Five bridge methods save the settings sidecar beside the open MIDI, so the
+#: thirty-two tests below that open the fixture directly were writing
+#: `tests/fixtures/tiny.mid.snapmap.json` on every run. What a sidecar records
+#: is absolute: the MIDI's own path and whichever baseline map that machine
+#: picked -- so one got committed carrying a developer's home directory, and
+#: every later run produced a diff nobody had asked for.
+#:
+#: Copying is enough because no test asserts on where the file is, only that a
+#: payload agrees with `TINY_MIDI`. `_song` still makes its own per-test copy
+#: under `tmp_path` where a test needs an independent sidecar; this one keeps
+#: `tests/fixtures/` read-only for the whole suite either way.
+_SANDBOX = Path(tempfile.mkdtemp(prefix="snapmap-midi-ui-api-"))
+shutil.copyfile(FIXTURES / "tiny.mid", _SANDBOX / "tiny.mid")
+TINY_MIDI = str(_SANDBOX / "tiny.mid")
 
 
 def _song(tmp_path, name="song.mid") -> str:

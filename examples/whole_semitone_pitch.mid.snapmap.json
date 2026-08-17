@@ -1,6 +1,6 @@
 {
   "version": 13,
-  "midi": "D:\\GitHub\\snapmap-midi\\examples\\whole_semitone_pitch.mid",
+  "midi": "whole_semitone_pitch.mid",
   "button": "whole-semitone-pitch-test",
   "out_dir": null,
   "baseline": null,
