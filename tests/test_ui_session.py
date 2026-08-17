@@ -812,6 +812,48 @@ def test_sustain_limit_caps_one_shot_resonance_in_the_preview(tmp_path):
     assert event["shortened_by"] == "sustain"
 
 
+def test_sustain_limit_shading_holds_still_across_track_transpose(tmp_path):
+    """The roll's Sustain Limit indicator answers "did my limit setting reach
+    this note", not "is this exact pitch currently being cut" -- a one-shot's
+    real ring genuinely shortens as transpose goes up, so audio legitimately
+    stops needing the cut past some pitch, but the shading should not flicker
+    off because of it."""
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+        ],
+        name="transpose-sustain.mid",
+    )
+    session = Session(midi=midi)
+    untransposed = None
+    for transpose in (0, 7, 12):
+        session.apply(
+            {
+                "channels": {
+                    "0:0": {
+                        "sound": "play_pianoc4",
+                        "sustain_ms": 700,
+                        "pitch_transpose": transpose,
+                    }
+                }
+            }
+        )
+        event = session.preview_manifest()["display_events"][0]
+        assert event["shortened_by"] == "sustain"
+        assert event["visual_end"] == 700
+        if untransposed is None:
+            untransposed = event["end"]
+        elif transpose >= 7:
+            # High enough that the pitch-shifted sample now finishes under
+            # the Sustain Limit on its own -- audio genuinely stops cutting
+            # it, which the stable shading above does not need to reflect.
+            assert event["end"] != untransposed
+            assert event["cut"] is False
+
+
 def test_track_sustain_limit_overrides_the_song_default(tmp_path):
     midi = _midi(
         tmp_path,

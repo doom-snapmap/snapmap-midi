@@ -220,10 +220,10 @@
         <div class="range-number dependent" id="polyControls"><input type="range" id="maxPolyRange" min="1" max="128" step="1"><input type="number" id="maxPolyNumber" min="1" max="128" step="1"></div>
       </div>
       <div class="control-group">
-        <label class="check-line"><input type="checkbox" id="hardStop"> Hard stop notes</label>
         <div class="control-title"><label for="releaseRange">Default Track Release</label><span class="hint">all tracks</span></div>
         <div class="expression-readout">Fades sustained or looping notes after MIDI note-off, and finishes a Sustain Limit fade by its deadline. It does not change attack or a sample's natural decay.</div>
         <div class="range-number dependent" id="releaseControls"><input type="range" id="releaseRange" min="0" max="2" step="0.01"><input type="number" id="releaseNumber" min="0" max="10" step="0.01"></div>
+        <label class="check-line"><input type="checkbox" id="hardStop"> Hard stop notes</label>
       </div>
       <div class="control-group">
         <div class="control-title"><label for="sustainEnabled">Default Track Sustain Limit</label><span class="hint">all tracks</span></div>
@@ -282,20 +282,6 @@
         <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
         <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
         <div class="expression-readout" id="channelPitchModeHelp"></div>
-        <div class="channel-pitch-regular" id="channelPitchRegular">
-          <div class="channel-pitch-analysis-row">
-            <button type="button" class="btn" id="channelAnalyzePitch">Analyze sound</button>
-            <button type="button" class="btn" id="channelClearPitch">Clear pitch setup</button>
-            <span class="hint">find natural pitch</span>
-          </div>
-          <div class="expression-readout control-description">Finds the sound's natural note and cents offset. Confidence shows how reliable the detection is. Clear pitch setup removes analysis and manual calibration, then plays the sound unchanged.</div>
-          <div class="expression-readout" id="channelPitchAnalysis">Not analyzed yet.</div>
-
-          <div class="control-title"><label for="channelTransposeRange">Track transpose</label><span class="hint">semitones</span></div>
-          <div class="expression-readout control-description">Moves every note on this track up or down in whole semitones.</div>
-          <div class="range-number"><input type="range" id="channelTransposeRange" min="-24" max="24" step="1"><input type="number" id="channelTransposeNumber" min="-24" max="24" step="1"></div>
-          <div class="expression-readout" id="channelEffectivePitch"></div>
-        </div>
       </div>
 
       <div class="control-group">
@@ -305,11 +291,42 @@
         <div class="expression-readout" id="channelVolumeHelp"></div>
       </div>
 
+      <div class="control-group">
+        <div class="control-title"><label for="channelVoicesRange">Track Voices</label><span class="hint">share of global pool</span></div>
+        <div class="expression-readout">Caps how many Global Voices this track can use. Set 1 for a monophonic track; each new note takes over its one pitch-controlled emitter.</div>
+        <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
+        <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
+        <div class="expression-readout" id="channelVoicesHelp"></div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-title"><label for="channelPolyRange">Track Polyphony</label><span class="hint">this track</span></div>
+        <div class="expression-readout">Caps simultaneous notes on this track. Extra low notes are muted and shown as dashed outlines; playing notes are not cut off.</div>
+        <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
+        <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
+        <div class="expression-readout" id="channelPolyHelp"></div>
+      </div>
+
+      <div class="control-group" id="channelPitchRegular">
+        <div class="control-title"><label for="channelTransposeRange">Track transpose</label><span class="hint">semitones</span></div>
+        <div class="expression-readout control-description">Moves every note on this track up or down in whole semitones.</div>
+        <div class="range-number"><input type="range" id="channelTransposeRange" min="-24" max="24" step="1"><input type="number" id="channelTransposeNumber" min="-24" max="24" step="1"></div>
+        <div class="expression-readout" id="channelEffectivePitch"></div>
+      </div>
+
       <details class="channel-advanced-settings" id="channelAdvancedSettings">
         <summary>Advanced track settings</summary>
         <div class="channel-advanced-body">
           <div class="control-group channel-pitch-advanced" id="channelPitchAdvanced">
             <div class="control-title"><span>Manual sample calibration</span><span class="hint">advanced</span></div>
+
+            <div class="channel-pitch-analysis-row">
+              <button type="button" class="btn" id="channelAnalyzePitch">Analyze sound</button>
+              <button type="button" class="btn" id="channelClearPitch">Clear pitch setup</button>
+              <span class="hint">find natural pitch</span>
+            </div>
+            <div class="expression-readout control-description">Finds the sound's natural note and cents offset. Confidence shows how reliable the detection is. Clear pitch setup removes analysis and manual calibration, then plays the sound unchanged.</div>
+            <div class="expression-readout" id="channelPitchAnalysis">Not analyzed yet.</div>
 
             <div class="channel-pitch-analysis-row channel-reference-row">
               <button type="button" class="btn" id="channelPlayReference">Play C4 reference</button>
@@ -342,22 +359,6 @@
             <label class="check-line"><input type="checkbox" id="channelAttackEnabled"> Set for this track</label>
             <div class="range-number dependent" id="channelAttackControls"><input type="range" id="channelAttackRange" min="10" max="5000" step="10"><input type="number" id="channelAttackNumber" min="1" max="5000" step="10"><span class="unit">ms</span></div>
             <div class="expression-readout" id="channelAttackHelp"></div>
-          </div>
-
-          <div class="control-group">
-            <div class="control-title"><label for="channelVoicesRange">Track Voices</label><span class="hint">share of global pool</span></div>
-            <div class="expression-readout">Caps how many Global Voices this track can use. Set 1 for a monophonic track; each new note takes over its one pitch-controlled emitter.</div>
-            <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
-            <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
-            <div class="expression-readout" id="channelVoicesHelp"></div>
-          </div>
-
-          <div class="control-group">
-            <div class="control-title"><label for="channelPolyRange">Track Polyphony</label><span class="hint">this track</span></div>
-            <div class="expression-readout">Caps simultaneous notes on this track. Extra low notes are muted and shown as dashed outlines; playing notes are not cut off.</div>
-            <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
-            <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
-            <div class="expression-readout" id="channelPolyHelp"></div>
           </div>
 
           <div class="control-group">

@@ -316,10 +316,7 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .channel-setting-primary { margin: 0; padding: 2px 0; font-weight: 600; }
 .channel-setting-primary input:disabled { opacity: .72; }
 .channel-pitch-group > .expression-readout { margin-top: 8px; }
-.channel-pitch-regular { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--border); }
-.channel-pitch-regular > .control-title,
 .channel-pitch-advanced > .control-title { margin-top: 13px; }
-.channel-pitch-regular .control-description,
 .channel-pitch-advanced .control-description { margin: 4px 0 7px; }
 .channel-pitch-analysis-row { display: flex; align-items: center; gap: 9px; margin-bottom: 3px; }
 .channel-reference-row { margin-top: 0; }

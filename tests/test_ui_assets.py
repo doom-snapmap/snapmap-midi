@@ -717,21 +717,36 @@ def test_channel_settings_exposes_analysis_calibration_and_track_pitch():
     advanced = _HTML.index('id="channelAdvancedSettings"')
     for regular_control in (
         "channelPitchFollow",
-        "channelAnalyzePitch",
-        "channelTransposeRange",
         "channelVolumeRange",
+        "channelVoicesRange",
+        "channelPolyRange",
+        "channelTransposeRange",
     ):
         assert _HTML.index('id="%s"' % regular_control) < advanced
+    # Follow MIDI note, then Track Volume, then Track Voices and Track
+    # Polyphony -- both reached for often enough to skip Advanced entirely --
+    # then Track transpose.
+    assert (
+        _HTML.index('id="channelPitchFollow"')
+        < _HTML.index('id="channelVolumeRange"')
+        < _HTML.index('id="channelVoicesRange"')
+        < _HTML.index('id="channelPolyRange"')
+        < _HTML.index('id="channelTransposeRange"')
+    )
     for advanced_control in (
+        "channelAnalyzePitch",
         "channelCalibrationRange",
         "channelGlideRange",
         "channelAttackRange",
-        "channelVoicesRange",
-        "channelPolyRange",
         "channelSustainRange",
         "channelReleaseRange",
+        "channelHardStopEnabled",
     ):
         assert _HTML.index('id="%s"' % advanced_control) > advanced
+    # Analyze sound sits with the other sampling controls, ahead of manual
+    # calibration -- run the automatic detector before reaching for the
+    # semitone/cents sliders it might make unnecessary.
+    assert _HTML.index('id="channelAnalyzePitch"') < _HTML.index('id="channelCalibrationRange"')
     assert ".channel-advanced-settings[open] > summary::after" in _CSS
     assert "var NEUTRAL_ROOT_MIDI = 60;" in _JS
     assert "follow.checked = exact ? !!entry.pitch_follow : !channel.is_drums" in _JS
@@ -1039,6 +1054,20 @@ def test_track_attack_and_hard_stop_are_optional_track_only_controls():
     assert "partPatch(part, { hard_stop: value })" in _JS
 
 
+def test_fresh_note_ons_never_lose_their_attack_fade_to_scheduling_jitter():
+    """`scheduleAhead` used to push its `audiblePosition` argument forward
+    whenever ordinary JS timing jitter left a note's `when` slightly in the
+    past, which told `scheduleEvent` the note was already partway through its
+    Track Attack fade -- silently skipping the fade (and the sample's opening
+    frames) on any note delayed past its attack duration. Every note it
+    schedules is freshly starting; only the AudioContext `when` needs the
+    past-time clamp, never the attack/offset origin."""
+    fn = _JS.split("function scheduleAhead()", 1)[1].split("\n  }", 1)[0]
+    assert "scheduleEvent(event, event.start, when)" in fn
+    assert "var audible" not in fn
+    assert "audible +=" not in fn
+
+
 def test_conversion_toolbar_button_toggles_its_inspector():
     assert "function toggleInspector()" in _JS
     assert "el('conversionBtn').addEventListener('click', toggleInspector)" in _JS
@@ -1132,6 +1161,14 @@ def test_conversion_limits_stay_in_a_nonblocking_inspector():
     ):
         assert 'id="%s"' % control in _HTML
     assert "api().reset_tuning(" in _JS
+
+
+def test_hard_stop_sits_under_release_in_both_settings_panels():
+    """Hard Stop is what turns Release off, so it reads under the slider it
+    disables in both places rather than floating above one and below the
+    other."""
+    assert _HTML.index('id="releaseRange"') < _HTML.index('id="hardStop"')
+    assert _HTML.index('id="channelReleaseRange"') < _HTML.index('id="channelHardStopEnabled"')
 
 
 def test_warnings_live_in_the_bottom_control_plane_and_notification_inspector():

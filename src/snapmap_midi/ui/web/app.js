@@ -2078,9 +2078,12 @@
         source: event,
         pitch: eventPitch,
         start: eventStart,
-        // The block is the MIDI note. `playedEnd` is where the conversion
-        // actually stops it -- a capped sustain or a stolen speaker -- and is
-        // drawn as shading on the tail, never as a shorter block. Falls back to
+        // The block is the MIDI note. `playedEnd` is where the roll draws the
+        // cut -- a capped Sustain Limit or a stolen speaker -- as shading on
+        // the tail, never as a shorter block. It reads `visual_end` rather
+        // than `end`: a Sustain Limit's shading is pitch-stable there even
+        // though the real stop time in `end` (what playback below actually
+        // uses) rightly still moves with Track transpose. Falls back to
         // `end` so an older manifest still renders.
         end: Math.max(
           eventStart,
@@ -2088,7 +2091,12 @@
             ? event.midi_end
             : event.end) || eventStart
         ),
-        playedEnd: Math.max(eventStart, Number(event.end) || eventStart),
+        playedEnd: Math.max(
+          eventStart,
+          Number(event.visual_end !== undefined && event.visual_end !== null
+            ? event.visual_end
+            : event.end) || eventStart
+        ),
         channel: Number(event.channel) || 0,
         // Falls back to the channel so a manifest from an older build,
         // which had no part, still renders instead of collapsing to one row.
@@ -3810,12 +3818,24 @@
     while (AUDIO.nextIndex < events.length && events[AUDIO.nextIndex].start <= horizon) {
       var event = events[AUDIO.nextIndex];
       var when = AUDIO.anchorTime + (event.start - AUDIO.anchorPosition) / 1000;
-      var audible = event.start;
+      // Every note reaching this loop is a fresh note-on -- `scheduleActiveAt`
+      // is the separate path for one already ringing when playback starts or
+      // seeks. `when` can still fall slightly behind `currentTime` under
+      // ordinary scheduling jitter (layout, GC, a busy frame), and Web Audio
+      // refuses a start time in the past, so it is clamped forward. That
+      // clamp used to also push `audiblePosition` forward by the same
+      // amount, which told `scheduleEvent` the note was already partway
+      // through its Track Attack fade or its sample -- silently skipping the
+      // fade and the sample's opening frames on any note a few tens of
+      // milliseconds late, which is common enough to read as "attack doesn't
+      // work" rather than as jitter. `audiblePosition` now always reads
+      // `event.start`: a fresh note always gets its full fade and its
+      // sample's true beginning, landing a few milliseconds later than ideal
+      // rather than losing its attack.
       if (when < AUDIO.context.currentTime + 0.01) {
-        audible += (AUDIO.context.currentTime + 0.01 - when) * 1000;
         when = AUDIO.context.currentTime + 0.01;
       }
-      scheduleEvent(event, audible, when);
+      scheduleEvent(event, event.start, when);
       AUDIO.nextIndex += 1;
     }
     AUDIO.scheduledThrough = horizon;

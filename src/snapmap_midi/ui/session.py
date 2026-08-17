@@ -581,6 +581,27 @@ class Session:
             prepared_ids = {id(note) for note in prepared}
 
             def _event_payload(note, *, converted):
+                midi_end = max(note.start, getattr(note, "midi_end", note.end))
+                sustain_limit_visual_end = getattr(note, "sustain_limit_visual_end", None)
+                shortened_by = getattr(
+                    note,
+                    "shortened_by",
+                    "sustain" if sustain_limit_visual_end is not None else None,
+                )
+                if shortened_by == "voices":
+                    # A voice-stolen cut is a real-time fact about this
+                    # compile, not an editorial setting -- draw it exactly
+                    # where playback actually stops.
+                    visual_end = max(note.start, getattr(note, "preview_end", note.end))
+                elif sustain_limit_visual_end is not None:
+                    # A Sustain Limit's cut is drawn at the SAME point
+                    # regardless of the Track transpose currently being
+                    # auditioned (see the untransposed comparison this reads
+                    # in voices.py). Playback below keeps using the real,
+                    # pitch-aware stop so audio is unaffected.
+                    visual_end = min(midi_end, sustain_limit_visual_end)
+                else:
+                    visual_end = midi_end
                 return {
                     "id": note.id,
                     "start": note.start,
@@ -588,12 +609,15 @@ class Session:
                     # emitter stealing -- the preview transport schedules from
                     # it. `midi_end` is what the file wrote, which is what the
                     # roll draws, so moving a tuning lever changes the shading
-                    # on a block rather than the block.
+                    # on a block rather than the block. `visual_end` is where
+                    # that shading itself is drawn -- pitch-stable for a
+                    # Sustain Limit, real-time for a voice steal.
                     "end": max(
                         note.start,
                         getattr(note, "preview_end", note.end),
                     ),
-                    "midi_end": max(note.start, getattr(note, "midi_end", note.end)),
+                    "midi_end": midi_end,
+                    "visual_end": visual_end,
                     "sound": note.shader,
                     "channel": note.chan,
                     # The part this note belongs to, matching `ChannelInfo.key`.
@@ -619,11 +643,7 @@ class Session:
                     # roll draws it dimmed either way; the panel needs to know
                     # whose fault it was to report each lever separately.
                     "limited_by": getattr(note, "limited_by", None),
-                    "shortened_by": getattr(
-                        note,
-                        "shortened_by",
-                        "sustain" if getattr(note, "sustain_limited", False) else None,
-                    ),
+                    "shortened_by": shortened_by,
                     "audible": bool(note.audible),
                     "muted": bool(note.muted),
                     "solo_excluded": bool(note.solo_excluded),

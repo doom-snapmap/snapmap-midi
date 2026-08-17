@@ -61,7 +61,7 @@ def prepare_voice_layers(
     # an otherwise simple cap slider feel needlessly expensive.
     durations = {}
 
-    def one_shot_end(note):
+    def natural_duration(note):
         if note.shader not in durations:
             durations[note.shader] = (
                 duration_lookup(note.shader) if duration_lookup is not None else None
@@ -69,7 +69,12 @@ def prepare_voice_layers(
         duration = durations[note.shader]
         if duration is None:
             duration = 750 if note.fam == "drums" else 1000
-        return note.start + pitched_duration_ms(duration, getattr(note, "pitch_modifier", 0))
+        return duration
+
+    def one_shot_end(note):
+        return note.start + pitched_duration_ms(
+            natural_duration(note), getattr(note, "pitch_modifier", 0)
+        )
 
     if cap_sustain_ms or bass_cap_ms or family_caps or part_sustain_ms:
         for note in sustained + decaying:
@@ -93,6 +98,21 @@ def prepare_voice_layers(
             # even when the written block is shorter; `midi_end` remains the
             # visual/source note-off while this end is the audible stop.
             current_end = note.end if note.sustained else one_shot_end(note)
+            # Whether the Sustain Limit constrains this note independent of
+            # the pitch currently being auditioned. A one-shot's real ring
+            # genuinely changes length with Track transpose -- Wwise pitch is
+            # resampling, so the capping below rightly stays pitch-aware and
+            # keeps exporting and scheduling the correct stop. But a roll
+            # indicator that appears and disappears as someone nudges
+            # transpose, with no change to the Sustain Limit itself, reads as
+            # a glitch rather than a fact about the sound. This compares the
+            # untransposed duration instead, computed here (before `end` is
+            # possibly rewritten below) so the indicator answers one question
+            # -- "did my Sustain Limit setting reach this note" -- and holds
+            # still while transpose is auditioned.
+            natural_end = current_end if note.sustained else note.start + natural_duration(note)
+            if natural_end > cap_end:
+                note.sustain_limit_visual_end = cap_end
             if current_end > cap_end:
                 note.end = cap_end
                 note.sustain_limited = True
