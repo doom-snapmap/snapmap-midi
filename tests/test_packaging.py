@@ -65,3 +65,54 @@ def test_the_shipped_data_is_declared_as_package_data():
     patterns = _pyproject()["tool"]["setuptools"]["package-data"]["snapmap_midi"]
     assert any(p.startswith("data/") for p in patterns), patterns
     assert (_ROOT / "src" / "snapmap_midi" / "data" / "sound_palette.json").is_file()
+
+
+# ---- nothing committed names the machine it was written on ----
+#
+# A settings sidecar records the ABSOLUTE path of its MIDI and of whichever
+# baseline map was picked. One reached a commit, so the repository carried a
+# developer's home directory and every test run produced a diff. The tests that
+# open a fixture song now drive a copy outside the tree, and the two guards
+# below are what keep it that way -- a review will not catch this twice.
+
+#: Directories whose contents are not the repository's own committed text.
+_NOT_OURS = {".git", ".venv", "venv", "build", "dist", "__pycache__"}
+
+#: A path INTO a home directory, which names both a person and their machine.
+#: `%USERPROFILE%` and `~` are deliberately absent: those are the portable
+#: spellings, and the README is right to tell somebody to use one.
+_MACHINE_LOCAL = ("\\Users\\", "/Users/", "\\home\\", "/home/")
+
+
+def _committed_text_files():
+    """Every tracked-looking text file, skipping caches and agent scratch."""
+    for path in _ROOT.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".py", ".json", ".md", ".toml"}:
+            continue
+        # This file has to spell the offending patterns out to look for them.
+        if path == pathlib.Path(__file__).resolve():
+            continue
+        parts = set(path.relative_to(_ROOT).parts)
+        if parts & _NOT_OURS or any(p.startswith(".") for p in parts - {path.name}):
+            continue
+        yield path
+
+
+def test_no_committed_file_names_a_home_directory():
+    """A home directory in a committed file is somebody's name and somebody's
+    machine, and it is useless to everyone else who clones this."""
+    offenders = []
+    for path in _committed_text_files():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for needle in _MACHINE_LOCAL:
+            if needle in text:
+                offenders.append("%s contains %r" % (path.relative_to(_ROOT), needle))
+    assert offenders == [], offenders
+
+
+def test_the_fixture_directory_holds_no_generated_sidecar():
+    """`tests/fixtures/` is input. A sidecar in it means some test opened a
+    fixture song in place rather than a copy, and the next run will write that
+    machine's paths into the working tree again."""
+    strays = sorted(p.name for p in (_ROOT / "tests" / "fixtures").glob("*.snapmap.json"))
+    assert strays == [], strays

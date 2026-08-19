@@ -294,8 +294,7 @@ def pitched_families() -> list:
     purpose -- so the filtering has to happen where the choice is offered.
 
     `ins_string` is the one that makes this necessary rather than tidy. It is
-    named like an instrument and listed in `SUSTAINED` beside the violins, and
-    it holds twelve unpitched effect samples.
+    named like an instrument, but holds twelve unpitched effect samples.
 
     Filtered, never sorted. Declaration order is the palette's own, and a list
     that reorders itself moves the option someone is reaching for.
@@ -340,6 +339,109 @@ def unpitched_categories() -> list:
 #: The two unpitched categories that are a drum kit. The rest of the unpitched
 #: half is ambience, gore, explosions and interface noise.
 _DRUM_CATEGORIES = ("ins_noise", "ins_percussion")
+
+
+#: Installed-catalog folders a percussion key may also draw from, on top
+#: of the palette pool below. Curated by folder rather than by a duration
+#: or loudness rule, because neither survives contact with this catalog: a
+#: half-second event is as likely to be a scope chirp or a `Play_Stop_`
+#: trigger as a drum hit, and the folder is the only place the game says
+#: what a sound is FOR.
+#:
+#: These are things striking things -- impacts, footsteps, foley, and the
+#: whole interface branch, whose blips and object pick-up/put-down sounds
+#: are the shortest transients in the game. Weapons, voice, music and
+#: ambience are deliberately absent.
+#:
+#: Membership is necessary, not sufficient: the window still offers only
+#: the events the soundbank reports as one-shots, because a loop fired as
+#: a drum hit is never told to stop.
+DRUM_EVENT_FOLDERS = (
+    # Things striking things.
+    "effects/effects/impacts",
+    "projectile/projectile/impacts",
+    "footsteps/footsteps",
+    "player/player/foley",
+    # Things bursting. Longer than a hit -- these run two to three seconds --
+    # so they read as crashes and stingers rather than kicks. The picker shows
+    # each sound's length first, which is what makes that judgeable at a glance
+    # rather than after an export.
+    "effects/effects/explosions",
+    "effects/effects/gore",
+    "effects/effects/electricity_sparks",
+    "snapmaps/effects",
+    # The whole interface branch. Its blips, pick-ups, put-downs and reticle
+    # clicks are the shortest transients in the game -- `ui/ui/snapmap/new_ui`
+    # alone has a median length of a fifth of a second.
+    "ui/ui",
+    # SnapMap's own object and gameplay sounds, which are what this tool's
+    # output shares a map with.
+    "snapmaps/gameplay",
+    "snapmaps/points",
+    "doom_dlc1_sfx/SnapMaps/interactable",
+    "doom_dlc1_sfx/SnapMaps/pickups",
+    "doom_dlc1_sfx/SnapMaps/props",
+    "doom_dlc1_sfx/hack_modules",
+    "doom_dlc2_sfx/hack modules",
+    "doom_dlc1_sfx/kineticMine",
+    # The shortest transients in the game: this set runs from four hundredths
+    # of a second, which is shorter than anything in the curated pool.
+    "doom_dlc1_sfx/SnapMaps/ui_user_defined",
+    # Demon voices and hell atmosphere. Two to five seconds, so these read as
+    # atmosphere over a bar rather than as hits -- included because they are
+    # one-shots a SnapMap author reaches for, not because they are drums.
+    "doom_dlc1_sfx/SnapMaps/hellOneShots",
+    # The only melodic folders here, and both earn it: a marimba and a bell are
+    # struck, and the classic DOOM effects are almost all short transients.
+    # Piano, guitar and horns are deliberately absent -- they are held notes,
+    # and a held note under every hit is not a kit.
+    "doom_dlc2_sfx/ClassicSFX",
+    "doom_dlc2_sfx/instruments/Marimba",
+    "doom_dlc2_sfx/instruments/Brass Bells",
+)
+
+
+#: A DOOM Play event identifier. Shape only -- the installed catalog is the
+#: only thing that could confirm a name exists, and it needs the game.
+_PLAY_EVENT_NAME = re.compile(r"(?i)^play_[a-z0-9_-]{1,59}$")
+
+
+def drum_sound_problem(sound) -> Optional[str]:
+    """Why this sound cannot be a percussion key, or None if it can.
+
+    Two different questions, because two different things can be named.
+
+    A sound the PALETTE knows is checked against `drum_sound_pool` and
+    nothing else, because for those the answer is definite: the unpitched
+    half of the palette is mostly ambience, a pitched sound would play one
+    fixed note under every hit, and a looping ambience is never told to stop
+    -- it holds its emitter until the engine recycles the slot out from
+    under something else.
+
+    A name the palette has never heard of is a full-game event, and there is
+    nothing here to check it against: the catalog needs the game installed
+    and this runs on machines that do not have it. Accepted on the shape of
+    the name alone, exactly as an exact channel sound is. The window only
+    ever offers events the soundbank reports as one-shots from the folders
+    in `DRUM_EVENT_FOLDERS`; a hand-written sidecar can still name a loop,
+    and that stays its own risk rather than a reason to refuse every event
+    in the game.
+
+    Returns a reason rather than raising so each caller can raise its own
+    error type -- the settings document and the saved table have different
+    ones, and they used to disagree about the rule itself.
+    """
+    if not isinstance(sound, str) or _PLAY_EVENT_NAME.fullmatch(sound) is None:
+        return "%r is not a valid DOOM Play_ event identifier" % (sound,)
+    pool = drum_sound_pool()
+    if sound in all_sounds() and sound not in pool:
+        return (
+            "%r is a palette sound but not one of the %d percussion sounds. A "
+            "pitched sound plays one fixed note under every hit, and a looping "
+            "ambience is never stopped -- it holds its emitter until the engine "
+            "recycles the slot out from under something else." % (sound, len(pool))
+        )
+    return None
 
 
 def drum_sound_pool() -> list:

@@ -189,6 +189,180 @@ def test_the_drums_switch_overrides_the_heuristic(tmp_path):
     assert forced.channels[0].auto_family is None
 
 
+def _multitrack(tmp_path, parts, name="multitrack.mid"):
+    """A type 1 file, one track per `(name, channel, program, [notes])` part."""
+    import mido
+
+    mid = mido.MidiFile(type=1)
+    conductor = mido.MidiTrack()
+    conductor.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+    conductor.append(mido.MetaMessage("end_of_track", time=0))
+    mid.tracks.append(conductor)
+    for label, channel, program, notes in parts:
+        track = mido.MidiTrack()
+        track.append(mido.MetaMessage("track_name", name=label, time=0))
+        if program is not None:
+            track.append(mido.Message("program_change", channel=channel, program=program, time=0))
+        for note in notes:
+            track.append(mido.Message("note_on", channel=channel, note=note, velocity=100, time=0))
+            track.append(mido.Message("note_off", channel=channel, note=note, velocity=0, time=240))
+        track.append(mido.MetaMessage("end_of_track", time=0))
+        mid.tracks.append(track)
+    path = tmp_path / name
+    mid.save(str(path))
+    return path
+
+
+def test_two_tracks_sharing_one_channel_are_two_parts(tmp_path):
+    """The headline: a channel number is not a part identity.
+
+    A type 1 file routinely writes several parts to channel 0. Keying the
+    analysis by channel merged them into one row that could hold only one
+    instrument, so choosing a sound for the lead silently retimbred the pad.
+    """
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("lead", 0, 40, [72, 74, 76]),
+            ("pad", 0, 48, [48, 50]),
+        ],
+    )
+
+    result = analysis.analyze(mid)
+
+    assert [c.key for c in result.channels] == ["1:0", "2:0"]
+    assert [c.track_name for c in result.channels] == ["lead", "pad"]
+    assert [c.notes for c in result.channels] == [3, 2]
+    assert [c.channel for c in result.channels] == [0, 0]
+
+
+def test_each_part_keeps_the_instrument_its_own_track_named(tmp_path):
+    """Program change is a channel message, so the last one anywhere in the file
+    is the channel's voice. Reading a neighbour's program would rename a part
+    nobody touched."""
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("violin", 0, 40, [72]),
+            ("strings", 0, 48, [48]),
+        ],
+    )
+
+    result = analysis.analyze(mid)
+
+    assert [c.program for c in result.channels] == [40, 48]
+    assert [c.program_name for c in result.channels] == [
+        gm_program_name(40),
+        gm_program_name(48),
+    ]
+
+
+def test_one_track_on_several_channels_is_still_one_part_per_channel(tmp_path):
+    """The type 0 shape, and the byte-gate fixture's shape. Track 0 carrying
+    three channels stays three parts, exactly as before tracks existed here."""
+    mid = _write_midi(tmp_path, [(0, 40, 60), (1, 48, 62), (5, 0, 64)], name="one-track.mid")
+
+    result = analysis.analyze(mid)
+
+    assert [c.key for c in result.channels] == ["0:0", "0:1", "0:5"]
+    assert [c.track for c in result.channels] == [0, 0, 0]
+
+
+def test_a_neighbouring_tracks_instrument_does_not_leak_across_the_channel(tmp_path):
+    """Program change is a channel message, so one slot per channel means the
+    last track to announce an instrument owns the channel from then on.
+
+    With three tracks on channel 0 that made every note after the first take the
+    LAST track's program: a violin lead and a string pad both played the bass
+    part's pulse wave, while the window went on labelling them from its own
+    per-part reading. The window described one arrangement and the compiler
+    wrote another.
+    """
+    from snapmap_midi.music.midi import parse_notes
+
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("lead", 0, 40, [72, 74]),
+            ("pad", 0, 48, [60, 64]),
+            ("bass", 0, 33, [36, 38]),
+        ],
+        name="program-bleed.mid",
+    )
+
+    notes, _ = parse_notes(mid)
+    by_track = {}
+    for note in notes:
+        by_track.setdefault(note.track, set()).add(note.fam)
+
+    assert by_track[1] == {"ins_violin"}
+    assert by_track[2] == {"ins_violin"}
+    assert by_track[3] == {"ins_pulse"}
+    # And the analysis agrees, which is the point: one arrangement, not two.
+    assert [c.program for c in analysis.analyze(mid).channels] == [40, 48, 33]
+
+
+def test_a_track_that_names_no_instrument_still_reads_its_channels(tmp_path):
+    """The channel-wide value is the fallback, not the default. A track that
+    never sends a program change takes whatever the channel last said, which is
+    what a format 0 file and a single-track file have always relied on."""
+    from snapmap_midi.music.midi import parse_notes
+
+    mid = _multitrack(
+        tmp_path,
+        [
+            ("named", 0, 40, [72]),
+            ("silent", 0, None, [74]),
+        ],
+        name="program-fallback.mid",
+    )
+
+    notes, _ = parse_notes(mid)
+    families = {note.track: note.fam for note in notes}
+
+    assert families[1] == "ins_violin"
+    assert families[2] == "ins_violin"
+
+
+def test_a_format_0_track_name_is_the_song_title_not_a_part_name(tmp_path):
+    """SMF FF 03: "If in a format 0 track, or the first track in a format 1
+    file, the name of the sequence. Otherwise, the name of the track."
+
+    A format 0 file has exactly one track carrying the whole performance, so
+    its one name is the song's. Reading it as a part name prints the song title
+    over every row in the window.
+    """
+    import mido
+
+    mid = mido.MidiFile(type=0)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.MetaMessage("track_name", name="My Great Song", time=0))
+    for channel, note in ((0, 60), (1, 72)):
+        track.append(mido.Message("note_on", channel=channel, note=note, velocity=100, time=0))
+        track.append(mido.Message("note_off", channel=channel, note=note, velocity=0, time=240))
+    path = tmp_path / "format0-named.mid"
+    mid.save(str(path))
+
+    result = analysis.analyze(path)
+
+    assert [c.key for c in result.channels] == ["0:0", "0:1"]
+    assert [c.track_name for c in result.channels] == ["", ""]
+
+
+def test_a_format_1_conductor_name_never_labels_a_part(tmp_path):
+    """Same rule: the first track of a format 1 file names the sequence. It has
+    no notes so it never becomes a part, but a part must not borrow its name."""
+    mid = _multitrack(tmp_path, [("lead", 0, 40, [72])], name="named-conductor.mid")
+    reopened = __import__("mido").MidiFile(str(mid))
+    reopened.tracks[0].insert(0, __import__("mido").MetaMessage("track_name", name="Song", time=0))
+    reopened.save(str(mid))
+
+    result = analysis.analyze(mid)
+
+    assert [c.track_name for c in result.channels] == ["lead"]
+
+
 def test_as_dict_survives_the_trip_through_json(tmp_path):
     """Everything here crosses into Javascript, where an integer dict key does
     not exist. Converting on the way out is what keeps the window from
@@ -200,6 +374,9 @@ def test_as_dict_survives_the_trip_through_json(tmp_path):
         assert set(payload) == {"path", "duration_s", "drums_detected", "channels"}
         for channel in payload["channels"]:
             assert set(channel) == {
+                "key",
+                "track",
+                "track_name",
                 "channel",
                 "program",
                 "program_name",
@@ -210,9 +387,12 @@ def test_as_dict_survives_the_trip_through_json(tmp_path):
                 "auto_family",
                 "pitches",
                 "drum_keys",
+                "drum_names",
             }
             assert all(isinstance(k, str) for k in channel["pitches"])
             assert all(isinstance(k, str) for k in channel["drum_keys"])
+            assert all(isinstance(k, str) for k in channel["drum_names"])
+            assert set(channel["drum_names"]) == set(channel["drum_keys"])
     payload = json.loads(json.dumps(analysis.as_dict(analysis.analyze(mid2))))
     assert payload["channels"][0]["pitches"] == {"60": 2}
 

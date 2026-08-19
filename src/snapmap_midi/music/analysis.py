@@ -17,8 +17,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from snapmap_midi.music.gm import DRUM_CHANNEL, DRUM_MAP, gm_program_name, gm_to_family
-from snapmap_midi.music.midi import channel_is_percussion
+from snapmap_midi.music.gm import (
+    drum_table,
+    gm_drum_kit_name,
+    gm_drum_name,
+    gm_program_name,
+    gm_to_family,
+)
+from snapmap_midi.music.midi import (
+    channel_is_percussion,
+    is_percussion_part,
+    messages_with_tracks,
+)
 
 
 @dataclass
@@ -47,6 +57,22 @@ class ChannelInfo:
     auto_family: Optional[str]
     pitches: dict
     drum_keys: dict
+    track: int = 0
+    track_name: str = ""
+
+    @property
+    def key(self) -> str:
+        """This part's identity: the track that wrote it and the channel it uses.
+
+        A bare channel number is not an identity. Two tracks sharing channel 0 --
+        a lead and a pad, which is ordinary in a type 1 file -- are two parts a
+        composer chose separately, and keying anything by channel alone merges
+        them into one row that can hold only one instrument.
+
+        The track comes first so parts sort in the order the file lists them,
+        which is the order the composer sees in their editor.
+        """
+        return "%d:%d" % (self.track, self.channel)
 
 
 @dataclass
@@ -66,7 +92,7 @@ class MidiAnalysis:
     channels: list
 
 
-def analyze(mid_path, drums="auto") -> MidiAnalysis:
+def analyze(mid_path, drums="auto", part_percussion=None) -> MidiAnalysis:
     """Read a file's channels without collapsing them into families.
 
     Takes the drums mode because the window's drums switch decides whether
@@ -86,6 +112,7 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
     """
     import mido
 
+    part_percussion = part_percussion or {}
     mid = mido.MidiFile(str(mid_path), clip=True)
     if drums == "auto":
         drums_on = channel_is_percussion(mid)
@@ -94,34 +121,70 @@ def analyze(mid_path, drums="auto") -> MidiAnalysis:
     else:
         drums_on = bool(drums)
 
-    program, seen, elapsed = {}, {}, 0.0
-    for msg in mid:
-        elapsed += msg.time
+    # SMF FF 03: "If in a format 0 track, or the first track in a format 1
+    # file, the name of the sequence. Otherwise, the name of the track." So the
+    # one name a format 0 file carries is the SONG's title, and using it as a
+    # part label would print the song's name over every row. Format 1's first
+    # track is the conductor and holds the sequence name for the same reason;
+    # it has no notes, so it never becomes a part, but the rule is spelled out
+    # here rather than left to that coincidence.
+    names = {}
+    for index, track in enumerate(mid.tracks):
+        if mid.type == 0 or index == 0:
+            names[index] = ""
+            continue
+        named = next((m.name for m in track if m.type == "track_name"), "")
+        names[index] = named.strip()
+
+    # Program changes are channel messages, so a later one anywhere in the file
+    # is the channel's current voice. But a type 1 file normally has each track
+    # announce its own instrument, and reading a neighbouring track's program
+    # would rename a part the composer never touched. Prefer what the part's own
+    # track said; fall back to the channel only when it said nothing.
+    by_part, by_channel, seen, elapsed = {}, {}, {}, 0.0
+    for track_index, msg, elapsed in messages_with_tracks(mid):
         if msg.type == "program_change":
-            program[msg.channel] = msg.program
+            by_channel[msg.channel] = msg.program
+            by_part[(track_index, msg.channel)] = msg.program
         elif msg.type == "note_on" and msg.velocity > 0:
+            part = (track_index, msg.channel)
             entry = seen.setdefault(
-                msg.channel, {"program": program.get(msg.channel, 0), "pitches": {}}
+                part,
+                {
+                    "program": by_part.get(part, by_channel.get(msg.channel, 0)),
+                    "pitches": {},
+                },
             )
             entry["pitches"][msg.note] = entry["pitches"].get(msg.note, 0) + 1
 
+    # Read once. `drum_table` opens the user's file, and a song with twenty
+    # percussion parts would otherwise open it twenty times.
+    table = drum_table()
     channels = []
-    for channel in sorted(seen):
-        entry = seen[channel]
+    for track_index, channel in sorted(seen):
+        entry = seen[(track_index, channel)]
         pitches = entry["pitches"]
-        is_drums = channel == DRUM_CHANNEL and drums_on
+        is_drums = is_percussion_part(part_percussion, track_index, channel, drums_on)
         channels.append(
             ChannelInfo(
                 channel=channel,
                 program=entry["program"],
-                program_name=gm_program_name(entry["program"]),
+                # On the percussion channel the program selects a kit, not an
+                # instrument, so the melodic name is simply the wrong table.
+                program_name=(
+                    gm_drum_kit_name(entry["program"])
+                    if is_drums
+                    else gm_program_name(entry["program"])
+                ),
                 notes=sum(pitches.values()),
                 lowest=min(pitches),
                 highest=max(pitches),
                 is_drums=is_drums,
                 auto_family=None if is_drums else gm_to_family(entry["program"]),
                 pitches=pitches,
-                drum_keys={k: DRUM_MAP.get(k) for k in sorted(pitches)} if is_drums else {},
+                drum_keys={k: table.get(k) for k in sorted(pitches)} if is_drums else {},
+                track=track_index,
+                track_name=names.get(track_index, ""),
             )
         )
     return MidiAnalysis(str(mid_path), round(elapsed, 2), drums_on, channels)
@@ -142,6 +205,9 @@ def as_dict(analysis: MidiAnalysis) -> dict:
         "drums_detected": analysis.drums_detected,
         "channels": [
             {
+                "key": c.key,
+                "track": c.track,
+                "track_name": c.track_name,
                 "channel": c.channel,
                 "program": c.program,
                 "program_name": c.program_name,
@@ -152,6 +218,11 @@ def as_dict(analysis: MidiAnalysis) -> dict:
                 "auto_family": c.auto_family,
                 "pitches": {str(note): count for note, count in c.pitches.items()},
                 "drum_keys": {str(key): shader for key, shader in c.drum_keys.items()},
+                # Carried beside the keys rather than looked up from the
+                # catalog, because the catalog is built when a file opens and
+                # this list changes whenever a part is declared a kit. A name
+                # fetched from the stale one reads every key as unnamed.
+                "drum_names": {str(key): gm_drum_name(key) for key in c.drum_keys},
             }
             for c in analysis.channels
         ],

@@ -38,6 +38,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -50,8 +51,24 @@ from snapmap_midi.sound import palette
 from snapmap_midi.ui.api import Bridge
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-TINY_MIDI = str(FIXTURES / "tiny.mid")
 WEB = Path(__file__).resolve().parents[1] / "src" / "snapmap_midi" / "ui" / "web"
+
+#: The fixture song, copied OUT of the repository once for the whole module.
+#:
+#: Five bridge methods save the settings sidecar beside the open MIDI, so the
+#: thirty-two tests below that open the fixture directly were writing
+#: `tests/fixtures/tiny.mid.snapmap.json` on every run. What a sidecar records
+#: is absolute: the MIDI's own path and whichever baseline map that machine
+#: picked -- so one got committed carrying a developer's home directory, and
+#: every later run produced a diff nobody had asked for.
+#:
+#: Copying is enough because no test asserts on where the file is, only that a
+#: payload agrees with `TINY_MIDI`. `_song` still makes its own per-test copy
+#: under `tmp_path` where a test needs an independent sidecar; this one keeps
+#: `tests/fixtures/` read-only for the whole suite either way.
+_SANDBOX = Path(tempfile.mkdtemp(prefix="snapmap-midi-ui-api-"))
+shutil.copyfile(FIXTURES / "tiny.mid", _SANDBOX / "tiny.mid")
+TINY_MIDI = str(_SANDBOX / "tiny.mid")
 
 
 def _song(tmp_path, name="song.mid") -> str:
@@ -155,7 +172,7 @@ def test_startup_answers_in_one_call():
         "window",
     }
     assert [c["channel"] for c in payload["analysis"]["channels"]] == [0, 1, 9]
-    assert payload["rulers"]["9"] is None
+    assert payload["rulers"]["0:9"] is None
     assert payload["stats"]["notes"]
 
 
@@ -259,7 +276,23 @@ def test_loading_a_song_returns_the_analysis_the_settings_and_the_rulers():
     assert payload["ok"] is True
     assert payload["settings"]["midi"] == TINY_MIDI
     assert _channel(payload, 9)["is_drums"] is True
-    assert payload["rulers"]["0"]["cells"][0]["note"] == 60
+    assert payload["rulers"]["0:0"]["cells"][0]["note"] == 60
+
+
+def test_loading_a_song_does_not_serialize_a_rawmap_for_status(monkeypatch):
+    """Initial paint uses preview statistics; exact map size belongs to export."""
+    bridge = Bridge()
+    monkeypatch.setattr(
+        bridge._session,
+        "stats",
+        lambda: pytest.fail("initial MIDI load performed a full rawmap compile"),
+    )
+
+    payload = bridge.load_midi(TINY_MIDI)
+
+    assert payload["ok"] is True
+    assert payload["stats"]["notes"]
+    assert payload["preview"]["events"]
 
 
 def test_a_song_that_is_not_there_is_an_answer_that_names_it(tmp_path):
@@ -299,9 +332,9 @@ def test_constructing_with_a_settings_file_has_already_applied_it(tmp_path):
 
 
 def test_the_catalog_offers_only_families_that_can_play_a_pitch():
-    """`ins_string` is named like an instrument, sits in SUSTAINED beside the
-    violins, and holds twelve unpitched effect samples. Offering it would
-    compile the part to silence with no error anywhere."""
+    """`ins_string` is named like an instrument but holds twelve unpitched
+    effect samples. Offering it would compile the part to silence with no
+    error anywhere."""
     families = Bridge().catalog()["families"]
     names = [f["name"] for f in families]
     assert names == palette.pitched_families()
@@ -454,6 +487,31 @@ def test_root_pitch_profile_crosses_the_bridge_as_numeric_evidence(monkeypatch):
     }
 
 
+def test_explicit_analyze_refreshes_the_cached_pitch_profile(monkeypatch):
+    from snapmap_midi.audio import library
+
+    calls = []
+    profile = {
+        "classification": "pitched",
+        "pitchable": True,
+        "root_midi": 60.375,
+        "confidence": 0.82,
+        "source": "detected",
+    }
+
+    def pitch_profile(name, refresh=False):
+        calls.append((name, refresh))
+        return dict(profile)
+
+    monkeypatch.setattr(library, "pitch_profile", pitch_profile)
+
+    result = Bridge(midi=TINY_MIDI).sound_profile("Play_Custom_Tone", 0, True)
+
+    assert result["ok"] is True
+    assert result["pitch_plan"]["root_midi"] == 60.375
+    assert calls == [("Play_Custom_Tone", True)]
+
+
 def test_unpitched_sound_profile_offers_an_opt_in_neutral_reference(monkeypatch):
     from snapmap_midi.audio import library
 
@@ -560,7 +618,8 @@ def test_startup_repairs_a_legacy_octave_fitted_root(monkeypatch):
 
     payload = bridge.startup()
     entry = payload["settings"]["channels"]["1"]
-    assert payload["pitch_reconciled"] == [1]
+    # The settings key, not a channel number: it may name one part ("1:0").
+    assert payload["pitch_reconciled"] == ["1"]
     assert entry["pitch_follow"] is True
     assert entry["root_midi"] == 83.0
     assert entry["root_source"] == "detected"
@@ -598,7 +657,7 @@ def test_startup_repairs_an_old_automatic_root_with_current_evidence(monkeypatch
 
     payload = bridge.startup()
     entry = payload["settings"]["channels"]["0"]
-    assert payload["pitch_reconciled"] == [0]
+    assert payload["pitch_reconciled"] == ["0"]
     assert entry["pitch_follow"] is False
     assert entry["root_midi"] == 60.0
     assert entry["root_confidence"] == 0.0
@@ -639,7 +698,7 @@ def test_startup_keeps_explicit_follow_preference_with_a_neutral_fallback(monkey
     payload = bridge.startup()
     entry = payload["settings"]["channels"]["0"]
 
-    assert payload["pitch_reconciled"] == [0]
+    assert payload["pitch_reconciled"] == ["0"]
     assert entry["pitch_follow"] is True
     assert entry["pitch_follow_preference"] is True
     assert entry["root_midi"] == 60.0
@@ -857,6 +916,7 @@ def test_settings_apply_as_a_patch_and_answer_with_the_whole_document():
     assert payload["ok"] is True
     assert payload["settings"]["channels"]["0"] == {
         "family": "ins_marimba",
+        "percussion": "auto",
         "muted": True,
         "soloed": False,
     }
@@ -960,6 +1020,20 @@ def test_applying_answers_with_fresh_statistics():
     assert payload["stats"]["notes"] < before
 
 
+def test_an_interactive_patch_does_not_compile_a_map_before_replying(monkeypatch):
+    """Dense slider drags need a preview answer, not map serialisation per tick."""
+    bridge = Bridge(midi=TINY_MIDI)
+
+    def unexpected_compile():
+        raise AssertionError("interactive setting update compiled a rawmap")
+
+    monkeypatch.setattr(bridge._session, "stats", unexpected_compile)
+    payload = bridge.apply_settings({"channels": {"0": {"muted": True}}})
+    assert payload["ok"] is True
+    assert payload["stats"]["notes"]
+    assert payload["preview"]["display_events"]
+
+
 def test_applying_answers_with_the_analysis_and_the_rulers_as_well():
     """A drums change rewrites `is_drums` and the whole drum-key list, and
     neither is in the settings document. Without them in this answer the window
@@ -970,7 +1044,7 @@ def test_applying_answers_with_the_analysis_and_the_rulers_as_well():
     assert payload["ok"] is True
     assert _channel(payload, 9)["is_drums"] is False
     assert _channel(payload, 9)["drum_keys"] == {}
-    assert payload["rulers"]["9"] is not None
+    assert payload["rulers"]["0:9"] is not None
 
 
 # ---- compiling ----
@@ -1039,6 +1113,32 @@ def test_export_writes_the_settings_sidecar_beside_the_song(tmp_path):
     assert settings_module.load(sidecar)["channels"]["0"]["family"] == "ins_marimba"
 
 
+def test_every_successful_settings_edit_autosaves_the_complete_sidecar(tmp_path):
+    bridge = _bridge(tmp_path)
+    sound = palette.sounds_in_category("ins_piano")[0]
+    result = bridge.apply_settings(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "volume_db": -6,
+                    "voices": 2,
+                    "polyphony": 3,
+                    "sustain_ms": 700,
+                    "release_s": 0.35,
+                }
+            },
+            "tuning": {"max_speakers": 12, "master_volume_db": -3},
+            "notes": {"0:60:1": {"volume_db": -9}},
+        }
+    )
+
+    assert result["ok"] is True
+    sidecar = Path(result["sidecar"])
+    assert sidecar.exists()
+    assert settings_module.load(sidecar) == bridge.get_settings()["settings"]
+
+
 def test_reopening_a_song_restores_the_choices_it_was_exported_with(tmp_path):
     """The point of writing it. A second session on the same song opens on the
     afternoon's tuning rather than on the compiler's guesses."""
@@ -1088,9 +1188,10 @@ def test_loading_a_song_repairs_a_stale_automatic_root_from_its_sidecar(tmp_path
     )
 
     payload = Bridge().load_midi(song)
-    assert payload["pitch_reconciled"] == [0]
+    assert payload["pitch_reconciled"] == ["0"]
     assert payload["settings"]["channels"]["0"] == {
         "family": None,
+        "percussion": "auto",
         "muted": False,
         "soloed": False,
         "sound": "Play_Custom_Chime",
@@ -1117,7 +1218,7 @@ def test_the_sidecar_is_applied_after_the_load_and_not_before(tmp_path):
     bridge.apply_settings({"channels": {"0": {"family": "ins_marimba"}}})
     payload = bridge.load_midi(song)
     assert payload["settings"]["channels"] == {
-        "1": {"family": "ins_sine", "muted": False, "soloed": False}
+        "1": {"family": "ins_sine", "percussion": "auto", "muted": False, "soloed": False}
     }
     assert payload["settings"]["drum_keys"] == {"36": "play_clave1"}
 
@@ -1171,7 +1272,9 @@ def test_a_sidecar_that_cannot_be_written_does_not_fail_the_export(tmp_path):
     gone away -- none of them are a reason to tell someone their map failed
     when it is sitting on disk."""
     bridge = _bridge(tmp_path)
-    settings_module.sidecar_path(tmp_path / "song.mid").mkdir()
+    sidecar = settings_module.sidecar_path(tmp_path / "song.mid")
+    sidecar.unlink()
+    sidecar.mkdir()
 
     result = bridge.export()
     assert result["ok"] is True
@@ -1257,3 +1360,47 @@ def test_choosing_a_baseline_map_records_it(monkeypatch, tmp_path):
     payload = bridge.pick_baseline()
     assert payload["ok"] is True
     assert payload["settings"]["baseline"] == str(saved)
+
+
+def test_saving_a_drum_default_moves_what_the_open_song_falls_back_to(tmp_path):
+    """Re-reading the song is the whole point. `drum_keys` in the analysis is
+    what each row draws, and it is computed from the percussion table -- a save
+    the open song went on ignoring is indistinguishable from a failed one.
+    """
+    bridge = _bridge(tmp_path)
+    before = _channel(bridge.startup(), 9)["drum_keys"]["36"]
+
+    result = bridge.set_drum_defaults({"36": "play_sfx_ben_kick_02"})
+    assert result["ok"] is True
+    assert result["drum_defaults"] == {"36": "play_sfx_ben_kick_02"}
+    assert _channel(result, 9)["drum_keys"]["36"] == "play_sfx_ben_kick_02"
+    assert before != "play_sfx_ben_kick_02", "the shipped table has to differ to prove anything"
+
+    # And back. The shipped table is never written, so there is always something
+    # to put back.
+    cleared = bridge.set_drum_defaults({})
+    assert cleared["drum_defaults"] == {}
+    assert _channel(cleared, 9)["drum_keys"]["36"] == before
+
+
+def test_a_refused_drum_default_leaves_the_session_alone(tmp_path):
+    """Validation runs before anything is stored. A half-saved table would
+    outlive the session and there is no undo for it."""
+    bridge = _bridge(tmp_path)
+    bridge.startup()
+    result = bridge.set_drum_defaults({"36": "play_pianoc4"})
+    assert result["ok"] is False
+    assert "percussion sounds" in result["error"]
+    assert bridge.startup()["drum_defaults"] == {}
+
+
+def test_the_catalog_carries_the_table_with_no_user_edits_in_it(tmp_path):
+    """`drum_keys` in the analysis is already the overlay, so without the
+    shipped table beside it a saved default could never be cleared from the
+    window: there would be nothing to offer as the way back."""
+    bridge = _bridge(tmp_path)
+    catalog = bridge.startup()["catalog"]
+    assert catalog["drum_shipped"]["36"] == DRUM_MAP[36]
+
+    bridge.set_drum_defaults({"36": "play_sfx_ben_kick_02"})
+    assert bridge.startup()["catalog"]["drum_shipped"]["36"] == DRUM_MAP[36]

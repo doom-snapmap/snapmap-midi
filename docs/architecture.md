@@ -53,7 +53,7 @@ expressed notes  (+ immutable source pitch, + final clamped modifiers)
 scheduled notes  (+ voice and effective tail)
    |
    |  rawmap/template.py  author the blank stage the song is played in
-   |  sound/events.py     start -> fadePitch -> fadeSound -> stop/release
+   |  sound/events.py     pitch/gain -> start -> optional glide -> stop/release
    |  sound/timeline.py   write events onto the timeline; add the trigger switch
    v
    |  compile.py          orchestrate the above, return bytes + statistics
@@ -107,9 +107,10 @@ so prefix-based classification would silently route an entire channel to nothing
 
 The installed full-game catalog is deliberately separate. It supplies thousands of exact
 manual choices, but those events generally have no instrument family or chromatic coverage.
-Automatic mapping therefore remains on the curated index. Selecting an exact event repeats its
-event string for every MIDI note on the channel, then lazily asks `audio/pitch.py` whether its
-decoded media has a trustworthy musical root. Pitchable events follow MIDI from that measured
+Automatic mapping therefore remains on the curated index. An exact assignment repeats its event
+string for every MIDI note on the channel, but selecting it does not decode or analyze it. Explicit
+**Analyze sound** lazily asks `audio/pitch.py` whether its decoded media has a trustworthy musical
+root. Pitchable events can then follow MIDI from that measured
 octave. A spectral guard rejects a candidate above the strongest lower component instead of
 promoting a chime overtone to a fundamental. Tonal but root-ambiguous media, rejected speech,
 noise, impacts, ambience, and variable containers keep natural playback by default. If the user
@@ -122,12 +123,13 @@ not presented as acoustic evidence.
 Every parsed note carries a stable source id and its MIDI velocity. The MIDI parser keeps separate
 optional absolute values for Manual and Follow MIDI modes, selects only the active one, and passes it
 to the expression module. That module keeps source pitch immutable while deriving an optional
-automatic root-relative shift, applying the active user-facing SnapMap pitch override,
+automatic fractional root-relative shift, applying the active user-facing SnapMap pitch override,
+track transpose, and cents fine tune,
 initializing note volume from velocity, applying an optional absolute note-volume override and
 global volume, and producing final SnapMap modifiers without changing the `Note` dataclass's
 serialized field order.
 
-SnapMap pitch values are integral semitones clamped to -24 through 24. Velocity uses a squared
+SnapMap pitch values are floating-point semitones clamped to -24 through 24. Velocity uses a squared
 amplitude response, `40 * log10(velocity / 127)`, to initialize note volume. A per-note
 override replaces that level; global dB is added afterward, and the output is clamped to -60
 through 20. In Follow MIDI mode, no active override means use the derived root-relative value; in
@@ -141,10 +143,10 @@ therefore uses three paths:
 
 - **Neutral decaying notes** have zero pitch and volume modifiers. They stay fully polyphonic
   on the shared Timeline entity and need neither a dedicated voice nor a note-off.
-- **Expressive decaying notes** need independent pitch or gain. They receive a speaker voice
+- **Expressive decaying notes** need independent pitch or gain. They receive a generic Timeline emitter
   reserved through installed-event duration, or a conservative fallback when duration metadata
   is unavailable. They decay naturally and are not explicitly stopped.
-- **Sustained notes** receive a speaker voice plus an explicit stop or release at note end.
+- **Sustained notes** receive a Timeline emitter plus an explicit stop or release at note end.
 
 A shared emitter cannot safely receive per-note pitch or gain because its modifier would also
 affect a neighboring note. A sustained note with no note-off can ring its entire sample and
@@ -152,9 +154,31 @@ smear into the next phrase. Those two constraints define the split.
 
 ### `music/voices.py` — preparation, allocation, and thinning
 
-`prepare_voice_layers` is shared by compiler and preview. It applies duration caps, separates
-neutral and expressive one-shots, reserves expressive tails, and builds per-channel layers.
-Allocation is per channel, not global, so one instrument cannot steal another channel's voice.
+`prepare_voice_layers` is shared by compiler and preview. It applies the per-track Sustain Limit
+or the song default, separates neutral and expressive one-shots, reserves expressive tails, and
+builds per-track layers.
+Per-track Polyphony runs first. Global Polyphony then admits at most its song-wide count across
+all retained notes, before the shared/isolated split, so a large native chord on the shared
+Timeline cannot evade it. Track Voices is applied before isolated notes enter one global emitter
+pool. The emitters are generic `idTarget_Timeline` entities rather than
+`idSnapMapGameEntity_Speaker`: the latter intercepts sound starts but did not accept the tested
+Timeline pitch path. Track Voices 1 preserves a local monophonic lane, and the optional per-track
+glide duration follows that lane even when the global allocator reuses a different physical
+emitter. This keeps the map's dedicated-emitter count inside Global Voices while retaining
+per-track control over density and voice use.
+Voice stealing and sustain limiting remain separate: stealing shortens an older note only when a
+new attack needs its occupied lane, while a Sustain Limit intentionally caps written held-note
+duration whether or not the voice pool is under pressure.
+Global Polyphony is admission control rather than stealing: notes already held keep their length,
+and only capacity available at a new onset is filled. It uses written MIDI ends, not decaying
+sample tails, so a one-note-at-a-time melody cannot be emptied by a long recording tail.
+
+The compiler authors the compact, single-master form and currently retains it for every export.
+`ENABLE_TIMELINE_SHARDING` is deliberately false pending contributor approval and in-game fanout
+acceptance. The dormant path can activate voice Timelines as independent schedule shards and split
+larger schedules only between timestamps, but production does not call it. `timeline_bytes` and
+`timeline_unsharded_bytes` therefore both describe the master while the feature is disabled, and a
+master over `TIMELINE_SERIALIZE_BUDGET` produces an editor-access warning.
 
 MIDI composition duration is independent of those voice tails. `_timing_manifest` retains the
 exact source End-of-Track tick/time and derives a workstation boundary at the end of the current
@@ -171,8 +195,10 @@ needs it.
 ### `sound/events.py` — event construction
 
 Builds the engine's event calls: start a sound, set pitch with `fadePitch`, set gain with
-`fadeSound`, and stop or release a sustained sound. Nothing here knows about MIDI; it takes
-resolved values and times and emits the raw event-call structure.
+`fadeSound`, and stop or release a sustained sound. Immediate pitch and gain modifiers serialize
+before their same-time sound start; a glide starts from the prior track-local pitch and schedules
+its target one millisecond after the attack for the requested duration. Nothing here knows about
+MIDI; it takes resolved values and times and emits the raw event-call structure.
 
 ### `sound/timeline.py` — the authoring API
 
@@ -221,13 +247,14 @@ Settings version 2 added optional `pitch_follow`, `root_midi`, `root_confidence`
 Version 6 requires `root_midi` to identify the sound's actual natural note. Legacy relative and
 octave-fitted references are disabled during migration because they could transpose absolute pitch.
 A version-7 `pitch_follow_preference` separates the user's channel choice from the acoustic profile
-of whichever exact sound is currently assigned. Changing the sound replaces that acoustic profile but
-preserves the preference, mute/solo state, and every source-note override.
+of whichever exact sound is currently assigned. Current selection behavior resets that preference
+to off for a newly chosen exact sound, because analysis and tuning are opt-in; mute/solo state and
+every source-note override remain preserved.
 Version 8 adds the neutral C4 opt-in reference and absolute `pitch_semitones` note edits. Version 9
 defines that field as the preserved Manual value and adds an optional `follow_pitch_semitones`
 value for user adjustments made while automatic following is active.
 A note key is `channel:source-pitch:occurrence`, which stays stable across retimbre, mute,
-solo, and root changes. Each entry may hold both integral pitch values (-24 through 24) and
+solo, and root changes. Each entry may hold both decimal pitch values (-24 through 24) and
 `volume_db` (-60 through 20), both absolute engine values. Explicit zero is retained. Legacy
 sidecars may retain a relative `pitch_offset` until that note is edited.
 
@@ -239,8 +266,9 @@ octave fitting from exact-sound pitch references. Version 7 deep-merges sparse n
 serializes browser-side settings writes, so concurrent pitch, volume, and sound changes cannot
 replace one another. Version 8 makes the visible note Pitch value absolute while preserving legacy
 relative offsets. Version 9 makes pitch-mode toggles reversible by preserving Manual and Follow MIDI
-adjustments independently; a version-8 value becomes the Manual state. Derived automatic values and
-decoded audio never persist.
+adjustments independently; a version-8 value becomes the Manual state. Version 13 adds preserved
+detector evidence, per-track transpose/fine-tune fields, and fractional Timeline pitch export.
+Decoded audio never persists.
 
 Validation is load-bearing rather than defensive: this file is meant to be hand-edited, and
 every mistake a hand edit makes here is a quiet one. See
@@ -271,9 +299,9 @@ containers whose leaves disagree, and candidates contradicted by lower dominant 
 are rejected rather than assigned a guessed root.
 
 An ambiguous periodic result says the event is tonal but its fundamental cannot be trusted.
-Python leaves such an event at natural playback by default, and the normal UI exposes no raw
-calibration control. Follow MIDI note remains an explicit opt-in using the non-acoustic neutral C4
-reference. Advanced settings/library callers may still supply an actual natural note. A trusted
+Python leaves such an event at natural playback by default. Channel settings can explicitly rerun
+analysis and supply a manual natural note while preserving the raw detection for comparison.
+Follow MIDI note remains an explicit opt-in using the non-acoustic neutral C4 reference. A trusted
 root keeps the measured octave. Notes outside SnapMap's -24 through 24 range expose ordinary
 clamp diagnostics instead of silently transposing the channel to reduce overflow.
 
@@ -342,10 +370,10 @@ Note expression inspector for a note, while empty surface input keeps the existi
 Selection uses an outline and does not become a playback animation.
 
 Channel-row selection opens a separate Channel settings inspector while retaining the existing
-display-only focus filter. That inspector exposes only the useful exact-sound `pitch_follow`
-outcome; detector roots, confidence, and manual calibration stay out of the normal UI. Note
-expression consumes the resolved basis as read-only context. Its slider reads the active
-`pitch_modifier` and writes `pitch_semitones` in Manual mode or `follow_pitch_semitones` in Follow
+display-only focus filter. For exact sounds, that inspector exposes `pitch_follow`, analyzer
+refresh and evidence, a manual root, track transpose, cents fine tune, and effective pitch. Note
+expression consumes the resolved basis as read-only context. Its integer slider reads the active
+whole-semitone value and writes `pitch_semitones` in Manual mode or `follow_pitch_semitones` in Follow
 MIDI mode. Neither write removes the other field. It also writes the sparse per-note volume override.
 The two inspectors are mutually exclusive, so control scope is visible in the surface hierarchy.
 

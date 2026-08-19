@@ -26,11 +26,10 @@ the analysis with it: the drums switch decides which channel is a kit, and
 opening a song changes which drum keys exist at all, so a window left to notice
 either for itself is a window showing the last song's keys.
 
-The settings sidecar is written here rather than in `Session`, because it is
-part of what the Export BUTTON means and not part of what a compile is. The
-command line writes maps and never a settings file; the window's export writes
-both, because a window is where the choices are made and closing it used to
-lose every one of them.
+The settings sidecar is written here rather than in `Session`, because it is a
+workstation persistence policy and not part of compilation. Every successful
+window edit autosaves the complete validated document, and Export writes it
+again beside the map. The command line writes maps and never a settings file.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from snapmap_midi import settings as settings_module
+from snapmap_midi.music import gm
 from snapmap_midi.music.gm import gm_drum_name
 from snapmap_midi.sound import palette
 from snapmap_midi.ui.session import Session
@@ -156,7 +156,7 @@ class Bridge:
 
     # ---- payloads ----
 
-    def _state(self) -> dict:
+    def _state(self, *, interactive: bool = False) -> dict:
         """The four things the window redraws itself from.
 
         `stats` is null rather than absent or zeroed when no song is open. "No
@@ -165,12 +165,30 @@ class Bridge:
         is looking at the first.
         """
         analysis = self._session.analysis_dict()
+        if analysis is None:
+            stats = None
+            preview = None
+        else:
+            # Initial load and interactive edits need the rendered notes and
+            # headline status, not a freshly serialized rawmap. Doing a full
+            # compile here made a dense song parse once for export statistics
+            # and again for preview before the first useful frame appeared.
+            # Exact Timeline byte size remains available through Dry Run and
+            # Export, which are the only operations that consume it.
+            preview, stats = self._session.preview_manifest(with_stats=True)
         return {
+            # Outside the settings document on purpose: it is an answer about
+            # this person's kit, not about this song. It rides in the redraw
+            # payload anyway, because the rows that show a key's sound have to
+            # say which of the two tables it came from.
+            "drum_defaults": {
+                str(key): sound for key, sound in gm.user_drum_table().items()
+            },
             "settings": self._session.settings(),
             "analysis": analysis,
             "rulers": self._session.rulers(),
-            "stats": None if analysis is None else self._session.stats(),
-            "preview": None if analysis is None else self._session.preview_manifest(),
+            "stats": stats,
+            "preview": preview,
         }
 
     def _catalog(self) -> dict:
@@ -237,6 +255,14 @@ class Bridge:
             "families": families,
             "drum_sounds": drum_sounds,
             "drum_names": drum_names,
+            # The table with no user edits in it. `drum_keys` in the analysis is
+            # already the overlay, so without this there is no way back: a saved
+            # default would have nothing to be cleared to.
+            "drum_shipped": {str(key): sound for key, sound in gm.DRUM_MAP.items()},
+            # Which installed-catalog folders the key picker may also draw
+            # from. Sent rather than spelled into the window, so the curation
+            # stays one list in one language.
+            "drum_folders": list(palette.DRUM_EVENT_FOLDERS),
             "sound_groups": sound_groups,
             "sound_count": sum(len(group["sounds"]) for group in sound_groups),
         }
@@ -431,7 +457,11 @@ class Bridge:
                 source == "detected" and entry.get("pitch_follow") is True
             ) or source == "detected_octave_pending"
             if entry.get("sound") and entry.get("root_midi") is not None and automatic:
-                candidates.append((int(raw_channel), entry))
+                # Kept as the opaque key `validate` normalised. It may name a
+                # part ("1:0") rather than a channel, and int() would raise on
+                # that -- during startup reconciliation, so the song would
+                # fail to open at all.
+                candidates.append((raw_channel, entry))
         if not candidates:
             return []
 
@@ -439,7 +469,7 @@ class Bridge:
 
         patch = {"channels": {}}
         changed = []
-        for channel, entry in candidates:
+        for key, entry in candidates:
             try:
                 profile = library.pitch_profile(entry["sound"])
                 if profile.get("classification") == "unavailable":
@@ -457,13 +487,18 @@ class Bridge:
             replacement = {
                 "pitch_follow": effective_follow,
                 "root_midi": plan["root_midi"],
+                "detected_root_midi": (
+                    plan["root_midi"]
+                    if plan["root_source"] in {"detected", "palette_name"}
+                    else None
+                ),
                 "root_confidence": plan["root_confidence"],
                 "root_source": plan["root_source"],
             }
             if all(entry.get(key) == value for key, value in replacement.items()):
                 continue
-            patch["channels"][str(channel)] = replacement
-            changed.append(channel)
+            patch["channels"][key] = replacement
+            changed.append(key)
 
         if changed:
             self._session.apply(patch)
@@ -562,7 +597,7 @@ class Bridge:
         except Exception as exc:
             return _fail(exc)
 
-    def sound_profile(self, sound, channel=None) -> dict:
+    def sound_profile(self, sound, channel=None, refresh=False) -> dict:
         """Return acoustic evidence and an absolute-pitch playback plan."""
         try:
             if not isinstance(sound, str) or not sound:
@@ -571,7 +606,13 @@ class Bridge:
                 raise ValueError("%r is not a valid DOOM Play_ event identifier" % sound)
             from snapmap_midi.audio import library
 
-            profile = library.pitch_profile(sound)
+            if not isinstance(refresh, bool):
+                raise ValueError("refresh has to be true or false")
+            profile = (
+                library.pitch_profile(sound, refresh=True)
+                if refresh
+                else library.pitch_profile(sound)
+            )
             result = {"ok": True, "profile": profile}
             if channel is not None:
                 # Validate that the supplied channel belongs to the open song,
@@ -621,7 +662,16 @@ class Bridge:
                 if name not in seen:
                     requested.append(name)
                     seen.add(name)
-            allowed = set(self._session.preview_manifest()["sounds"])
+            manifest = self._session.preview_manifest()
+            # `sounds` names only what is audible under THIS INSTANT's mute
+            # and solo state. The browser also retains buffers for every
+            # sound a muted or solo-excluded track could still use, so an
+            # unmute never has to redecode one from scratch -- checking
+            # against `sounds` alone refused exactly those, toasting a real,
+            # currently-unheard instrument as "not used by this song."
+            allowed = set(manifest["sounds"]) | {
+                event["sound"] for event in manifest["display_events"]
+            }
             outside = [name for name in requested if name not in allowed]
             if outside:
                 raise ValueError("%r is not used by the current converted song" % outside[0])
@@ -652,7 +702,9 @@ class Bridge:
     def apply_settings(self, patch) -> dict:
         """Merge one change in, and answer with everything it can have moved.
 
-        Settings and statistics are obvious. Analysis remains here because
+        Settings and statistics are obvious. The complete validated document
+        is autosaved after the new preview succeeds, so sounds, expression and
+        every track/global lever have one persistence rule. Analysis remains here because
         drums mode can change whether a channel is interpreted as percussion;
         preview is here because every channel choice and conversion lever can
         change the events the global transport schedules.
@@ -660,7 +712,29 @@ class Bridge:
         try:
             self._session.apply(patch)
             payload = {"ok": True}
+            payload.update(self._state(interactive=True))
+            payload.update(self._save_sidecar())
+            return payload
+        except Exception as exc:
+            return _fail(exc)
+
+    def set_drum_defaults(self, defaults) -> dict:
+        """Store the user's own percussion table and re-read the song.
+
+        Re-reading is the whole point. `drum_keys` in the analysis is what
+        each key falls back to, and it is computed from this table -- saving
+        a kick that the open song then goes on playing the old way would look
+        exactly like the save having failed.
+
+        Replaces wholesale, like the song's own `drum_keys`: an entry absent
+        from the map is the shipped answer, and no value can say that.
+        """
+        try:
+            gm.save_user_drum_table(defaults or {})
+            self._session.reanalyze()
+            payload = {"ok": True}
             payload.update(self._state())
+            payload.update(self._save_sidecar())
             return payload
         except Exception as exc:
             return _fail(exc)
@@ -686,7 +760,7 @@ class Bridge:
             return _fail(exc)
 
     def export(self) -> dict:
-        """Write the map, and the settings that produced it beside the song.
+        """Write the map, and rewrite the settings that produced it beside the song.
 
         Two files and one deliverable. `rawmap.json` is what the loader reads;
         the sidecar is what makes tomorrow's session start where this one
@@ -785,7 +859,9 @@ class Bridge:
             if chosen is None:
                 return _cancelled()
             self._session.apply({"out_dir": chosen})
-            return {"ok": True, "settings": self._session.settings()}
+            payload = {"ok": True, "settings": self._session.settings()}
+            payload.update(self._save_sidecar())
+            return payload
         except Exception as exc:
             return _fail(exc)
 
@@ -802,7 +878,9 @@ class Bridge:
             if chosen is None:
                 return _cancelled()
             self._session.apply({"baseline": chosen})
-            return {"ok": True, "settings": self._session.settings()}
+            payload = {"ok": True, "settings": self._session.settings()}
+            payload.update(self._save_sidecar())
+            return payload
         except Exception as exc:
             return _fail(exc)
 

@@ -64,6 +64,106 @@ CAP_B_UID = 57
 PLAYER_START_UID = 61
 TIMELINE_UID = 62
 
+#: The span along x that speakers are laid out in. Centred on 0, which is where
+#: an engine-saved map of this module puts both portal caps, and reaching no
+#: further out than the player start this template already places at x = -1397 --
+#: a point known to be inside the room, since maps built on this stage load and
+#: are playable.
+#:
+#: Speakers used to march out from x = 120 with no bound at all, 24 units at a
+#: time. A song needing 112 of them put the last one at x = 2,784, roughly twice
+#: as far out as any point measured inside this room, and they landed outside the
+#: module.
+INTERIOR_X_MIN = -1280
+INTERIOR_X_MAX = 1280
+
+#: How far apart consecutive speakers sit.
+SPEAKER_SPACING = 24
+
+# The master Timeline is the editor's otherwise-unlabelled ``Unknown`` node.
+# Keep it apart from the generated voice/shard Timelines so it remains easy to
+# identify and select. Generated Timelines march along y and use a nearby x
+# column only when the room cannot hold another one on that vertical run. The
+# production fanout probe creates 165 of these nodes, so wrapping still matters.
+TIMELINE_MASTER_POSITION = (-1276.0, 1226.0, 0.5)
+# Start the generated group 64 units above the master on y. Nodes within that
+# group use the finer 32-unit grid requested by the editor workflow. Y is the
+# primary axis; only a group too long to remain inside the room wraps into the
+# next nearby x column.
+TIMELINE_GRID_X_START = TIMELINE_MASTER_POSITION[0]
+TIMELINE_GRID_Y_START = TIMELINE_MASTER_POSITION[1] + 64.0
+TIMELINE_GRID_Y_MAX = 3826.0
+TIMELINE_GRID_SPACING = 32.0
+TIMELINE_INTERACTIVE_GAP = 64.0
+TIMELINE_INTERACTIVE_X_OFFSET = 25.0
+
+
+def speaker_position(index: int) -> tuple[float, float, float]:
+    """Where the nth speaker goes: along x, and never outside the room.
+
+    Wraps rather than running on. These are 2D speakers -- their output is not
+    positional -- so two of them sharing a spot costs nothing, while one of them
+    outside the module is an entity the editor has to place in a room that does
+    not contain it. A dense song needs more speakers than the room has spacings,
+    and the arrangement has to survive that rather than walking out of the wall.
+    """
+    span = INTERIOR_X_MAX - INTERIOR_X_MIN
+    return (float(INTERIOR_X_MIN + (index * SPEAKER_SPACING) % span), 0.0, 64.0)
+
+
+def timeline_position(index: int) -> tuple[float, float, float]:
+    """Lay Timeline/``Unknown`` nodes out without stacking them.
+
+    Index zero is the master/shared Timeline and deliberately keeps its own
+    anchor. Voices and storage shards run along y, wrapping to a nearby x
+    column only when necessary.
+    Positions are deterministic so two exports of the same arrangement remain
+    byte-stable, and the common 33- and 165-target cases stay inside the blank
+    room instead of walking through a wall.
+    """
+    if index < 0:
+        raise ValueError("timeline layout index must be non-negative")
+    if index == 0:
+        return TIMELINE_MASTER_POSITION
+
+    generated_index = index - 1
+    rows = int((TIMELINE_GRID_Y_MAX - TIMELINE_GRID_Y_START) // TIMELINE_GRID_SPACING) + 1
+    row = generated_index % rows
+    column = generated_index // rows
+    return (
+        TIMELINE_GRID_X_START + column * TIMELINE_GRID_SPACING,
+        TIMELINE_GRID_Y_START + row * TIMELINE_GRID_SPACING,
+        0.5,
+    )
+
+
+def timeline_position_after_interactive(
+    interactive_position: tuple[float, float, float], index: int
+) -> tuple[float, float, float]:
+    """Place one song Timeline after its interactive in editor order.
+
+    SnapMap renders Timeline entities as translucent ``Unknown`` boxes.  The
+    old absolute layout put the interactive in the middle of that line, making
+    the switch look as though it contained several Unknowns.  MIDI exports
+    instead put the master 64 units to the interactive's right (positive y in
+    this module), followed by every voice/shard at 32-unit intervals.  Very
+    large groups wrap into the next nearby x column without leaving the room.
+    """
+
+    if index < 0:
+        raise ValueError("timeline layout index must be non-negative")
+    interactive_x, interactive_y, interactive_z = interactive_position
+    first_y = interactive_y + TIMELINE_INTERACTIVE_GAP
+    rows = max(1, int((TIMELINE_GRID_Y_MAX - first_y) // TIMELINE_GRID_SPACING) + 1)
+    row = index % rows
+    column = index // rows
+    return (
+        interactive_x + TIMELINE_INTERACTIVE_X_OFFSET + column * TIMELINE_GRID_SPACING,
+        first_y + row * TIMELINE_GRID_SPACING,
+        interactive_z,
+    )
+
+
 #: How far the reference tables are padded. They are prefix-sum indexed by
 #: unique id and the engine walks the whole array, so they must cover the id
 #: space rather than only the ids in use. This is the width an engine-saved
@@ -100,7 +200,16 @@ _VARIABLE_KINDS = (
 
 
 def _rotation(mat0: dict, mat1: dict) -> dict:
-    """A rotation in the two-row form saved maps use for placed entities."""
+    """A rotation in the two-row form saved maps use for placed entities.
+
+    Both components of each row are written, INCLUDING the zero. That is what
+    an engine-saved map of this module does, and it is the opposite of the
+    rule the same file uses for positions, where a zero component is omitted:
+    a cap at `{"y": 3840}` carries no x or z, while its rotation row carries
+    `{"x": 0, "y": 1}`. Two rules in one format. Following the position rule
+    here produced a half-written basis, and there is nothing to be gained by
+    guessing whether the reader defaults the missing field or leaves it.
+    """
     return {"mat": {"mat[0]": mat0, "mat[1]": mat1}}
 
 
@@ -120,6 +229,9 @@ def _cap_entity(unique_id: int, cap_number: str, y: float, mat0: dict, mat1: dic
                         "capDecl": "doors/industrial_cap_" + cap_number,
                         "doorDecl": CAP_DOOR_DECL,
                     },
+                    # The engine sets this on both caps. Key order is the
+                    # engine's own, and the format preserves insertion order.
+                    "setRenderModelAsStatic": True,
                     "spawnOrientation": _rotation(mat0, mat1),
                     "spawnPosition": {"y": y},
                 }
@@ -169,7 +281,12 @@ def timeline_entity_id(module_stem: str, unique_id: int, instance: int = 0) -> s
     return "%d_%s/%s_%d" % (instance, module_stem, TIMELINE_INHERIT, unique_id)
 
 
-def timeline_entity(unique_id: int, module_stem: str, instance: int = 0) -> dict:
+def timeline_entity(
+    unique_id: int,
+    module_stem: str,
+    instance: int = 0,
+    layout_index: int = 0,
+) -> dict:
     """A timeline entity with one empty event group, ready to be filled.
 
     The group is created here rather than by the caller because a timeline
@@ -194,7 +311,9 @@ def timeline_entity(unique_id: int, module_stem: str, instance: int = 0) -> dict
                             "num": 1,
                         }
                     },
-                    "spawnPosition": {"x": -1276.0, "y": 1226.0, "z": 0.5},
+                    "spawnPosition": dict(
+                        zip(("x", "y", "z"), timeline_position(layout_index))
+                    ),
                 }
             },
             "targetType": "idDeclEntityDef",
@@ -251,8 +370,12 @@ def blank_map(module: str = DEFAULT_MODULE, with_timeline: bool = True) -> dict:
     module_stem = module.rsplit("/", 1)[-1].rsplit(".", 1)[0]
 
     entities = [
-        _cap_entity(CAP_A_UID, "05", 3840.0, {"y": 1}, {"x": -1}),
-        _cap_entity(CAP_B_UID, "10", -1280.0, {"y": -1}, {"x": 1}),
+        # Which cap MODEL seals a portal is a cosmetic choice the editor offers,
+        # not a property of the module: an engine-saved map of this room happened
+        # to carry cap_08 and cap_05, and these two load in it just as well. What
+        # is NOT cosmetic is the basis below.
+        _cap_entity(CAP_A_UID, "05", 3840, {"x": 0, "y": 1}, {"x": -1, "y": 0}),
+        _cap_entity(CAP_B_UID, "10", -1280, {"x": 0, "y": -1}, {"x": 1, "y": 0}),
         _player_start(PLAYER_START_UID),
     ]
     ref_uids = [CAP_A_UID, CAP_B_UID, PLAYER_START_UID]

@@ -38,11 +38,15 @@ from snapmap_midi.compile import (
     installed_event_is_looping,
 )
 from snapmap_midi.music import analysis
-from snapmap_midi.music.midi import parse_notes
+from snapmap_midi.music.midi import for_part, parse_notes
 from snapmap_midi.music.voices import (
     allocate_voices,
+    apply_glides,
+    apply_voice_cap,
     prepare_voice_layers,
+    thin_global_polyphony,
     thin_polyphony,
+    thin_simultaneous,
 )
 from snapmap_midi.sound import palette
 
@@ -54,8 +58,17 @@ from snapmap_midi.sound import palette
 #: with it.
 _AXIS = (0, 127)
 
+#: How much of a bar past the last bar line is read as padding rather than as
+#: music. Editors routinely write End-of-Track a handful of ticks past the final
+#: bar, and a bare ceiling turns one stray tick into a whole empty measure on the
+#: ruler -- 2,000 ms of dead timeline bought with 1/1920th of a bar. A 32nd note
+#: is the smallest division the roll draws, so content shorter than that is not
+#: content. A genuinely incomplete final measure is far larger than this and
+#: still earns its bar.
+_GRID_PADDING_BARS = Fraction(1, 32)
 
-def _timing_manifest(mid_path) -> dict:
+
+def _timing_manifest(mid_path, mid=None, speed: float = 1.0) -> dict:
     """Return the source MIDI clock as absolute tick/time change points.
 
     The piano roll is read-only, but its ruler still has to speak in bars and
@@ -66,10 +79,19 @@ def _timing_manifest(mid_path) -> dict:
     MIDI defines 120 BPM and 4/4 when a file omits the corresponding metadata.
     Markers at the same tick replace one another so a normal tick-zero tempo or
     signature does not leave a redundant default entry in the payload.
+
+    `mid` accepts an already-parsed file, the same reuse `parse_notes` offers,
+    since this and the note parse used to each read the file from disk
+    independently on every interactive settings change.
+
+    `speed` is the song's `playback_speed` tuning lever, applied the same way
+    `parse_notes` applies it: it divides elapsed time uniformly, after tempo,
+    so the ruler and every note position keep agreeing with each other.
     """
     import mido
 
-    mid = mido.MidiFile(str(mid_path), clip=True)
+    if mid is None:
+        mid = mido.MidiFile(str(mid_path), clip=True)
     ticks_per_beat = int(mid.ticks_per_beat)
     tick = 0
     elapsed_s = 0.0
@@ -85,7 +107,7 @@ def _timing_manifest(mid_path) -> dict:
 
     for message in mido.merge_tracks(mid.tracks):
         delta = int(message.time)
-        elapsed_s += mido.tick2second(delta, ticks_per_beat, tempo)
+        elapsed_s += mido.tick2second(delta, ticks_per_beat, tempo) / speed
         tick += delta
         time_ms = round(elapsed_s * 1000, 6)
         if message.type == "set_tempo":
@@ -109,9 +131,15 @@ def _timing_manifest(mid_path) -> dict:
         int(signature["denominator"]),
     )
     ticks_since_signature = max(0, source_duration_ticks - int(signature["tick"]))
-    completed_bars = math.ceil(Fraction(ticks_since_signature, 1) / ticks_per_bar)
-    grid_duration_ticks = int(
-        math.ceil(Fraction(int(signature["tick"]), 1) + completed_bars * ticks_per_bar)
+    raw_bars = Fraction(ticks_since_signature, 1) / ticks_per_bar
+    completed_bars = math.ceil(raw_bars - _GRID_PADDING_BARS) if raw_bars else 0
+    # Absorbing the padding must never absorb the music with it: any content at
+    # all occupies at least the measure it started in.
+    if ticks_since_signature and completed_bars < 1:
+        completed_bars = 1
+    grid_duration_ticks = max(
+        source_duration_ticks,
+        int(math.ceil(Fraction(int(signature["tick"]), 1) + completed_bars * ticks_per_bar)),
     )
 
     def time_at_tick(target_tick):
@@ -122,7 +150,7 @@ def _timing_manifest(mid_path) -> dict:
             marker = candidate
         return round(
             float(marker["time_ms"])
-            + (target_tick - int(marker["tick"])) * int(marker["tempo"]) / 1000 / ticks_per_beat,
+            + (target_tick - int(marker["tick"])) * int(marker["tempo"]) / 1000 / ticks_per_beat / speed,
             6,
         )
 
@@ -139,7 +167,35 @@ def _timing_manifest(mid_path) -> dict:
         "grid_duration_ms": time_at_tick(grid_duration_ticks),
         "tempo_changes": tempos,
         "time_signatures": signatures,
+        # The file's own initial tempo, unaffected by `speed` -- that lever is a
+        # playback multiplier layered on top, not a rewrite of what the file
+        # says. MIDI's own default (120 BPM, `tempo = 500_000`) stands in when
+        # the file never sets one, exactly as it does for playback itself.
+        "base_bpm": round(60_000_000.0 / tempos[0]["tempo"], 2),
     }
+
+
+def _percussion_modes(doc) -> tuple:
+    """Every part's declared percussion mode, in a form two documents compare by.
+
+    The analysis has to be re-read when one of these changes, for exactly the
+    reason the drums switch forces a re-read: the mode decides whether a part is
+    a kit, and a row still offering a family dropdown for a part the compiler
+    has started routing through `DRUM_MAP` is the window describing an
+    instrument nothing plays.
+    """
+    return tuple(
+        sorted(
+            (key, entry.get("percussion", "auto")) for key, entry in doc.get("channels", {}).items()
+        )
+    )
+
+
+def _kb(size: int) -> str:
+    """A byte count a musician can read. Rounded, because these are budgets."""
+    if size >= 1024 * 1024:
+        return "%.1f MB" % (size / (1024.0 * 1024.0))
+    return "%d KB" % (size // 1024)
 
 
 def _advice(destination: Path) -> str:
@@ -192,6 +248,10 @@ class Session:
         self._lock = RLock()
         self._note_index = palette.build_note_index()
         self._analysis = None
+        self._mid = None
+        self._mid_key = None
+        self._timing = None
+        self._timing_key = None
         if settings_path is None:
             self._doc = settings_module.defaults()
         else:
@@ -214,7 +274,56 @@ class Session:
         compile the window exports are always answering the same question about
         the same file.
         """
-        return analysis.analyze(self._doc["midi"], drums=self._doc["drums"])
+        return analysis.analyze(
+            self._doc["midi"],
+            drums=self._doc["drums"],
+            part_percussion=settings_module.to_compile_kwargs(self._doc)["part_percussion"],
+        )
+
+    def _current_mid(self):
+        """The open song's own `mido.MidiFile`, parsed at most once per edit.
+
+        A settings patch -- a mute click, a volume drag -- re-derives the whole
+        preview, and both `parse_notes` and the timing ruler used to read the
+        same bytes off disk again for every one of them: on a dense song, two
+        full re-parses per keystroke were most of what made the window feel a
+        beat behind. Nothing about the FILE changes between those patches, only
+        the document describing what to do with it, so the parse is cached
+        here and invalidated by the same fact that would invalidate it for a
+        human -- the file on disk is no longer the one last read.
+        """
+        path = self._doc["midi"]
+        if not path:
+            return None
+        stat = Path(path).stat()
+        key = (path, stat.st_mtime_ns, stat.st_size)
+        if self._mid is None or self._mid_key != key:
+            import mido
+
+            self._mid = mido.MidiFile(str(path), clip=True)
+            self._mid_key = key
+        return self._mid
+
+    def _current_timing(self) -> dict:
+        """The song's tempo/time-signature map, rebuilt when the file or speed is.
+
+        No setting on the document changes a note's tick or a tempo event's
+        time -- only whether and how it plays -- so this is exactly as cache-
+        safe as the parse it is built from, EXCEPT `playback_speed`: that lever
+        stretches or compresses every elapsed second the same way it stretches
+        a note's start and end, so the ruler has to agree with it too. The
+        cache key carries the speed alongside the file identity for that one
+        exception; rebuilding on every mute click was the single largest cost
+        left in an interactive settings change once the parse itself was
+        cached, and speed changes far less often than mutes do.
+        """
+        mid = self._current_mid()
+        speed = self._doc["tuning"]["playback_speed"]
+        key = (self._mid_key, speed)
+        if self._timing is None or self._timing_key != key:
+            self._timing = _timing_manifest(self._doc["midi"], mid=mid, speed=speed)
+            self._timing_key = key
+        return self._timing
 
     def load(self, midi_path) -> dict:
         """Open a song, forgetting the last one's instruments and keeping the setup.
@@ -241,7 +350,11 @@ class Session:
             candidate["drum_keys"] = {}
             candidate = settings_module.validate(candidate)
 
-            fresh = analysis.analyze(midi_path, drums=candidate["drums"])
+            fresh = analysis.analyze(
+                midi_path,
+                drums=candidate["drums"],
+                part_percussion=settings_module.to_compile_kwargs(candidate)["part_percussion"],
+            )
             self._doc = candidate
             self._analysis = fresh
             return analysis.as_dict(fresh)
@@ -257,25 +370,39 @@ class Session:
             return None if self._analysis is None else analysis.as_dict(self._analysis)
 
     def channel_info(self, channel):
-        """The analyzed channel record after validating its public number."""
+        """The analyzed part, named either by its key or by a bare channel.
 
-        if isinstance(channel, bool):
-            raise ValueError("a MIDI channel from 0 to 15 is required")
-        try:
-            number = int(channel)
-            valid = float(channel) == number and 0 <= number <= 15
-        except (TypeError, ValueError):
-            valid = False
-        if not valid:
-            raise ValueError("a MIDI channel from 0 to 15 is required")
+        A part key -- "1:0" -- names exactly one part. A bare channel number is
+        still accepted because it is what every existing caller sends and what a
+        user means on the ordinary file where a channel holds one part; it
+        resolves to the first part on that channel, which on such a file is the
+        only one.
+        """
+
         if self._analysis is None:
             raise ValueError("no song is open -- open a MIDI file first")
-        info = next(
-            (item for item in self._analysis.channels if item.channel == number),
-            None,
-        )
-        if info is None or info.lowest is None or info.highest is None:
-            raise ValueError("channel %d has no notes to anchor" % number)
+
+        info = None
+        if isinstance(channel, str) and ":" in channel:
+            info = next((c for c in self._analysis.channels if c.key == channel), None)
+            if info is None:
+                raise ValueError("no part %s in this song" % channel)
+        else:
+            if isinstance(channel, bool):
+                raise ValueError("a MIDI channel from 0 to 15 is required")
+            try:
+                number = int(channel)
+                valid = float(channel) == number and 0 <= number <= 15
+            except (TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise ValueError("a MIDI channel from 0 to 15 is required")
+            info = next((c for c in self._analysis.channels if c.channel == number), None)
+            if info is None:
+                raise ValueError("channel %d has no notes to anchor" % number)
+
+        if info.lowest is None or info.highest is None:
+            raise ValueError("%s has no notes to anchor" % info.key)
         return info
 
     # ---- the document ----
@@ -309,9 +436,14 @@ class Session:
         """
         with self._lock:
             merged = settings_module.merge(self._doc, patch)
-            reread = (merged["drums"], merged["midi"]) != (
+            reread = (
+                merged["drums"],
+                merged["midi"],
+                _percussion_modes(merged),
+            ) != (
                 self._doc["drums"],
                 self._doc["midi"],
+                _percussion_modes(self._doc),
             )
             previous = self._doc
             self._doc = merged
@@ -322,6 +454,19 @@ class Session:
                     self._doc = previous
                     raise
             return copy.deepcopy(merged)
+
+    def reanalyze(self) -> None:
+        """Read the song again with nothing in the document changed.
+
+        The percussion table is a preference, not a setting of this song, so
+        it lives outside the document and saving one moves what `drum_keys`
+        falls back to without any patch for `apply` to notice. Without this
+        the window goes on drawing -- and the preview goes on playing -- the
+        old kick until the song is reopened.
+        """
+        with self._lock:
+            if self._analysis is not None:
+                self._analysis = self._analyze()
 
     # ---- compiling ----
 
@@ -352,6 +497,7 @@ class Session:
                 self._doc["midi"],
                 self._baseline_bytes(),
                 note_index=self._note_index,
+                mid=self._current_mid(),
                 **settings_module.to_compile_kwargs(self._doc),
             )
 
@@ -366,19 +512,25 @@ class Session:
             _, stats = self.compile()
             return self._report(stats)
 
-    def preview_manifest(self) -> dict:
+    def preview_manifest(self, *, with_stats: bool = False):
         """The converted notes the workstation transport will actually play.
 
         This repeats the note preparation portion of ``compile_to_rawmap`` but
         does not author a map. It applies the same channel choices, duration
         caps, polyphony thinning and per-layer voice stealing so the preview is
         a reading of the current conversion rather than a General MIDI render.
+
+        ``with_stats`` is the fast status path used by an interactive settings
+        update. Authoring and serialising a complete map just to repaint a mute
+        button makes a dense MIDI file feel frozen; the exact, export-ready
+        report remains available through :meth:`stats` and ``dry_run``.
         """
         with self._lock:
             if not self._doc["midi"]:
                 raise ValueError("no song is open -- open a MIDI file first")
             levers = settings_module.to_compile_kwargs(self._doc)
-            notes, _ = parse_notes(
+            mid = self._current_mid()
+            notes, source_stats = parse_notes(
                 self._doc["midi"],
                 drums=levers["drums"],
                 decaying_families=levers["decaying_families"],
@@ -390,14 +542,40 @@ class Session:
                 drum_key_overrides=levers["drum_key_overrides"],
                 event_is_looping=installed_event_is_looping,
                 channel_pitch_profiles=levers["channel_pitch_profiles"],
+                part_percussion=levers["part_percussion"],
                 note_overrides=levers["note_overrides"],
+                part_volume_db=levers["part_volume_db"],
                 master_volume_db=levers["master_volume_db"],
+                part_key_range=levers["part_key_range"],
+                part_transpose=levers["part_transpose"],
+                part_pitch_octave=levers["part_pitch_octave"],
+                playback_speed=levers["playback_speed"],
                 include_silent=True,
+                mid=mid,
             )
             audible_notes = [note for note in notes if note.audible]
-            decaying = [note for note in audible_notes if not note.sustained]
-            sustained = [note for note in audible_notes if note.sustained]
-            shared_decaying, _expressive_decaying, layers = prepare_voice_layers(
+            parts = {}
+            for note in audible_notes:
+                parts.setdefault((getattr(note, "track", 0), note.chan), []).append(note)
+            limited_notes = []
+            for part_key in sorted(parts):
+                part = parts[part_key]
+                poly = for_part(levers["part_polyphony"], *part_key, levers["max_poly"])
+                kept = thin_polyphony(part, poly) if poly else part
+                surviving = {id(note) for note in kept}
+                for note in part:
+                    if id(note) not in surviving:
+                        note.limited_by = "polyphony"
+                limited_notes.extend(kept)
+            globally_kept = thin_global_polyphony(limited_notes, levers["song_polyphony"])
+            globally_surviving = {id(note) for note in globally_kept}
+            for note in limited_notes:
+                if id(note) not in globally_surviving:
+                    note.limited_by = "global_polyphony"
+            limited_notes = globally_kept
+            decaying = [note for note in limited_notes if not note.sustained]
+            sustained = [note for note in limited_notes if note.sustained]
+            shared_decaying, expressive_decaying, layers = prepare_voice_layers(
                 decaying,
                 sustained,
                 cap_sustain_ms=levers["cap_sustain_ms"],
@@ -405,54 +583,145 @@ class Session:
                 bass_cap_ms=levers["bass_cap_ms"],
                 family_caps=levers["family_caps"],
                 duration_lookup=installed_event_duration_ms,
+                part_glide_ms=levers["part_glide_ms"],
+                part_attack_ms=levers["part_attack_ms"],
+                part_voices=levers["part_voices"],
+                part_sustain_ms=levers["part_sustain_ms"],
+                note_off=levers["note_off"],
+                part_note_off=levers["part_note_off"],
+                note_off_floor_ms=levers["note_off_floor_ms"],
+                part_note_off_floor_ms=levers["part_note_off_floor_ms"],
             )
             prepared = list(shared_decaying)
-            for channel in sorted(layers):
-                layer = layers[channel]
-                if levers["max_poly"]:
-                    layer = thin_polyphony(layer, levers["max_poly"])
-                allocate_voices(layer, levers["max_speakers"])
-
-                # Starting a note on a stolen speaker cuts off the note that
-                # owned it. Reflect that effective end for both sustains and
-                # expressive one-shots so browser preview matches the map.
-                by_voice: dict = {}
+            isolated = []
+            for part_key in sorted(layers):
+                layer = layers[part_key]
+                voices = for_part(levers["part_voices"], *part_key, levers["max_speakers"])
+                kept = apply_voice_cap(layer, voices)
+                surviving = {id(note) for note in kept}
                 for note in layer:
-                    by_voice.setdefault(note.voice, []).append(note)
-                for voice_notes in by_voice.values():
-                    voice_notes.sort(key=lambda note: note.start)
-                    for index, note in enumerate(voice_notes[:-1]):
-                        following = voice_notes[index + 1]
-                        effective_end = (
-                            note.end if note.sustained else getattr(note, "voice_end", note.end)
+                    if id(note) not in surviving:
+                        note.limited_by = "voices"
+                for note in kept:
+                    cap_end = getattr(note, "voice_cap_end", None)
+                    if cap_end is not None:
+                        note.preview_cut = True
+                        note.preview_end = cap_end
+                        if cap_end < note.end:
+                            note.shortened_by = "voices"
+                layer = kept
+                isolated.extend(layer)
+
+            # One pool for the whole song: the global voice count decides how
+            # many dedicated pitch-controlled emitters the map and preview may
+            # use in total.
+            kept = thin_simultaneous(isolated, levers["max_speakers"])
+            surviving = {id(note) for note in kept}
+            for note in isolated:
+                if id(note) not in surviving:
+                    note.limited_by = "voices"
+            voice_count = allocate_voices(kept, levers["max_speakers"])
+            apply_glides(kept, levers["part_glide_ms"])
+
+            # Starting a note on a stolen emitter cuts off the note that owned
+            # it. Reflect that effective end for both sustains and expressive
+            # one-shots so browser preview matches the map.
+            by_voice: dict = {}
+            for note in kept:
+                by_voice.setdefault(note.voice, []).append(note)
+            for voice_notes in by_voice.values():
+                voice_notes.sort(key=lambda note: note.start)
+                for index, note in enumerate(voice_notes[:-1]):
+                    following = voice_notes[index + 1]
+                    effective_end = (
+                        note.end
+                        if note.sustained
+                        else getattr(note, "voice_end", note.end)
+                    )
+                    effective_end = min(
+                        effective_end,
+                        getattr(note, "voice_cap_end", effective_end),
+                    )
+                    if following.start <= effective_end:
+                        note.preview_cut = True
+                    if following.start < effective_end:
+                        note.shortened_by = "voices"
+                        note.preview_end = min(
+                            getattr(note, "preview_end", effective_end),
+                            following.start,
                         )
-                        if following.start <= effective_end:
-                            note.preview_cut = True
-                        if following.start < effective_end:
-                            note.preview_end = following.start
-                prepared.extend(layer)
+            prepared.extend(kept)
 
             prepared_ids = {id(note) for note in prepared}
 
             def _event_payload(note, *, converted):
+                midi_end = max(note.start, getattr(note, "midi_end", note.end))
+                sustain_limit_visual_end = getattr(note, "sustain_limit_visual_end", None)
+                shortened_by = getattr(
+                    note,
+                    "shortened_by",
+                    "sustain" if sustain_limit_visual_end is not None else None,
+                )
+                if shortened_by == "voices":
+                    # A voice-stolen cut is a real-time fact about this
+                    # compile, not an editorial setting -- draw it exactly
+                    # where playback actually stops.
+                    visual_end = max(note.start, getattr(note, "preview_end", note.end))
+                elif sustain_limit_visual_end is not None:
+                    # A Sustain Limit's cut is drawn at the SAME point
+                    # regardless of the Track transpose currently being
+                    # auditioned (see the untransposed comparison this reads
+                    # in voices.py). Playback below keeps using the real,
+                    # pitch-aware stop so audio is unaffected.
+                    visual_end = min(midi_end, sustain_limit_visual_end)
+                else:
+                    visual_end = midi_end
                 return {
                     "id": note.id,
                     "start": note.start,
+                    # `end` is when the note stops being heard, after caps and
+                    # emitter stealing -- the preview transport schedules from
+                    # it. `midi_end` is what the file wrote, which is what the
+                    # roll draws, so moving a tuning lever changes the shading
+                    # on a block rather than the block. `visual_end` is where
+                    # that shading itself is drawn -- pitch-stable for a
+                    # Sustain Limit, real-time for a voice steal.
                     "end": max(
                         note.start,
                         getattr(note, "preview_end", note.end),
                     ),
+                    "midi_end": midi_end,
+                    "visual_end": visual_end,
                     "sound": note.shader,
                     "channel": note.chan,
+                    # The part this note belongs to, matching `ChannelInfo.key`.
+                    # Without it the roll sees only a channel, so three parts
+                    # written to channel 0 are one undifferentiated mass and
+                    # nothing can select, dim, or mute one of them.
+                    "part": "%d:%d" % (getattr(note, "track", 0), note.chan),
+                    "track": getattr(note, "track", 0),
                     "source_pitch": note.source_pitch,
                     "pitch": note.source_pitch,
                     "velocity": note.velocity,
                     "family": note.fam,
                     "sustained": note.sustained,
-                    "cut": bool(getattr(note, "preview_cut", False)),
+                    # A capped one-shot needs an explicit browser stop just
+                    # like a stolen voice. Looping notes already use `end` as
+                    # their release point in the preview scheduler.
+                    "cut": bool(getattr(note, "preview_cut", False))
+                    or bool(
+                        getattr(note, "sustain_limited", False)
+                        and not note.sustained
+                    ),
+                    # Which limit silenced this note, or None if none did. The
+                    # roll draws it dimmed either way; the panel needs to know
+                    # whose fault it was to report each lever separately.
+                    "limited_by": getattr(note, "limited_by", None),
+                    "shortened_by": shortened_by,
                     "audible": bool(note.audible),
                     "muted": bool(note.muted),
                     "solo_excluded": bool(note.solo_excluded),
+                    "out_of_key_range": bool(getattr(note, "out_of_key_range", False)),
                     "converted": bool(converted),
                     "pitch_follow": note.pitch_follow,
                     "root_pitch": note.profile_root_pitch,
@@ -461,16 +730,49 @@ class Session:
                     "root_source": note.root_source,
                     "pitch_offset": note.pitch_offset,
                     "pitch_semitones": note.pitch_semitones,
+                    "track_transpose": note.track_transpose,
+                    "fine_tune_cents": note.fine_tune_cents,
                     "manual_pitch_semitones": note.manual_pitch_semitones,
                     "follow_pitch_semitones": note.follow_pitch_semitones,
                     "automatic_pitch": note.automatic_pitch,
                     "requested_pitch": note.requested_pitch,
                     "pitch_modifier": note.pitch_modifier,
+                    "glide_ms": int(getattr(note, "glide_ms", 0) or 0),
+                    "glide_from_pitch": getattr(note, "glide_from_pitch", None),
+                    "attack_ms": int(
+                        for_part(
+                            levers["part_attack_ms"],
+                            getattr(note, "track", 0),
+                            note.chan,
+                            0,
+                        )
+                        or 0
+                    ),
+                    "release_s": for_part(
+                        levers["part_release_s"],
+                        getattr(note, "track", 0),
+                        note.chan,
+                        levers["release_s"],
+                    ),
+                    "hard_stop": bool(
+                        for_part(
+                            levers["part_hard_stop"],
+                            getattr(note, "track", 0),
+                            note.chan,
+                            levers["hard_stop"],
+                        )
+                    ),
                     "pitch_limited": note.pitch_limited,
+                    # The octave the part was folded into, automatic or pinned.
+                    # Sent per note rather than recomputed in the browser so the
+                    # window can never disagree with the exporter about where a
+                    # track sits.
+                    "octave_shift": getattr(note, "octave_shift", 0),
                     "playback_rate": note.playback_rate,
                     "velocity_db": note.velocity_db,
                     "volume_trim_db": note.volume_trim_db,
                     "note_volume_db": note.note_volume_db,
+                    "track_volume_db": note.track_volume_db,
                     "master_volume_db": note.master_volume_db,
                     "requested_volume_db": note.requested_volume_db,
                     "volume_db": note.volume_db,
@@ -488,11 +790,15 @@ class Session:
                 _event_payload(note, converted=id(note) in prepared_ids)
                 for note in sorted(notes, key=_event_order)
             ]
-            timing = _timing_manifest(self._doc["midi"])
+            timing = self._current_timing()
             duration_ms = int(round(timing["grid_duration_ms"]))
+            # Both boundaries, so the surface never shrinks under a tuning lever:
+            # `midi_end` is what the roll draws, `end` is what playback reaches.
+            if display_events:
+                duration_ms = max(duration_ms, max(e["midi_end"] for e in display_events))
             if events:
                 duration_ms = max(duration_ms, max(event["end"] for event in events))
-            return {
+            manifest = {
                 "duration_ms": duration_ms,
                 "source_duration_ms": int(round(timing["source_duration_ms"])),
                 "events": events,
@@ -502,6 +808,31 @@ class Session:
                 "hard_stop": levers["hard_stop"],
                 "timing": timing,
             }
+            if not with_stats:
+                return manifest
+
+            # These are precisely the quantities the status strip and the
+            # immediate conversion warnings consume. In particular, their
+            # note and voice counts follow the same preparation path as the
+            # compiler; only map serialisation (and its byte-size warning) is
+            # deferred until the user explicitly dry-runs or exports.
+            preview_stats = dict(source_stats)
+            preview_stats.update(
+                {
+                    "notes": len(audible_notes),
+                    "decaying": len(decaying),
+                    "sustained": len(sustained),
+                    "voices": voice_count,
+                    "shared_one_shots": len(shared_decaying),
+                    "expressive_notes": len(sustained) + len(expressive_decaying),
+                    "expressive_one_shots": len(expressive_decaying),
+                    "expressive_voices": voice_count,
+                    "long_sustains": sum(note.duration > 1000 for note in sustained),
+                    "peak_voices": voice_count,
+                    "max_speakers": levers["max_speakers"],
+                }
+            )
+            return manifest, self._report(preview_stats)
 
     def _report(self, stats) -> dict:
         report = dict(stats)
@@ -541,10 +872,10 @@ class Session:
         all about a file nobody had touched yet, which is every file at the
         moment it opens.
         """
-        entry = self._doc["channels"].get(str(channel.channel))
+        entry = self._entry_for(channel)
         if entry and entry.get("sound") is not None:
             return None
-        chosen = entry.get("family") if entry else None
+        chosen = entry.get("family")
         return chosen or channel.auto_family
 
     def rulers(self) -> dict:
@@ -570,107 +901,49 @@ class Session:
                     if sample_span is None
                     else (max(_AXIS[0], sample_span[0] - 24), min(_AXIS[1], sample_span[1] + 24))
                 )
-                rulers[str(channel.channel)] = analysis.ruler_segments(channel, span, _AXIS)
+                rulers[channel.key] = analysis.ruler_segments(channel, span, _AXIS)
             return rulers
 
     # ---- warnings ----
 
+    def _parts(self) -> list:
+        return list(self._analysis.channels) if self._analysis is not None else []
+
+    def _entry_for(self, info) -> dict:
+        """The settings entry governing one part: its own, else its channel's.
+
+        The same precedence the parser applies, restated here because the
+        warnings have to describe the arrangement the compile actually
+        produces. A bare channel entry is the wildcard covering every part on
+        that channel; a part key names one and beats it.
+        """
+        channels = self._doc["channels"]
+        entry = channels.get(info.key)
+        if entry is None:
+            entry = channels.get(str(info.channel))
+        return entry or {}
+
     def _muted(self) -> set:
-        return {int(c) for c, entry in self._doc["channels"].items() if entry["muted"]}
+        """The keys of parts a mute silences. Keys, not channel numbers: two
+        parts can share a channel and only one of them be muted."""
+        return {p.key for p in self._parts() if self._entry_for(p).get("muted")}
 
     def _soloed(self) -> set:
-        return {int(c) for c, entry in self._doc["channels"].items() if entry["soloed"]}
+        return {p.key for p in self._parts() if self._entry_for(p).get("soloed")}
 
     def _inaudible(self) -> set:
         muted = self._muted()
         soloed = self._soloed()
-        if not soloed or self._analysis is None:
+        if not soloed:
             return muted
-        channels = {channel.channel for channel in self._analysis.channels}
-        return muted | (channels - soloed)
+        return muted | ({p.key for p in self._parts()} - soloed)
 
     def _who(self, channel: int) -> str:
-        """A channel named the way every sentence here names it.
-
-        Both halves earn their place: the number is what the window's row is
-        labelled with, so it is how the reader finds the row, and the General
-        MIDI program name is what the composer asked for, so it is how they
-        recognise the part.
-        """
+        """A channel named the way expression warnings identify a track."""
         for info in self._analysis.channels if self._analysis is not None else ():
             if info.channel == channel:
                 return "Channel %d (%s)" % (channel, info.program_name)
         return "Channel %d" % channel
-
-    def _layer_voices(self) -> dict:
-        """How many voices each channel's sustained layer needs, by channel.
-
-        Rebuilt here because `compile_to_rawmap` reports the worst layer's count
-        and not which layer it was. Widening its return to carry that would
-        change a surface every other caller depends on, for one sentence in one
-        window that only ever needs it when something is already wrong.
-
-        It is a rebuild rather than an estimate: the same parse, the same caps,
-        the same thinning and the same allocation, through the same functions
-        the compile calls. Two things keep it honest. It runs only while the
-        warning is already firing, so the second read of the file is paid on the
-        arrangement that has a problem instead of on every dropdown. And the
-        answer is checked against the compile's own `peak_voices` before a word
-        of it is used, so a compiler that starts thinning differently makes this
-        say nothing rather than say something false.
-        """
-        levers = settings_module.to_compile_kwargs(self._doc)
-        notes, _ = parse_notes(
-            self._doc["midi"],
-            drums=levers["drums"],
-            decaying_families=levers["decaying_families"],
-            channel_families=levers["channel_families"],
-            channel_sounds=levers["channel_sounds"],
-            note_index=self._note_index,
-            channel_mutes=levers["channel_mutes"],
-            channel_solos=levers["channel_solos"],
-            drum_key_overrides=levers["drum_key_overrides"],
-            event_is_looping=installed_event_is_looping,
-            channel_pitch_profiles=levers["channel_pitch_profiles"],
-            note_overrides=levers["note_overrides"],
-            master_volume_db=levers["master_volume_db"],
-        )
-        decaying = [note for note in notes if not note.sustained]
-        sustained = [note for note in notes if note.sustained]
-        _, _, layers = prepare_voice_layers(
-            decaying,
-            sustained,
-            cap_sustain_ms=levers["cap_sustain_ms"],
-            bass_pitch=levers["bass_pitch"],
-            bass_cap_ms=levers["bass_cap_ms"],
-            family_caps=levers["family_caps"],
-            duration_lookup=installed_event_duration_ms,
-        )
-        counts = {}
-        for channel, layer in layers.items():
-            if levers["max_poly"]:
-                layer = thin_polyphony(layer, levers["max_poly"])
-            counts[channel] = allocate_voices(layer, levers["max_speakers"])
-        return counts
-
-    def _busiest_channel(self, stats):
-        """The channel that used every speaker it was allowed, or None if unsure.
-
-        The rebuilt counts are a hypothesis; `peak_voices` is the fact, because
-        it comes from the compile the sentence is actually about. When the two
-        disagree the name is dropped and the warning says "the busiest channel"
-        as it did before there was any way to know. A named channel that was
-        never thinned sends somebody off to rewrite a part that was fine, which
-        is a worse answer than the vague one.
-
-        Ties resolve to the lower channel number rather than to whichever layer
-        the dictionary happened to be built in.
-        """
-        counts = self._layer_voices()
-        if not counts:
-            return None
-        channel = max(counts, key=lambda number: (counts[number], -number))
-        return channel if counts[channel] == stats["peak_voices"] else None
 
     def _unmapped_drum_keys(self) -> list:
         """Percussion keys the file plays that nothing has a sound for.
@@ -684,7 +957,7 @@ class Session:
         keys = set()
         inaudible = self._inaudible()
         for channel in self._analysis.channels:
-            if channel.channel in inaudible:
+            if channel.key in inaudible:
                 continue
             keys.update(
                 key
@@ -698,6 +971,85 @@ class Session:
         names = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
         note = int(note)
         return "%s%d" % (names[note % 12], note // 12 - 1)
+
+    def _multi_source_warnings(self) -> list[str]:
+        """Name any track whose exact sound is several recordings in a trench coat.
+
+        One DOOM event name can be backed by several distinct recordings, and
+        the engine plays a DIFFERENT one per trigger. Nothing in a map selects
+        or compensates for that choice, and each recording carries its own
+        inherent pitch, so a calibrated root cannot hold: the same correct
+        semitone modifier lands at a different audible pitch on most notes.
+
+        This has to be said here because it is invisible everywhere else. The
+        window can only extract and audition the FIRST recording, so preview
+        sounds consistent and correct no matter how wrong the export will be --
+        which is exactly how it cost a full debugging session before the live
+        probe settled it. Proven live; see doom-re
+        `docs/truth/engine/snapmap-timeline-sound-modifiers.md`.
+        """
+        try:
+            from snapmap_midi.audio import library
+        except Exception:
+            return []
+        warnings = []
+        for info in self._parts():
+            entry = self._entry_for(info)
+            sound = entry.get("sound")
+            if not sound:
+                continue
+            try:
+                count = library.event_source_count(sound)
+            except Exception:
+                continue
+            if count <= 1:
+                continue
+            # Only pitch-following tracks are actually harmed. A track playing
+            # the sound unpitched gets variation, which is usually the point of
+            # a multi-recording event and not worth a warning.
+            if entry.get("pitch_follow"):
+                warnings.append(
+                    "%s plays %s, which is %d different recordings under one name. The game "
+                    "picks a different one per note and no map setting can choose or correct "
+                    "for it, so this track will play at randomized pitches in game however "
+                    "right it sounds here -- only the first recording is auditioned. Use a "
+                    "single-recording sound for a pitched part."
+                    % (self._who(info.channel), sound, count)
+                )
+            else:
+                warnings.append(
+                    "%s plays %s, which is %d different recordings under one name. The game "
+                    "picks a different one per note, so it will vary in game while preview "
+                    "always plays the first. Harmless unpitched; do not calibrate a pitch "
+                    "against it." % (self._who(info.channel), sound, count)
+                )
+        return warnings
+
+    def _octave_fold_notices(self, stats) -> list[str]:
+        """Say which tracks were moved, and by how much.
+
+        A fold rescues the melody but moves the part, so it cannot be silent.
+        The alternative was the bug it replaces: every note past the engine's
+        limit clamping to the same modifier, a whole line flattening onto one
+        pitch with nothing anywhere saying why.
+        """
+
+        notices = []
+        for detail in stats.get("octave_shift_channels") or []:
+            octaves = detail["octaves"]
+            notices.append(
+                "%s sits too far from its sound's natural note for SnapMap's -24 to +24 "
+                "semitone range, so it plays %d octave%s %s written. The tuning is exact -- "
+                "an octave is a whole 12 semitones, so calibration cents are unchanged. Set "
+                "the track's Playback octave to pick a different one."
+                % (
+                    self._who(detail["channel"]),
+                    abs(octaves),
+                    "" if abs(octaves) == 1 else "s",
+                    "above" if octaves > 0 else "below",
+                )
+            )
+        return notices
 
     def _pitch_limit_warnings(self, stats) -> list[str]:
         details = stats.get("pitch_limit_channels") or []
@@ -714,7 +1066,7 @@ class Session:
             requested = (
                 str(detail["requested_low"])
                 if detail["requested_low"] == detail["requested_high"]
-                else "%+d to %+d" % (detail["requested_low"], detail["requested_high"])
+                else "%+g to %+g" % (detail["requested_low"], detail["requested_high"])
             )
             warnings.append(
                 "%s: %d note%s (%s) request%s %s semitones, outside SnapMap's -24 to +24 "
@@ -736,9 +1088,9 @@ class Session:
         care and the lever that changes it.
 
         The thresholds are `docs/limits.md`'s, not invented here. Neutral
-        decaying notes hold no dedicated speaker, while expressive one-shots
+        decaying notes hold no dedicated emitter, while expressive one-shots
         reserve one for their measured or fallback tail and are included in the
-        same per-channel peak as sustains. Total event count still says nothing
+        same song-wide peak as sustains. Total event count still says nothing
         about simultaneous pressure: a long sequence can be cheap and one dense
         chord expensive. The quantities below describe duration and peak voice
         use instead.
@@ -752,9 +1104,9 @@ class Session:
         inaudible = self._inaudible()
         warnings = []
 
-        if channels and all(channel.channel in muted for channel in channels):
+        if channels and all(channel.key in muted for channel in channels):
             warnings.append("Nothing will play: all %d channels are muted." % len(channels))
-        elif channels and all(channel.channel in inaudible for channel in channels):
+        elif channels and all(channel.key in inaudible for channel in channels):
             warnings.append(
                 "Nothing will play: mute and solo settings exclude all %d channels." % len(channels)
             )
@@ -775,6 +1127,10 @@ class Session:
                     % ", ".join(str(key) for key in keys)
                 )
             warnings.append(text)
+
+        warnings.extend(self._multi_source_warnings())
+
+        warnings.extend(self._octave_fold_notices(stats))
 
         if stats.get("pitch_limited"):
             warnings.extend(self._pitch_limit_warnings(stats))
@@ -797,19 +1153,35 @@ class Session:
             )
 
         if stats["peak_voices"] >= stats["max_speakers"]:
-            # A layer that needs exactly the cap and a layer that was thinned
-            # look identical from here; the warning fires on both, because
-            # raising the lever costs nothing and settles which one it was.
-            # Which layer it was is rebuilt rather than reported -- see
-            # `_busiest_channel` -- and the sentence falls back to the number
-            # alone when that rebuild cannot be trusted.
-            busiest = self._busiest_channel(stats)
             warnings.append(
-                "%s used all %d speakers, so its densest passages were thinned. Raise max "
-                "speakers, or cap the polyphony."
-                % (
-                    "The busiest channel" if busiest is None else self._who(busiest),
-                    stats["max_speakers"],
-                )
+                "The song used all %d global voices. Its densest passages may cut ringing "
+                "notes short; raise Global Voices, or cap Track Voices or track Polyphony."
+                % stats["max_speakers"]
             )
+
+        # Last, because it is the only one here that says nothing about how the
+        # song SOUNDS. The map loads and the music plays exactly as written --
+        # what is lost is the ability to open the timeline in the editor, and
+        # the editor's own message for that is "could not open this timeline"
+        # with no size in it and no hint that size is the reason.
+        budget = stats.get("timeline_budget")
+        size = stats.get("timeline_bytes")
+        if budget and size and size > budget:
+            if stats.get("timeline_sharding_enabled"):
+                warnings.append(
+                    "The largest timeline shard is %s and will play, but SnapMap cannot open it "
+                    "for editing: the editor serializes one entity into a fixed buffer of about "
+                    "%s and gives up past it. Shorten the densest simultaneous passage, mute a "
+                    "track, or cap its polyphony to bring this indivisible batch under the limit."
+                    % (_kb(size), _kb(budget))
+                )
+            else:
+                warnings.append(
+                    "The single song timeline is %s and will play, but SnapMap cannot open it "
+                    "for editing: the editor serializes one entity into a fixed buffer of about "
+                    "%s and gives up past it. Automatic timeline sharding is currently disabled; "
+                    "shorten the arrangement or reduce exported events if editor access is "
+                    "required."
+                    % (_kb(size), _kb(budget))
+                )
         return warnings

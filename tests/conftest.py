@@ -55,7 +55,7 @@ _SAVEDMAP_KEYS = frozenset({"baseline_map", "groove_fixture"})
 
 
 @pytest.fixture(autouse=True)
-def hermetic_environment(request, monkeypatch):
+def hermetic_environment(request, monkeypatch, tmp_path_factory):
     """Hide the override table from every test that has not asked for it.
 
     `SNAPMAP_MIDI_PATHS` is ambient process state, and letting it through
@@ -70,11 +70,33 @@ def hermetic_environment(request, monkeypatch):
 
     The palette cache is cleared either way: it is keyed on the source path,
     and the source path is exactly what this fixture moves.
+
+    `LOCALAPPDATA` moves for the same reason. A contributor who saved their own
+    percussion table in the window would otherwise run a suite where key 36 is
+    whatever they picked, and every assertion about the SHIPPED table would be
+    describing their taste instead. A test that wants a user table writes one
+    into this directory itself.
+
+    The game install is hidden for the same reason once more, and this one was
+    the expensive omission. `locate.doom_install` reads Steam's own registry
+    key, which no environment variable moves, so a machine with DOOM installed
+    fed real soundbank durations into `compile_to_rawmap`'s voice reservations.
+    Different reservations pack notes onto different emitters and author
+    different bytes, so four byte gates failed on a developer machine and
+    passed in CI -- for no reason a diff could explain. `gamedata`-marked tests
+    see the install, because reading the real game is the entire point of them.
     """
     import json
 
     from snapmap_midi import paths
+    from snapmap_midi.audio import library, locate
     from snapmap_midi.sound import palette
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata")))
+
+    if request.node.get_closest_marker("gamedata") is None:
+        monkeypatch.setattr(locate, "doom_install", lambda: None)
+        library.reset_source()
 
     if request.node.get_closest_marker("savedmap") is None:
         monkeypatch.delenv(paths.ENV_VAR, raising=False)
@@ -84,6 +106,7 @@ def hermetic_environment(request, monkeypatch):
     palette.cache_clear()
     yield
     palette.cache_clear()
+    library.reset_source()
 
 
 def _blank_document() -> dict:

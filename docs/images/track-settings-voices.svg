@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 430" width="700" height="430" role="img" aria-labelledby="t d">
+<title id="t">Where the per-track voices control sits</title>
+<desc id="d">The snapmap-midi track list beside the Track settings panel, with the Voices control between Pitch mode and the track facts.</desc>
+<style>
+  .card{fill:#FFFFFF;stroke:#E2E0D9;stroke-width:1}
+  .pane{fill:#F7F7F4;stroke:none}
+  .h{font:500 14px system-ui,-apple-system,Segoe UI,sans-serif;fill:#2C2C2A}
+  .lbl{font:12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#2C2C2A}
+  .s{font:12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#5F5E5A}
+  .hint{font:10px system-ui,-apple-system,Segoe UI,sans-serif;fill:#888780}
+  .mono{font:11px ui-monospace,Consolas,monospace;fill:#5F5E5A}
+  .field{fill:#FFFFFF;stroke:#D3D1C7;stroke-width:1}
+  .sel{fill:#E6F1FB}
+</style>
+
+<rect class="pane" x="0" y="0" width="700" height="430" rx="12"/>
+
+<text class="hint" x="16" y="24">Tracks</text>
+<g>
+  <text class="mono" x="22" y="52">1</text><text class="s" x="44" y="52">Piano</text><text class="mono" x="128" y="52">CH1</text>
+  <rect class="sel" x="10" y="62" width="148" height="26" rx="6"/>
+  <text class="mono" x="22" y="80" fill="#185FA5">2</text><text class="lbl" x="44" y="80" fill="#185FA5">Violin</text><text class="mono" x="128" y="80" fill="#185FA5">CH2</text>
+  <text class="mono" x="22" y="108">3</text><text class="s" x="44" y="108">Drums</text><text class="mono" x="122" y="108">CH10</text>
+</g>
+
+<g transform="translate(170,10)">
+  <rect class="card" x="0" y="0" width="518" height="410" rx="12"/>
+  <text class="h" x="18" y="28">Track settings</text>
+  <text class="s" x="18" y="46">Track 2 - Violin - CH2</text>
+  <line x1="0" y1="60" x2="518" y2="60" stroke="#E2E0D9"/>
+
+  <text class="lbl" x="18" y="84">Track type</text><text class="hint" x="462" y="84">track</text>
+  <rect class="field" x="18" y="94" width="482" height="28" rx="6"/>
+  <text class="s" x="28" y="113">Melodic instrument</text>
+  <path d="M478 105 l6 7 l6 -7" fill="none" stroke="#888780" stroke-width="1.5"/>
+
+  <text class="lbl" x="18" y="150">Pitch mode</text><text class="hint" x="450" y="150">channel</text>
+  <rect class="field" x="18" y="160" width="13" height="13" rx="3" fill="#378ADD" stroke="#378ADD"/>
+  <path d="M21 166 l3 3 l5 -6" fill="none" stroke="#fff" stroke-width="1.6"/>
+  <text class="s" x="38" y="171">Follow MIDI note</text>
+
+  <rect x="10" y="192" width="3" height="148" fill="#378ADD"/>
+  <text class="lbl" x="24" y="212">Voices</text>
+  <rect x="70" y="201" width="30" height="14" rx="4" fill="#E6F1FB"/>
+  <text class="hint" x="76" y="212" fill="#185FA5">new</text>
+  <text class="hint" x="437" y="212">sounds at once</text>
+
+  <text class="s" x="24" y="234">How many sounds this track can play at the same time.</text>
+  <text class="s" x="24" y="250">Every note still plays - when more sounds overlap than this,</text>
+  <text class="s" x="24" y="266">the one closest to finishing stops early to make room.</text>
+
+  <rect class="field" x="24" y="278" width="13" height="13" rx="3" fill="#378ADD" stroke="#378ADD"/>
+  <path d="M27 284 l3 3 l5 -6" fill="none" stroke="#fff" stroke-width="1.6"/>
+  <text class="s" x="44" y="289">Set for this track</text>
+
+  <line x1="24" y1="312" x2="412" y2="312" stroke="#D3D1C7" stroke-width="4" stroke-linecap="round"/>
+  <line x1="24" y1="312" x2="30" y2="312" stroke="#378ADD" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="30" cy="312" r="8" fill="#378ADD"/>
+  <rect class="field" x="428" y="300" width="56" height="24" rx="6"/>
+  <text class="s" x="452" y="317">2</text>
+
+  <text class="s" x="24" y="338" fill="#444441">This track never plays more than 2 sounds at once here.</text>
+
+  <line x1="18" y1="356" x2="500" y2="356" stroke="#E2E0D9"/>
+  <text class="s" x="18" y="376">Sound</text><text class="s" x="432" y="376">ins_violin</text>
+  <text class="s" x="18" y="396">MIDI range</text><text class="mono" x="440" y="396">G3 - C6</text>
+</g>
+</svg>

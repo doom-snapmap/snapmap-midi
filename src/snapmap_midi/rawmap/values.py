@@ -50,10 +50,20 @@ def Mat3(rows: list[tuple[float, float, float]] | None = None) -> dict:
 def Mat2D(angle_radians: float = 0.0) -> dict:
     """A rotation about the vertical axis only — the common entity case.
 
-    Emits two rows rather than three, which is what saved maps carry.
+    Two rows, which is what saved maps carry, and both components of each row
+    are written even when one is zero. `Mat3` omits zero components the way
+    `Vec3` does, and that is right for a position -- an engine-saved cap is
+    `{"y": 3840}` with no x or z -- but wrong here: the same file writes that
+    cap's rotation row as `{"x": 0, "y": 1}`. The format has two rules and
+    this is the other one.
     """
     c, s = math.cos(angle_radians), math.sin(angle_radians)
-    return Mat3([(c, s, 0.0), (-s, c, 0.0)])
+    return {
+        "mat": {
+            "mat[0]": {"x": c, "y": s},
+            "mat[1]": {"x": -s, "y": c},
+        }
+    }
 
 
 def Pointer(target_type: str, value: str | None = None) -> dict:

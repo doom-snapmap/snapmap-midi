@@ -217,6 +217,53 @@ def test_preview_manifest_carries_source_tempo_and_meter_changes(tmp_path):
     }
 
 
+def test_preview_manifest_reports_the_source_tempo_as_base_bpm(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("set_tempo", tempo=600_000, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+    )
+
+    timing = Session(midi=midi).preview_manifest()["timing"]
+
+    assert timing["base_bpm"] == 100.0
+
+
+def test_preview_manifest_defaults_base_bpm_to_120_with_no_tempo_track(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+    )
+
+    timing = Session(midi=midi).preview_manifest()["timing"]
+
+    assert timing["base_bpm"] == 120.0
+
+
+def test_playback_speed_scales_note_timing_and_the_ruler_together(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"playback_speed": 2.0}})
+
+    manifest = session.preview_manifest()
+
+    assert manifest["timing"]["base_bpm"] == 120.0
+    assert manifest["timing"]["source_duration_ms"] == 250.0
+    assert manifest["events"][0]["end"] == 250
+
+
 def test_preview_manifest_preserves_source_end_and_completes_the_final_measure(tmp_path):
     midi = _midi(
         tmp_path,
@@ -256,6 +303,51 @@ def test_complete_final_measure_does_not_add_another_measure(tmp_path):
     assert manifest["timing"]["duration_ticks"] == 1440
     assert manifest["timing"]["grid_duration_ticks"] == 1440
     assert manifest["duration_ms"] == 1500
+
+
+def test_a_few_ticks_of_editor_padding_do_not_buy_a_whole_measure(tmp_path):
+    """One tick past the bar line is a DAW artefact, not a bar of music.
+
+    Editors routinely write End-of-Track a hair past the final bar. Ceiling that
+    and the ruler grows a whole empty measure -- two seconds of dead timeline
+    bought with 1/1920th of a bar. The source boundary still reports the tick.
+    """
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+            mido.MetaMessage("end_of_track", time=1),
+        ],
+        name="one-tick-of-padding.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 1921
+    assert manifest["timing"]["grid_duration_ticks"] == 1921
+    assert manifest["source_duration_ms"] == 2001
+
+
+def test_a_real_partial_measure_still_earns_its_bar(tmp_path):
+    """The tolerance must absorb padding without absorbing music."""
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+            mido.Message("note_on", channel=0, note=62, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=62, velocity=0, time=960),
+        ],
+        name="half-final-measure.mid",
+    )
+
+    manifest = Session(midi=midi).preview_manifest()
+
+    assert manifest["timing"]["duration_ticks"] == 2880
+    assert manifest["timing"]["grid_duration_ticks"] == 3840
 
 
 def test_short_final_note_gets_grid_room_without_changing_its_duration(tmp_path):
@@ -405,14 +497,485 @@ def test_rootless_exact_sound_can_follow_midi_from_the_neutral_reference(tmp_pat
     assert all(event["pitch_follow"] for event in events)
 
 
-def test_preview_manifest_marks_speaker_reuse_as_a_hard_cut(tmp_path):
+def test_a_note_that_cannot_get_a_speaker_is_dropped_not_zeroed(tmp_path):
+    """One speaker plays one note, the way one synth voice does.
+
+    This used to hand every note of the chord the same speaker and let each one
+    truncate the last -- to ZERO length, since they start together. Those notes
+    were silent but still counted as converted and drawn as shortened rather
+    than dropped, so a three-note chord on one speaker played once and drew
+    three blocks. "What I hear does not match what I see" was the whole
+    complaint.
+
+    Now the layer is thinned to what its speakers can actually sound: the top
+    note plays IN FULL and the rest are dropped, and nothing is zero-length.
+    """
     session = Session(midi=_dense(tmp_path))
     session.apply({"tuning": {"max_speakers": 1}})
-    events = [event for event in session.preview_manifest()["events"] if event["channel"] == 3]
-    cut = [event for event in events if event["cut"]]
-    assert len(events) == 3
-    assert len(cut) == 2
-    assert all(event["end"] == event["start"] for event in cut)
+    manifest = session.preview_manifest()
+
+    played = [e for e in manifest["events"] if e["channel"] == 3]
+    assert len(played) == 1, "one speaker has to mean one note"
+    assert played[0]["pitch"] == 67, "the top note is the one a listener keeps"
+    assert played[0]["end"] == played[0]["midi_end"], "the note that plays keeps its tail"
+
+    drawn = [e for e in manifest["display_events"] if e["channel"] == 3]
+    assert len(drawn) == 3, "the roll still draws every written note"
+    dropped = [e for e in drawn if not e["converted"]]
+    assert sorted(e["pitch"] for e in dropped) == [60, 64]
+    assert not any(e["end"] == e["start"] for e in drawn), "a silent note must read as dropped"
+
+
+def _two_parts_one_channel(tmp_path) -> str:
+    """A type 1 file writing a lead and a pad both to channel 0."""
+    mid = mido.MidiFile(type=1)
+    conductor = mido.MidiTrack()
+    conductor.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+    mid.tracks.append(conductor)
+    for name, program, pitches in (("lead", 40, (72, 74)), ("pad", 48, (48, 50))):
+        track = mido.MidiTrack()
+        track.append(mido.MetaMessage("track_name", name=name, time=0))
+        track.append(mido.Message("program_change", channel=0, program=program, time=0))
+        for pitch in pitches:
+            track.append(mido.Message("note_on", channel=0, note=pitch, velocity=100, time=0))
+            track.append(mido.Message("note_off", channel=0, note=pitch, velocity=0, time=240))
+        mid.tracks.append(track)
+    path = tmp_path / "two-parts.mid"
+    mid.save(str(path))
+    return str(path)
+
+
+def test_two_parts_on_one_channel_take_different_instruments(tmp_path):
+    """The headline of the track work, end to end through the settings document.
+
+    Before parts existed, `channels: {"0": ...}` was the only thing that could
+    be said about channel 0, so choosing a sound for the lead retimbred the pad
+    too. A `track:channel` key names one of them.
+    """
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"1:0": {"family": "ins_marimba"}}})
+
+    events = session.preview_manifest()["display_events"]
+    lead = {e["sound"] for e in events if e["source_pitch"] in (72, 74)}
+    pad = {e["sound"] for e in events if e["source_pitch"] in (48, 50)}
+
+    assert lead and pad
+    assert not (lead & pad)
+
+
+def test_a_bare_channel_key_still_reaches_every_part_on_it(tmp_path):
+    """The wildcard is what makes every settings file written before parts
+    existed keep meaning what it meant. Muting channel 0 mutes all of it."""
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"0": {"muted": True}}})
+
+    events = session.preview_manifest()["display_events"]
+
+    assert events
+    assert all(event["muted"] for event in events)
+
+
+def test_naming_one_part_beats_the_wildcard_for_that_part_only(tmp_path):
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"0": {"muted": True}, "2:0": {"muted": False}}})
+
+    events = session.preview_manifest()["display_events"]
+    lead = [e for e in events if e["source_pitch"] in (72, 74)]
+    pad = [e for e in events if e["source_pitch"] in (48, 50)]
+
+    assert all(event["muted"] for event in lead)
+    assert not any(event["muted"] for event in pad)
+
+
+def test_every_note_says_which_part_it_belongs_to(tmp_path):
+    """The roll cannot select, dim, or mute one part of a shared channel unless
+    each note names its part. With only a channel, three parts on channel 0 are
+    one undifferentiated mass."""
+    manifest = Session(midi=_two_parts_one_channel(tmp_path)).preview_manifest()
+    events = manifest["display_events"]
+
+    assert {e["part"] for e in events} == {"1:0", "2:0"}
+    assert {e["channel"] for e in events} == {0}
+    assert all(e["part"] == "%d:%d" % (e["track"], e["channel"]) for e in events)
+
+
+def test_each_part_gets_its_own_ruler_row(tmp_path):
+    """Rulers are keyed by part, so two parts on one channel are two rows
+    rather than one overwriting the other."""
+    rulers = Session(midi=_two_parts_one_channel(tmp_path)).rulers()
+
+    assert set(rulers) == {"1:0", "2:0"}
+
+
+def test_muting_one_part_leaves_the_other_audible(tmp_path):
+    """The warnings read the document the same way the parser does, so a part
+    key silences a part rather than its whole channel."""
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply({"channels": {"1:0": {"muted": True}}})
+
+    events = session.preview_manifest()["display_events"]
+    lead = [e for e in events if e["part"] == "1:0"]
+    pad = [e for e in events if e["part"] == "2:0"]
+
+    assert lead and pad
+    assert all(e["muted"] for e in lead)
+    assert not any(e["muted"] for e in pad)
+    assert "Nothing will play" not in " ".join(session.stats()["warnings"])
+
+
+def test_a_neutral_root_makes_a_rootless_sound_follow_the_midi_notes(tmp_path):
+    """A sound with no musical root can still be played musically.
+
+    The engine will pitch anything; it has no notion of a root. Following MIDI
+    only needs SOME note to treat as the sound's own, so an unmusical effect
+    gets the C4 convention and moves with the part instead of repeating one
+    fixed pitch.
+    """
+    sound = palette.sounds_in_category("ins_noise")[0]
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=240),
+            mido.Message("note_on", channel=0, note=72, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=72, velocity=0, time=240),
+        ],
+        name="rootless.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"channels": {"0": {"sound": sound}}})
+
+    fixed = session.preview_manifest()["events"]
+    assert [e["pitch_modifier"] for e in fixed] == [0, 0]
+
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "neutral",
+                }
+            }
+        }
+    )
+
+    following = session.preview_manifest()["events"]
+    assert [e["pitch_modifier"] for e in following] == [0, 12]
+    assert all(e["sound"] == sound for e in following)
+
+
+def test_a_followed_rootless_sound_reaches_the_exported_map(tmp_path):
+    """The switch has to survive into the map, not just the preview. Preview and
+    export share one parse, and this pins that they do."""
+    sound = palette.sounds_in_category("ins_noise")[0]
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=72, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=72, velocity=0, time=240),
+        ],
+        name="rootless-export.mid",
+    )
+    session = Session(midi=midi)
+    session.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "neutral",
+                }
+            }
+        }
+    )
+
+    raw, stats = session.compile()
+
+    assert stats["pitch_adjusted"] == 1
+    assert sound.encode() in raw
+
+
+def test_two_parts_on_one_channel_follow_midi_independently(tmp_path):
+    """Answers both halves at once: a neutral root is a per-PART setting, so
+    one part can follow while the other stays fixed, and it exports that way."""
+    sound = palette.sounds_in_category("ins_noise")[0]
+    session = Session(midi=_two_parts_one_channel(tmp_path))
+    session.apply(
+        {
+            "channels": {
+                "1:0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                    "root_confidence": 0,
+                    "root_source": "neutral",
+                },
+                "2:0": {"sound": sound},
+            }
+        }
+    )
+
+    events = session.preview_manifest()["events"]
+    lead = [e for e in events if e["part"] == "1:0"]
+    pad = [e for e in events if e["part"] == "2:0"]
+
+    assert [e["pitch_modifier"] for e in lead] == [12, 14]
+    assert [e["pitch_modifier"] for e in pad] == [0, 0]
+
+    raw, _ = session.compile()
+    assert sound.encode() in raw
+
+
+def _kit_on(tmp_path, channel) -> str:
+    """An ordinary kick/snare/hat pattern, written to whichever channel."""
+    messages = []
+    for key in (36, 38, 42, 36, 38, 42, 36, 46):
+        messages.extend(_hits(channel, key, count=1))
+    return _midi(tmp_path, messages, name="kit-ch%d.mid" % channel)
+
+
+def test_a_kit_written_off_channel_ten_can_be_declared_percussion(tmp_path):
+    """General MIDI puts drums on channel 10 by convention, and a convention is
+    all it is. A kit written to channel 5 was mapped as a melodic instrument --
+    kick, snare and hats came out as four piano notes, silently.
+
+    The heuristic is deliberately not extended to other channels: its keys span
+    B1 to F5, exactly where bass lines sit, so guessing would turn a sparse bass
+    part into drums with nothing to say so. The user says which it is instead.
+    """
+    session = Session(midi=_kit_on(tmp_path, 5))
+
+    melodic = {e["sound"] for e in session.preview_manifest()["events"]}
+    assert all("piano" in sound for sound in melodic)
+
+    session.apply({"channels": {"0:5": {"percussion": "kit"}}})
+    kit = {e["sound"] for e in session.preview_manifest()["events"]}
+
+    assert not any("piano" in sound for sound in kit)
+    assert "play_sfx_ben_snare_01" in kit
+    assert [c["is_drums"] for c in session.analysis_dict()["channels"]] == [True]
+
+
+def test_a_melody_on_channel_ten_can_be_declared_melodic(tmp_path):
+    """The other direction, and the one the global drums switch handles far too
+    bluntly: it silences percussion for the whole song rather than for the part
+    that is not percussion."""
+    session = Session(midi=_kit(tmp_path))
+    assert session.analysis_dict()["channels"][0]["is_drums"] is True
+
+    session.apply({"channels": {"0:9": {"percussion": "melodic"}}})
+
+    assert session.analysis_dict()["channels"][0]["is_drums"] is False
+    assert all("piano" in e["sound"] for e in session.preview_manifest()["events"])
+
+
+def test_declaring_percussion_reaches_the_exported_map(tmp_path):
+    session = Session(midi=_kit_on(tmp_path, 5))
+    session.apply({"channels": {"0:5": {"percussion": "kit"}}})
+
+    raw, _ = session.compile()
+
+    assert b"play_sfx_ben_snare_01" in raw
+    assert b"play_piano" not in raw
+
+
+def test_a_dropped_note_keeps_its_written_length_for_the_roll(tmp_path):
+    """A tuning lever decides what SOUNDS; it must not redraw the composition.
+
+    A note the speakers cannot sound is marked unconverted, and the roll dims
+    it. What it must not do is move: `midi_end` is what the file wrote and it
+    reads the same at every speaker setting, or lowering the slider would look
+    like the tool had edited the MIDI.
+    """
+    session = Session(midi=_dense(tmp_path))
+    session.apply({"tuning": {"max_speakers": 1}})
+    drawn = [e for e in session.preview_manifest()["display_events"] if e["channel"] == 3]
+
+    assert len(drawn) == 3
+    assert sum(1 for e in drawn if not e["converted"]) == 2
+    # Written length is untouched, dropped or not.
+    assert all(event["midi_end"] == 500 for event in drawn)
+    # And a dropped note is drawn at full length rather than collapsed.
+    assert all(event["end"] > event["start"] for event in drawn)
+
+
+def test_written_note_length_is_the_same_at_every_speaker_setting(tmp_path):
+    written = {}
+    for max_speakers in (1, 2, 32):
+        session = Session(midi=_dense(tmp_path))
+        session.apply({"tuning": {"max_speakers": max_speakers}})
+        manifest = session.preview_manifest()
+        written[max_speakers] = sorted(
+            (event["id"], event["start"], event["midi_end"]) for event in manifest["display_events"]
+        )
+
+    assert written[1] == written[32]
+    assert written[2] == written[32]
+
+
+def test_a_capped_sustain_shades_rather_than_shortens_the_written_note(tmp_path):
+    """`cap_sustain_ms` moves `end`; the file's note-off is not its to move."""
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+        ],
+        name="long-sustain.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"cap_sustain_ms": 300}})
+    event = session.preview_manifest()["display_events"][0]
+
+    assert event["midi_end"] == 2000
+    assert event["end"] <= 300
+    assert event["shortened_by"] == "sustain"
+
+
+def test_sustain_limit_caps_one_shot_resonance_in_the_preview(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="capped-piano-one-shot.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"cap_sustain_ms": 300}})
+    event = session.preview_manifest()["display_events"][0]
+
+    assert event["sustained"] is False
+    assert event["converted"] is True
+    assert event["cut"] is True
+    assert event["end"] == 300
+    assert event["shortened_by"] == "sustain"
+
+
+def test_sustain_limit_shading_holds_still_across_track_transpose(tmp_path):
+    """The roll's Sustain Limit indicator answers "did my limit setting reach
+    this note", not "is this exact pitch currently being cut" -- a one-shot's
+    real ring genuinely shortens as transpose goes up, so audio legitimately
+    stops needing the cut past some pitch, but the shading should not flicker
+    off because of it."""
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+        ],
+        name="transpose-sustain.mid",
+    )
+    session = Session(midi=midi)
+    untransposed = None
+    for transpose in (0, 7, 12):
+        session.apply(
+            {
+                "channels": {
+                    "0:0": {
+                        "sound": "play_pianoc4",
+                        "sustain_ms": 700,
+                        "pitch_transpose": transpose,
+                    }
+                }
+            }
+        )
+        event = session.preview_manifest()["display_events"][0]
+        assert event["shortened_by"] == "sustain"
+        assert event["visual_end"] == 700
+        if untransposed is None:
+            untransposed = event["end"]
+        elif transpose >= 7:
+            # High enough that the pitch-shifted sample now finishes under
+            # the Sustain Limit on its own -- audio genuinely stops cutting
+            # it, which the stable shading above does not need to reflect.
+            assert event["end"] != untransposed
+            assert event["cut"] is False
+
+
+def test_track_sustain_limit_overrides_the_song_default(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1920),
+        ],
+        name="track-sustain.mid",
+    )
+    session = Session(midi=midi)
+    session.apply(
+        {
+            "tuning": {"cap_sustain_ms": 300},
+            "channels": {"0:0": {"sustain_ms": 700}},
+        }
+    )
+    event = session.preview_manifest()["display_events"][0]
+
+    assert event["midi_end"] == 2000
+    assert event["end"] == 700
+    assert event["shortened_by"] == "sustain"
+
+
+def test_track_release_is_exposed_to_preview_without_changing_note_off(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="track-release.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"channels": {"0:0": {"release_s": 0.35}}})
+
+    event = session.preview_manifest()["events"][0]
+    assert event["midi_end"] == 500
+    assert event["end"] == 500
+    assert event["release_s"] == 0.35
+
+
+def test_track_attack_is_exposed_to_preview_and_routes_a_one_shot(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="track-attack.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"channels": {"0:0": {"attack_ms": 250}}})
+    event = session.preview_manifest()["events"][0]
+
+    assert event["attack_ms"] == 250
+    assert event["converted"] is True
+
+
+def test_track_hard_stop_overrides_the_preview_default(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=48, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+        name="track-hard-stop.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"hard_stop": True}, "channels": {"0:0": {"hard_stop": False}}})
+
+    assert session.preview_manifest()["events"][0]["hard_stop"] is False
 
 
 def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):
@@ -420,6 +983,98 @@ def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):
     session.apply({"tuning": {"max_poly": 1}})
     events = [event for event in session.preview_manifest()["events"] if event["channel"] == 3]
     assert [event["pitch"] for event in events] == [67]
+
+
+def test_global_polyphony_counts_shared_and_isolated_notes_together(tmp_path, monkeypatch):
+    from snapmap_midi.audio import library
+
+    # An exact sound with no installed record now defaults to a one-shot
+    # (most hand-picked sounds are), so this test's isolated sustained voice
+    # needs a confirmed-looping catalog answer instead of the old
+    # unconfirmed-defaults-to-sustained fallback.
+    monkeypatch.setattr(
+        library,
+        "event_is_looping",
+        lambda name: True if name == "play_test_fixture_has_no_installed_record" else None,
+    )
+    mid = mido.MidiFile(ticks_per_beat=480)
+
+    piano = mido.MidiTrack()
+    mid.tracks.append(piano)
+    piano.extend(
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_on", channel=0, note=64, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+        ]
+    )
+
+    strings = mido.MidiTrack()
+    mid.tracks.append(strings)
+    strings.extend(
+        [
+            mido.Message("program_change", channel=1, program=48, time=0),
+            mido.Message("note_on", channel=1, note=67, velocity=100, time=0),
+            mido.Message("note_off", channel=1, note=67, velocity=0, time=480),
+        ]
+    )
+    path = tmp_path / "shared-and-isolated-chord.mid"
+    mid.save(path)
+
+    session = Session(midi=path)
+    session.apply({"tuning": {"song_polyphony": 2}})
+    session.apply({"channels": {"1": {"sound": "play_test_fixture_has_no_installed_record"}}})
+    by_pitch = {
+        event["pitch"]: event for event in session.preview_manifest()["display_events"]
+    }
+
+    # E4 is a neutral automatic-piano one-shot on the shared path. G4 is a
+    # sustained string on an isolated emitter. The one song-wide budget sees
+    # both, keeps those upper notes, and refuses the shared C4 beneath them.
+    assert by_pitch[64]["converted"] is True
+    assert by_pitch[64]["sustained"] is False
+    assert by_pitch[67]["converted"] is True
+    assert by_pitch[67]["sustained"] is True
+    assert by_pitch[60]["converted"] is False
+    assert by_pitch[60]["limited_by"] == "global_polyphony"
+
+
+def test_polyphony_dims_dropped_neutral_notes_and_honors_track_override(tmp_path):
+    """Polyphony is for written MIDI note length, not just looping samples.
+
+    Piano one-shots used to bypass the filter because it ran only after the
+    sound-path split. The roll must retain those source notes as dimmed,
+    bottom-up drops so the user can see precisely what a limit changed.
+    """
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_on", channel=0, note=64, velocity=100, time=0),
+            mido.Message("note_on", channel=0, note=67, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+            mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+            mido.Message("note_off", channel=0, note=67, velocity=0, time=0),
+        ],
+        name="piano-chord.mid",
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"max_poly": 1}})
+    by_pitch = {event["pitch"]: event for event in session.preview_manifest()["display_events"]}
+    assert by_pitch[67]["converted"] is True
+    assert by_pitch[60]["converted"] is False
+    assert by_pitch[60]["limited_by"] == "polyphony"
+    assert by_pitch[64]["limited_by"] == "polyphony"
+
+    # A track setting takes precedence over the inherited song default.
+    session.apply({"channels": {"0": {"polyphony": 2}}})
+    by_pitch = {event["pitch"]: event for event in session.preview_manifest()["display_events"]}
+    assert by_pitch[67]["converted"] is True
+    assert by_pitch[64]["converted"] is True
+    assert by_pitch[60]["limited_by"] == "polyphony"
 
 
 # ---- opening a settings document ----
@@ -495,14 +1150,15 @@ def test_apply_is_a_patch_and_not_a_replacement():
     session.apply({"channels": {"0": {"muted": True}}})
     assert session.settings()["channels"]["0"] == {
         "family": "ins_marimba",
+        "percussion": "auto",
         "muted": True,
         "soloed": False,
     }
 
 
 def test_a_refused_patch_changes_nothing():
-    """`ins_string` is in SUSTAINED beside the violins and holds twelve
-    unpitched effect samples. A session that had already stored it would compile
+    """`ins_string` is named like an instrument but holds twelve unpitched
+    effect samples. A session that had already stored it would compile
     the part to silence on the next dry run with nothing left to blame."""
     session = Session(midi=TINY_MIDI)
     before = session.settings()
@@ -538,7 +1194,7 @@ def test_turning_the_drums_off_re_reads_the_file():
     assert kit["is_drums"] is False
     assert kit["drum_keys"] == {}
     assert kit["auto_family"] is not None
-    assert session.rulers()["9"] is not None
+    assert session.rulers()["0:9"] is not None
 
 
 def test_changes_from_several_threads_all_land():
@@ -561,7 +1217,7 @@ def test_changes_from_several_threads_all_land():
         thread.join()
 
     assert session.settings()["channels"] == {
-        str(index): {"family": family, "muted": False, "soloed": False}
+        str(index): {"family": family, "percussion": "auto", "muted": False, "soloed": False}
         for index, family in enumerate(families)
     }
 
@@ -622,9 +1278,11 @@ def test_asking_for_numbers_before_a_song_is_open_says_so():
 def test_the_drum_channel_gets_no_ruler_and_every_other_channel_does():
     session = Session(midi=TINY_MIDI)
     rulers = session.rulers()
-    assert set(rulers) == {"0", "1", "9"}
-    assert rulers["9"] is None
-    assert [cell["note"] for cell in rulers["0"]["cells"]] == [60]
+    # Keyed by part, not channel. `tiny.mid` is a single track carrying three
+    # channels, so every part is on track 0 and the keys read "0:<channel>".
+    assert set(rulers) == {"0:0", "0:1", "0:9"}
+    assert rulers["0:9"] is None
+    assert [cell["note"] for cell in rulers["0:0"]["cells"]] == [60]
 
 
 def test_every_row_is_drawn_against_the_same_axis():
@@ -634,15 +1292,15 @@ def test_every_row_is_drawn_against_the_same_axis():
     else on the strip for a reason that has nothing to do with it."""
     session = Session(midi=TINY_MIDI)
     rulers = session.rulers()
-    assert rulers["0"]["cell_width"] == rulers["1"]["cell_width"]
-    assert rulers["1"]["cells"][0]["left"] == pytest.approx(48 / 127 * 100)
+    assert rulers["0:0"]["cell_width"] == rulers["0:1"]["cell_width"]
+    assert rulers["0:1"]["cells"][0]["left"] == pytest.approx(48 / 127 * 100)
 
 
 def test_the_ruler_tracks_the_family_and_its_pitch_adjustment_reach():
     session = Session(midi=TINY_MIDI)
-    automatic = session.rulers()["0"]["instrument"]
+    automatic = session.rulers()["0:0"]["instrument"]
     session.apply({"channels": {"0": {"family": "ins_brass_bells"}}})
-    chosen = session.rulers()["0"]
+    chosen = session.rulers()["0:0"]
     assert chosen["instrument"]["left"] > automatic["left"]
     assert chosen["disjoint"] is False
     assert chosen["outside"] == 0
@@ -713,13 +1371,13 @@ def test_automatic_family_pitch_follows_the_low_note_without_a_range_warning():
 def test_family_ruler_shows_sample_range_plus_snapmap_pitch_reach():
     session = Session(midi=TINY_MIDI)
     sample_low, sample_high = palette.family_range("ins_violin", palette.build_note_index())
-    instrument = session.rulers()["1"]["instrument"]
+    instrument = session.rulers()["0:1"]["instrument"]
 
     effective_low = max(0, sample_low - 24)
     effective_high = min(127, sample_high + 24)
     assert instrument["left"] == pytest.approx(effective_low / 127 * 100)
     assert instrument["width"] == pytest.approx((effective_high - effective_low) / 127 * 100)
-    assert session.rulers()["1"]["outside"] == 0
+    assert session.rulers()["0:1"]["outside"] == 0
 
 
 def test_muting_everything_says_nothing_will_play():
@@ -746,6 +1404,28 @@ def test_solo_keeps_only_soloed_channels_audible_and_displays_the_rest():
     excluded = [event for event in manifest["display_events"] if event["channel"] != 0]
     assert excluded
     assert all(event["solo_excluded"] and not event["audible"] for event in excluded)
+
+
+def test_a_keyboard_range_silences_notes_outside_it_like_a_keyboard_split():
+    session = Session(midi=TINY_MIDI)
+    session.apply({"channels": {"0": {"key_range": [61, 127]}}})  # channel 0's note is 60
+    manifest = session.preview_manifest()
+    assert all(event["channel"] != 0 for event in manifest["events"])
+    excluded = [event for event in manifest["display_events"] if event["channel"] == 0]
+    assert excluded
+    assert all(
+        event["out_of_key_range"] and not event["audible"] and not event["muted"]
+        for event in excluded
+    )
+
+
+def test_a_keyboard_range_that_includes_the_note_leaves_it_playing():
+    session = Session(midi=TINY_MIDI)
+    session.apply({"channels": {"0": {"key_range": [40, 90]}}})  # channel 0's note is 60
+    manifest = session.preview_manifest()
+    kept = [event for event in manifest["events"] if event["channel"] == 0]
+    assert kept
+    assert all(not event["out_of_key_range"] for event in kept)
 
 
 def test_an_unmapped_drum_key_names_the_unified_track_choices_that_fix_it(tmp_path):
@@ -776,6 +1456,45 @@ def test_pitch_beyond_the_engine_range_is_clamped_and_warned(tmp_path):
     warning = _warnings(session)[0]
     assert warning.startswith("Channel 0 (Acoustic Grand Piano): 1 note (C-1) requests -36")
     assert "playback and export clamp at the nearest limit" in warning
+
+
+def test_an_ordinary_song_reports_its_timeline_size_and_stays_under_budget(tmp_path):
+    """Every compile measures what the editor will be asked to serialize.
+
+    The number is reported whether or not it is a problem, because it is the
+    only place a user can see how much of the budget a song has spent before
+    it runs out.
+    """
+    song = _midi(tmp_path, _hits(0, 0, program=0), name="small.mid")
+    stats = Session(midi=song).stats()
+    assert 0 < stats["timeline_bytes"] < stats["timeline_budget"]
+    assert not any("cannot open it for editing" in w for w in _warnings(Session(midi=song)))
+
+
+def test_a_timeline_past_the_editor_budget_warns_that_it_plays_but_cannot_be_opened(tmp_path):
+    """The failure this warning exists for is silent in every other way.
+
+    A timeline past the engine's serialize buffer LOADS and PLAYS correctly --
+    only opening it in the editor fails, and the editor's own message is
+    "could not open this timeline" with no size in it. Bisected in game: 1,081,338
+    bytes opens and 1,091,628 refuses. Nothing in the compiler could have found
+    this, so the warning is the only thing standing between a user and a song
+    they cannot edit and cannot diagnose.
+    """
+    song = _midi(tmp_path, _hits(0, 0, program=0), name="oversize.mid")
+    session = Session(midi=song)
+    real = session.stats
+
+    def oversized():
+        stats = dict(real())
+        stats["timeline_bytes"] = stats["timeline_budget"] + 1
+        stats["warnings"] = session._warnings(stats)
+        return stats
+
+    session.stats = oversized
+    warning = [w for w in session.stats()["warnings"] if "cannot open it for editing" in w][0]
+    assert "will play" in warning
+    assert "fixed buffer" in warning
 
 
 def test_muting_a_clamped_channel_removes_its_expression_warning(tmp_path):
@@ -823,6 +1542,25 @@ def test_master_volume_offsets_every_note_in_the_preview_manifest(tmp_path):
     assert event["volume_trim_db"] == 0
     assert event["requested_volume_db"] == -4
     assert event["volume_db"] == -4
+
+
+def test_track_volume_offsets_only_the_selected_tracks_notes(tmp_path):
+    song = _midi(
+        tmp_path,
+        _hits(0, 60, program=0, velocity=64) + _hits(1, 64, program=0, velocity=64),
+        name="track-volume.mid",
+    )
+    session = Session(midi=song)
+    selected = session.analysis_dict()["channels"][0]["key"]
+    session.apply({"channels": {selected: {"volume_db": -6}}})
+
+    events = session.preview_manifest()["events"]
+    by_part = {event["part"]: event for event in events}
+    assert by_part[selected]["track_volume_db"] == -6
+    assert by_part[selected]["requested_volume_db"] == -18
+    untouched = next(event for event in events if event["part"] != selected)
+    assert untouched["track_volume_db"] == 0
+    assert untouched["requested_volume_db"] == -12
 
 
 def test_per_note_offset_changes_playback_without_moving_the_midi_note(tmp_path):
@@ -972,13 +1710,21 @@ def test_global_clamping_never_rewrites_the_absolute_note_volume(tmp_path):
     assert restored["volume_limited"] is False
 
 
-def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp_path):
+def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp_path, monkeypatch):
     """`docs/limits.md` gives one practical target: notes held under about a
     second cut reliably. Capping the sustain is the lever the sentence names,
     so it has to be the lever that removes it."""
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library,
+        "event_is_looping",
+        lambda name: True if name == "play_test_fixture_has_no_installed_record" else None,
+    )
     held = round(2000 * _TICKS_PER_MS)
     song = _midi(tmp_path, _hits(0, 67, ticks=held, program=40), name="held.mid")
     session = Session(midi=song)
+    session.apply({"channels": {"0": {"sound": "play_test_fixture_has_no_installed_record"}}})
 
     warning = [w for w in _warnings(session) if "sustained notes hold" in w][0]
     assert warning.startswith("1 sustained notes hold longer than a second.")
@@ -988,10 +1734,60 @@ def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp
     assert not any("sustained notes hold" in w for w in _warnings(session))
 
 
+def test_a_multi_recording_event_warns_hardest_when_the_track_is_pitched(
+    tmp_path, monkeypatch
+):
+    """One DOOM event name can be several distinct recordings, and the engine
+    plays a different one per trigger (proven live -- doom-re
+    `docs/truth/engine/snapmap-timeline-sound-modifiers.md`). Nothing in a map
+    selects or compensates for that, and each recording has its own inherent
+    pitch, so a calibrated root cannot hold. It is invisible in the window,
+    which only ever auditions the first recording, so the warning is the only
+    place it can be said at all."""
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library,
+        "event_source_count",
+        lambda name: 3 if name == "play_three_recordings" else 1,
+    )
+    song = _midi(tmp_path, _hits(0, 67, program=40), name="multi.mid")
+
+    pitched = Session(midi=song)
+    pitched.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": "play_three_recordings",
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                }
+            }
+        }
+    )
+    warning = [w for w in _warnings(pitched) if "3 different recordings" in w][0]
+    assert "randomized pitches" in warning
+    assert "single-recording sound" in warning
+
+    # Unpitched, the variation is usually the point of such an event, so the
+    # note is informational rather than a correction to make.
+    plain = Session(midi=song)
+    plain.apply({"channels": {"0": {"sound": "play_three_recordings"}}})
+    relaxed = [w for w in _warnings(plain) if "3 different recordings" in w][0]
+    assert "randomized pitches" not in relaxed
+    assert "do not calibrate" in relaxed
+
+    # A single-recording sound is silent on this entirely.
+    single = Session(midi=song)
+    single.apply(
+        {"channels": {"0": {"sound": "play_one_recording", "pitch_follow": True, "root_midi": 60}}}
+    )
+    assert not any("different recordings" in w for w in _warnings(single))
+
+
 def test_running_out_of_speakers_is_reported(tmp_path):
-    """Voices are allocated per layer against `max_speakers`, and past it
-    `allocate_voices` steals the voice that frees earliest -- so the note it
-    stole from is truncated. Nothing in the map says so."""
+    """Global Voices steals the speaker that frees earliest, so the prior note
+    is truncated even when the two notes are on different tracks."""
     song = _midi(
         tmp_path,
         [
@@ -1005,45 +1801,39 @@ def test_running_out_of_speakers_is_reported(tmp_path):
     )
     session = Session(midi=song)
     session.apply({"tuning": {"max_speakers": 1}})
-    assert any("Channel 0 (Violin) used all 1 speakers" in w for w in _warnings(session))
+    assert any("The song used all 1 global voices" in w for w in _warnings(session))
 
     session.apply({"tuning": {"max_speakers": 32}})
     assert not any("speakers" in w for w in _warnings(session))
 
 
-def test_the_channel_that_ran_out_of_speakers_is_the_one_that_is_named(tmp_path):
-    """ "The busiest channel" was all the sentence could say, because
-    `compile_to_rawmap` reports the worst layer's voice count and not which
-    layer it was -- so the one thing the reader needs in order to act, which row
-    to go and thin, was the one thing missing. Channel 0 plays one note at a
-    time and channel 3 plays a triad; only one of them is against the ceiling.
-    """
-    session = Session(midi=_dense(tmp_path))
-    session.apply({"tuning": {"max_speakers": 2}})
-    assert [w for w in _warnings(session) if "speakers" in w] == [
-        "Channel 3 (Violin) used all 2 speakers, so its densest passages were thinned. "
-        "Raise max speakers, or cap the polyphony."
+def test_global_voice_warning_names_no_individual_channel(tmp_path):
+    """The shared pool can be consumed by several tracks, so naming one would
+    send the user to a random lane rather than the song-level control."""
+    session = Session(
+        midi=_midi(
+            tmp_path,
+            [
+                mido.Message("program_change", channel=0, program=40, time=0),
+                mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+                mido.Message("note_on", channel=0, note=64, velocity=100, time=0),
+                mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+                mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+            ],
+            name="global-warning.mid",
+        )
+    )
+    session.apply({"tuning": {"max_speakers": 1}})
+    assert [w for w in _warnings(session) if "global voices" in w] == [
+        "The song used all 1 global voices. Its densest passages may cut ringing notes short; "
+        "raise Global Voices, or cap Track Voices or track Polyphony."
     ]
 
 
-def test_capping_the_sustain_still_names_the_right_channel(tmp_path):
-    """The layers are rebuilt here to find out which one peaked, and a cap
-    shortens notes before they are allocated -- so a rebuild that ignored the
-    caps would count a concurrency the compile never had."""
+def test_raising_global_voices_clears_the_shared_pool_warning(tmp_path):
     session = Session(midi=_dense(tmp_path))
-    session.apply({"tuning": {"max_speakers": 2, "cap_sustain_ms": 50}})
-    assert any("Channel 3 (Violin) used all 2 speakers" in w for w in _warnings(session))
-
-
-def test_a_layer_count_that_disagrees_with_the_compile_names_no_channel(tmp_path, monkeypatch):
-    """The rebuilt layers are a hypothesis, and the compile's own `peak_voices`
-    is the fact. When the two disagree -- which is what a change to how the
-    compiler thins or caps would look like from here -- the sentence goes back
-    to naming no channel rather than naming the wrong one."""
-    session = Session(midi=_dense(tmp_path))
-    session.apply({"tuning": {"max_speakers": 2}})
-    monkeypatch.setattr(session_module, "allocate_voices", lambda notes, cap: 1)
-    assert any("The busiest channel used all 2 speakers" in w for w in _warnings(session))
+    session.apply({"tuning": {"max_speakers": 32}})
+    assert not any("global voices" in w for w in _warnings(session))
 
 
 def test_many_neutral_one_shots_do_not_create_a_voice_pressure_warning(tmp_path):

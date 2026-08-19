@@ -25,10 +25,12 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 :root {
   --keyWhite:#f4f5f7; --keyWhiteText:#23262b; --keyBlack:#34363b; --keyBlackText:#f4f5f7;
   --rollBlack:#f4f5f7; --rollGrid:#eceef1; --rollBeat:#d9dce1; --scrollDisabled:#c3c7ce;
+  --rollSustain:#b87913; --rollVoice:#c23a4a;
 }
 :root.dark {
   --keyWhite:#d9dade; --keyWhiteText:#202126; --keyBlack:#17181b; --keyBlackText:#f0f1f3;
   --rollBlack:#24262a; --rollGrid:#2a2c31; --rollBeat:#3b3e45; --scrollDisabled:#363940;
+  --rollSustain:#e0ad45; --rollVoice:#f06a71;
 }
 
 [hidden] { display: none !important; }
@@ -37,6 +39,10 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
 .hint { color: var(--muted); font-size: 10px; }
+/* Fixed width and no shrinking: it sits beside a name that may be any
+   length, and it is one of the two facts that must survive that. */
+.track-chip { flex: none; color: var(--muted); font: 600 9px Consolas, monospace;
+  padding: 1px 4px; border: 1px solid var(--border2); border-radius: 3px; }
 .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
 .ui-icon { width: 16px; height: 16px; display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 
@@ -76,13 +82,44 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 /* Global transport. */
 .transport { height: 43px; flex-shrink: 0; display: flex; align-items: center; gap: 9px; padding: 5px 9px; background: var(--chrome); border-bottom: 1px solid var(--border2); }
 .transport-play, .control-button { width: 31px; height: 29px; display: grid; place-items: center; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer; }
+.roll-view-toggle { height: 29px; padding: 0 9px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.roll-view-toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
 .transport-play .ui-icon { width: 15px; height: 15px; }
 #playGlyph { display: block; }
 .transport-play:hover:not(:disabled), .control-button:hover { border-color: var(--accent); color: var(--accent); }
 .transport-play:disabled { opacity: .45; }
-.transport-time { width: 48px; text-align: center; color: var(--muted); }
-#scrubber { flex: 1; min-width: 90px; accent-color: var(--accent); cursor: ew-resize; }
-#scrubber:disabled { opacity: .45; }
+.transport-time { width: 48px; text-align: center; }
+.transport-time.muted { color: var(--muted); }
+.transport-time-sep { color: var(--muted); }
+.transport-spacer { flex: 1; }
+.tempo-box {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  height: 29px;
+  padding: 0 9px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: ns-resize;
+  user-select: none;
+}
+.tempo-box:hover { border-color: var(--accent); }
+.tempo-box.dragging, .tempo-box.editing { border-color: var(--accent); }
+.tempo-box.disabled { opacity: .45; cursor: default; }
+.tempo-input {
+  width: 58px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.tempo-box.editing .tempo-input { pointer-events: auto; }
+.tempo-input:focus { outline: none; }
+.tempo-unit { font-size: 10px; color: var(--muted); letter-spacing: .04em; }
 .tool-button { min-height: 27px; padding: 3px 11px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
 .icon-tool-button { width: 29px; height: 29px; min-height: 29px; display: grid; place-items: center; padding: 0; }
 .icon-tool-button .ui-icon { width: 15px; height: 15px; }
@@ -95,16 +132,23 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .empty-state { flex: 1; display: grid; place-items: center; min-height: 0; padding: 24px; }
 .empty-card { width: min(460px, 90%); display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 26px; background: var(--panel); border: 1px solid var(--border); box-shadow: 0 5px 22px rgba(0,0,0,.08); text-align: center; }
 .empty-title { font-size: 14px; font-weight: 600; }
+.midi-loading-state:not([hidden]) { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px; background: var(--field); }
+.midi-loading-card { width: min(460px, 90%); display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 30px 26px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 5px 22px rgba(0,0,0,.08); text-align: center; }
+.midi-loading-spinner { width: 30px; height: 30px; box-sizing: border-box; border: 3px solid color-mix(in srgb, var(--accent) 20%, var(--border)); border-top-color: var(--accent); border-radius: 50%; animation: midi-loading-spin .8s linear infinite; }
+.midi-loading-title { font-size: 14px; font-weight: 600; }
+@keyframes midi-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .midi-loading-spinner { animation-duration: 1.8s; } }
 
 .workspace { --tracks-width: 314px; flex: 1; min-height: 0; display: flex; margin: 7px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
 .tracks-pane { width: var(--tracks-width); min-width: 0; max-width: none; flex: 0 0 var(--tracks-width); display: flex; flex-direction: column; background: var(--panel); }
 .pane-head { height: 31px; flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 0 9px; background: var(--panel2); border-bottom: 1px solid var(--border); font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
 .badge { background: var(--sel); color: var(--selText); border-radius: 10px; padding: 1px 7px; font-size: 10px; }
-.track-list { flex: 1; min-height: 0; overflow-y: auto; }
+.track-list { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 .track-row { display: grid; grid-template-columns: 27px minmax(0,1fr); grid-template-rows: 20px 27px; gap: 5px 8px; align-items: center; min-height: 59px; padding: 6px 7px 7px 6px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background-color .12s ease; }
 .track-row:hover, .track-row.selected { background: color-mix(in srgb, var(--panel2) 86%, var(--accent) 4%); }
 .track-row.selected { box-shadow: inset 3px 0 0 var(--track-color); }
 .track-row.soloed-track:not(.selected) { box-shadow: inset 3px 0 0 var(--accent); }
+.track-row.roll-open-track { box-shadow: inset 3px 0 0 var(--track-color), 0 0 0 1px var(--track-color); }
 .track-row.muted-track .track-channel, .track-row.muted-track .track-name, .track-row.muted-track .track-sound-picker,
 .track-row.solo-excluded-track .track-channel, .track-row.solo-excluded-track .track-name, .track-row.solo-excluded-track .track-sound-picker { opacity: .5; }
 .track-channel { grid-column: 1; grid-row: 1 / span 2; align-self: stretch; display: flex; align-items: center; justify-content: center; color: var(--track-color); font: 600 11px Consolas, monospace; border-right: 2px solid color-mix(in srgb, var(--track-color) 88%, transparent); }
@@ -122,6 +166,8 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .track-toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .track-toggle.active { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .track-mute-toggle.active { background: color-mix(in srgb, var(--sqErr) 14%, transparent); color: var(--sqErr); }
+.track-settings-button { opacity: .62; }
+.track-row:hover .track-settings-button, .track-settings-button:focus-visible { opacity: 1; }
 
 .pane-splitter { position: relative; z-index: 7; width: 9px; flex: 0 0 9px; background: var(--panel2); cursor: col-resize; touch-action: none; }
 .pane-splitter::before { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--border2); transition: left .12s ease, width .12s ease, background-color .12s ease; }
@@ -129,9 +175,39 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 .pane-splitter:focus-visible { outline: none; }
 body.pane-resizing, body.pane-resizing * { cursor: col-resize !important; }
 
-.roll-pane { position: relative; flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 72px minmax(0,1fr); grid-template-rows: 31px minmax(0,1fr); overflow: hidden; background: var(--panel2); }
-.roll-pane::after { content: ""; position: absolute; z-index: 3; top: 0; left: 72px; right: 0; height: 31px; border-bottom: 1px solid var(--border2); pointer-events: none; }
+/* The 72px pitch-ruler gutter only exists once a track's roll is open --
+   lanes mode collapses it to 0 so the lanes and their notes run flush with
+   the ruler above them instead of leaving that gutter's width sitting empty. */
+.roll-pane { position: relative; flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 0 minmax(0,1fr); grid-template-rows: 31px minmax(0,1fr); overflow: hidden; background: var(--panel2); }
+.roll-pane.roll-pane--open { grid-template-columns: 72px minmax(0,1fr); }
+.roll-pane::after { content: ""; position: absolute; z-index: 3; top: 0; left: 0; right: 0; height: 31px; border-bottom: 1px solid var(--border2); pointer-events: none; }
+.roll-pane.roll-pane--open::after { left: 72px; }
 .roll-corner { grid-column: 1; grid-row: 1; border-right: 1px solid var(--border2); border-bottom: 1px solid var(--border2); background: var(--panel2); }
+/* :not([hidden]) rather than a bare .class{display:...} rule -- an author
+   rule that sets `display` unconditionally beats the UA stylesheet's
+   `[hidden]{display:none}` at equal specificity, so a plain class rule here
+   would make the `hidden` attribute a no-op the moment this file loads. */
+.roll-track-chip:not([hidden]) { position: absolute; z-index: 5; top: 5px; left: 80px; display: flex; align-items: center; gap: 6px; padding: 3px 5px 3px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border2); font-size: 12px; }
+.roll-track-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.roll-track-chip-close { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.roll-track-chip-close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+.roll-track-chip-close .ui-icon { width: 11px; height: 11px; }
+/* Sits in the same rectangle the piano roll canvas occupies (72px pitch
+   gutter, 31px ruler header) and simply covers it -- the roll keeps its real
+   layout size underneath so the ruler's own width/scroll math never sees a
+   zero-width viewport, it is just visually and pointer-wise on top. */
+.lanes-view:not([hidden]) { position: absolute; z-index: 4; top: 31px; left: 0; right: 0; bottom: 0; overflow: auto; scrollbar-gutter: stable; scrollbar-color: var(--border2) var(--panel2); background: var(--field); cursor: crosshair; touch-action: none; }
+/* Zero gap, no padding: each lane's height is set from its own track row's
+   measured height, and each lane's WIDTH is set to ROLL.contentWidth (see
+   patchLanesView) so it scrolls and zooms in lockstep with the ruler instead
+   of always redrawing the whole song squeezed into whatever is visible. */
+.lane-row { position: relative; flex: none; box-sizing: border-box; overflow: hidden; background: color-mix(in srgb, var(--track-color) 6%, var(--field)); border-bottom: 1px solid var(--border); border-left: 2px solid var(--track-color); }
+.lane-row:hover { background: color-mix(in srgb, var(--track-color) 12%, var(--field)); }
+.lane-row.muted-lane, .lane-row.solo-excluded-lane { opacity: .5; }
+.lane-canvas { position: absolute; top: 0; left: 0; height: 100%; display: block; }
+.lane-label { position: absolute; left: 8px; top: 5px; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; color: var(--track-color); pointer-events: none; }
+.lane-grid-fill { position: relative; flex: none; overflow: hidden; background: var(--field); pointer-events: none; }
+.lane-grid-fill-canvas { position: absolute; top: 0; left: 0; display: block; }
 .time-ruler { grid-column: 2; grid-row: 1; display: block; align-self: start; }
 .pitch-ruler { grid-column: 1; grid-row: 2; display: block; justify-self: start; }
 .roll-viewport { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: var(--border2) var(--panel2); background: var(--field); }
@@ -139,10 +215,16 @@ body.pane-resizing, body.pane-resizing * { cursor: col-resize !important; }
 #pianoRoll { position: sticky; left: 0; top: 0; display: block; cursor: crosshair; touch-action: none; }
 #pianoRoll.note-hover { cursor: pointer; }
 #pianoRoll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.roll-overlay { position: absolute; z-index: 4; left: 72px; display: block; pointer-events: none; }
+/* left:0 by default, same reasoning as .roll-pane::after -- these were still
+   hardcoded to the open-mode 72px gutter, which is exactly why the playhead
+   line drawn on time-ruler-overlay sat 72px right of true position 0 while
+   lanes were showing. */
+.roll-overlay { position: absolute; z-index: 4; left: 0; display: block; pointer-events: none; }
+.roll-pane.roll-pane--open .roll-overlay { left: 72px; }
 .piano-roll-overlay { top: 31px; }
 .time-ruler-overlay { top: 0; }
-.horizontal-scroll-lock { position: absolute; z-index: 6; left: 72px; bottom: 0; min-height: 1px; background: var(--scrollDisabled); border-top: 1px solid color-mix(in srgb, var(--border2) 72%, var(--scrollDisabled)); cursor: default; pointer-events: auto; }
+.horizontal-scroll-lock { position: absolute; z-index: 6; left: 0; bottom: 0; min-height: 1px; background: var(--scrollDisabled); border-top: 1px solid color-mix(in srgb, var(--border2) 72%, var(--scrollDisabled)); cursor: default; pointer-events: auto; }
+.roll-pane.roll-pane--open .horizontal-scroll-lock { left: 72px; }
 input[type=text], input[type=number], select, textarea { background:var(--field); color:var(--text); border:1px solid var(--border2); border-radius:5px; padding:4px 7px; font-size:11px; font-family:inherit; user-select:text; -webkit-user-select:text; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
 input[type=checkbox], input[type=range] { accent-color: var(--accent); }
@@ -172,6 +254,12 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .range-value { width: 44px; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
 .plane-field { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
 .plane-field select { height: 27px; min-width: 58px; padding-top: 2px; padding-bottom: 2px; }
+.roll-status-legend { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.roll-status-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.roll-status-swatch { width: 16px; height: 9px; border-left: 2px solid currentColor; background: color-mix(in srgb, var(--field) 65%, transparent); }
+.roll-status-swatch.sustain { color: var(--rollSustain); background: repeating-linear-gradient(135deg, transparent 0 3px, var(--rollSustain) 3px 4px); }
+.roll-status-swatch.voice { color: var(--rollVoice); background: repeating-linear-gradient(135deg, transparent 0 3px, var(--rollVoice) 3px 4px), repeating-linear-gradient(45deg, transparent 0 3px, var(--rollVoice) 3px 4px); }
+.roll-status-swatch.silent { color: var(--muted); border: 1px dashed var(--muted); background: transparent; }
 
 /* SnapMap Plus modal contract: shared overlay opacity, panel tokens, radius,
    border and shadow. The browser changes only the content layout inside it. */
@@ -227,7 +315,10 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .close-button { width: 27px; height: 27px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
 .close-button .ui-icon { width: 15px; height: 15px; }
 .close-button:hover { background: var(--sel); color: var(--selText); }
-.inspector-body { flex: 1; min-height: 0; overflow-y: auto; padding: 5px 13px 12px; }
+/* Reserves the scrollbar's width whether or not content is tall enough to
+   need one, so switching tabs or expanding a fold never shifts every
+   control sideways by the scrollbar's width the instant one appears. */
+.inspector-body { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 5px 13px 12px; }
 .inspector-foot { flex-shrink: 0; display: flex; justify-content: flex-end; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--panel2); }
 .control-group { padding: 11px 0; border-bottom: 1px solid var(--border); }
 .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
@@ -257,6 +348,73 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .channel-setting-primary { margin: 0; padding: 2px 0; font-weight: 600; }
 .channel-setting-primary input:disabled { opacity: .72; }
 .channel-pitch-group > .expression-readout { margin-top: 8px; }
+.channel-advanced-body > .control-title { margin-top: 13px; }
+.channel-pitch-analysis-row { display: flex; align-items: center; gap: 9px; margin-bottom: 3px; }
+.channel-reference-row { margin-top: 0; }
+.channel-advanced-body .field-label { display: block; margin: 12px 0 6px; color: var(--text); font-weight: 600; }
+.channel-advanced-body > input[type=text] { width: 100%; }
+.channel-advanced-settings { border-bottom: 1px solid var(--border); }
+.channel-advanced-settings > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; color: var(--text); font-weight: 600; cursor: pointer; list-style: none; }
+.channel-advanced-settings > summary::-webkit-details-marker { display: none; }
+.channel-advanced-settings > summary::after { content: "\203A"; color: var(--muted); font-size: 20px; line-height: 1; transform-origin: center; transition: transform .12s ease; }
+.channel-advanced-settings[open] > summary::after { transform: rotate(90deg); }
+.channel-advanced-settings > summary:hover { color: var(--sel); }
+.channel-advanced-body { border-top: 1px solid var(--border); padding-top: 12px; }
+.channel-advanced-body > .control-group:last-child { border-bottom: 0; }
+
+/* Track settings tab strip. */
+.channel-settings-tabs { display: flex; gap: 2px; margin: 4px 0 10px; background: var(--panel2); border-radius: 8px; padding: 3px; }
+.channel-tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 10px; font-family: inherit; cursor: pointer; }
+.channel-tab .ui-icon { width: 16px; height: 16px; }
+.channel-tab:hover:not(.active) { color: var(--text); }
+.channel-tab.active { background: var(--panel); color: var(--text); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* A short static explanation, tucked behind an (i) so the control it labels
+   is the thing a newcomer sees first -- the panel used to show every
+   explanation at once regardless of whether the control's name already said
+   it. */
+/* Groups a control-title's unit hint with its (i) so `justify-content:
+   space-between` treats them as one trailing cluster -- with the hint and
+   the icon as two separate flex children, space-between spread them apart
+   across the row instead of keeping the hint next to the icon it belongs to. */
+.control-title-meta { display: inline-flex; align-items: center; gap: 4px; }
+.tip { position: relative; display: inline-flex; }
+.tip-trigger { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; margin: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; flex: none; line-height: 1; }
+.tip-trigger:hover, .tip-trigger:focus-visible { color: var(--text); background: var(--sel); outline: none; }
+.tip-trigger .ui-icon { width: 14px; height: 14px; }
+/* Opens leftward, anchored at the icon's own right edge. Every tip icon in
+   this panel sits at the trailing end of its row, so a bubble that opened
+   rightward (or from a left anchor) ran straight past the panel's edge and
+   was clipped instead of read. */
+.tip-text { display: none; position: absolute; right: 0; left: auto; top: 20px; width: 220px; max-width: calc(100vw - 40px); background: var(--panel2); border: 1px solid var(--border2); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.45; color: var(--muted); z-index: 20; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
+.tip:hover .tip-text, .tip:focus-within .tip-text { display: block; }
+
+/* Ghost value fields: flat text at rest, a hairline underline as the only
+   hint that it is editable, a soft fill on hover/focus. Sits next to a
+   slider that already shows the value's position -- a boxed number here
+   read as its own competing control rather than a readout of the one next
+   to it. */
+.channel-inspector .range-number input[type=number] { background: transparent; border: 1px solid transparent; border-bottom-color: var(--border2); border-radius: 4px; text-align: right; font-variant-numeric: tabular-nums; }
+.channel-inspector .range-number input[type=number]:hover,
+.channel-inspector .range-number input[type=number]:focus { background: var(--panel2); border-color: var(--panel2); }
+
+/* Key range: two native range inputs overlaid on one hand-drawn track, so
+   dragging either end works exactly like the browser's own slider while
+   reading as one control instead of two full-width sliders stacked on top
+   of each other. */
+.dual-key-range { position: relative; height: 26px; margin: 6px 2px 2px; }
+.dual-key-range .key-track { position: absolute; top: 11px; left: 0; right: 0; height: 4px; border-radius: 2px; background: var(--border2); }
+.dual-key-range .key-fill { position: absolute; top: 11px; height: 4px; border-radius: 2px; background: var(--accent); }
+.dual-key-range input[type=range] { position: absolute; top: 0; left: 0; width: 100%; height: 26px; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; pointer-events: none; }
+.dual-key-range input[type=range]::-webkit-slider-runnable-track { background: transparent; }
+.dual-key-range input[type=range]::-moz-range-track { background: transparent; }
+.dual-key-range input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 2px solid var(--panel); margin-top: -6px; cursor: pointer; }
+.dual-key-range input[type=range]::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 2px solid var(--panel); cursor: pointer; }
+.key-range-values { display: flex; justify-content: space-between; gap: 12px; margin: 2px 2px 0; }
+.key-range-values .key-range-value { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--muted); }
+.key-range-values input[type=number] { width: 52px; }
 .channel-facts { margin: 5px 0 0; }
 .channel-facts > div { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .channel-facts dt { color: var(--muted); }
@@ -268,6 +426,31 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .note-facts dt { color: var(--muted); }
 .note-facts dd { min-width: 0; margin: 0; text-align: right; }
 .note-sound { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.sound-scope { display: flex; align-items: center; gap: 6px; margin-right: 4px; color: var(--muted); white-space: nowrap; }
+.sound-scope select { font: inherit; }
+
+.channel-percussion-group select { width: 100%; }
+.channel-percussion-group > .expression-readout { margin-top: 8px; }
+
+/* One row per key the part actually plays. A kit is a set of keys, not a
+   sound, so the panel that edits it has to be a list -- and a scrolling one,
+   because a busy kit runs past twenty keys and the facts below it must stay
+   reachable. */
+.drum-key-list { display: flex; flex-direction: column; gap: 3px; max-height: 268px; overflow: auto; }
+.drum-key-row { display: block; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.drum-key-row:hover { border-color: var(--sel); }
+.drum-key-head { display: flex; align-items: center; gap: 8px; }
+.drum-key-note { flex: none; width: 34px; color: var(--muted); }
+.drum-key-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drum-key-hits { flex: none; color: var(--muted); }
+.drum-key-sound { margin-top: 2px; padding-left: 42px; color: var(--muted); overflow-wrap: anywhere; }
+.drum-key-chip { margin-left: 6px; padding: 0 5px; border-radius: 8px; background: var(--sel); color: var(--selText); font-size: 11px; }
+/* A key General MIDI names but the palette does not map plays nothing at all.
+   Silence is indistinguishable from a working kit until the map is exported,
+   so it is called out here rather than left to be discovered in game. */
+.drum-key-silent { border-color: color-mix(in srgb, var(--sqWarn) 58%, var(--border)); background: color-mix(in srgb, var(--sqWarn) 9%, var(--panel)); }
+.drum-key-silent .drum-key-sound { color: var(--sqWarn); }
+
 .expression-readout { margin-top: 7px; color: var(--muted); line-height: 1.45; }
 .expression-readout strong { color: var(--text); font-weight: 600; }
 .expression-warning { margin-top: 11px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--sqWarn) 58%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--sqWarn) 9%, var(--panel)); color: var(--text); line-height: 1.4; }
@@ -290,6 +473,7 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 }
 
 @media (max-width: 900px) {
+  .roll-status-legend { display: none; }
   .sound-browser-modal { width: calc(100vw - 24px); height: calc(100vh - 30px); min-width: 0; }
   .sound-browser-body { grid-template-columns: 220px minmax(0,1fr); }
   .tool-button { padding-left: 7px; padding-right: 7px; }

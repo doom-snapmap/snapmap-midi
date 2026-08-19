@@ -81,6 +81,7 @@ def test_the_named_defaults_are_the_ones_the_docs_promise():
     tuning = settings.defaults()["tuning"]
     assert tuning["master_volume_db"] == 0
     assert tuning["max_speakers"] == 32
+    assert tuning["song_polyphony"] == 32
     assert tuning["release_s"] == 0.1
     assert tuning["hard_stop"] is False
     assert tuning["max_poly"] is None
@@ -89,6 +90,16 @@ def test_the_named_defaults_are_the_ones_the_docs_promise():
     assert tuning["bass_cap_ms"] is None
     assert tuning["decaying_families"] == []
     assert tuning["family_caps"] == {}
+    assert tuning["playback_speed"] == 1.0
+
+
+def test_playback_speed_is_bounded_to_quarter_through_quadruple():
+    with pytest.raises(settings.SettingsError, match="playback_speed"):
+        _patch({"tuning": {"playback_speed": 0.1}})
+    with pytest.raises(settings.SettingsError, match="playback_speed"):
+        _patch({"tuning": {"playback_speed": 5.0}})
+    doc = _patch({"tuning": {"playback_speed": 2.0}})
+    assert doc["tuning"]["playback_speed"] == 2.0
 
 
 def test_max_events_is_not_a_setting_at_all():
@@ -417,8 +428,8 @@ def test_a_family_that_cannot_play_a_pitch_is_refused():
 
 
 def test_ins_string_is_refused_like_any_other_silent_family():
-    """The trap: named like an instrument, listed in `SUSTAINED` beside the
-    violins, and holding twelve unpitched effect samples."""
+    """The trap: named like an instrument, but holding twelve unpitched
+    effect samples."""
     with pytest.raises(settings.SettingsError, match="ins_string"):
         _patch({"channels": {"0": {"family": "ins_string"}}})
 
@@ -428,6 +439,7 @@ def test_a_channel_may_choose_any_exact_sound_in_the_shipped_palette():
     doc = _patch({"channels": {"0": {"sound": sound}}})
     assert doc["channels"]["0"] == {
         "family": None,
+        "percussion": "auto",
         "sound": sound,
         "muted": False,
         "soloed": False,
@@ -451,6 +463,7 @@ def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
     )
     assert doc["channels"]["0"] == {
         "family": None,
+        "percussion": "auto",
         "sound": sound,
         "muted": False,
         "soloed": False,
@@ -465,6 +478,132 @@ def test_an_exact_sound_root_profile_is_normalized_and_forwarded():
         "root_confidence": 0.88,
         "root_source": "detected",
     }
+
+
+def test_track_pitch_controls_and_detected_root_preserve_decimals():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    doc = _patch(
+        {
+            "channels": {
+                "0": {
+                    "sound": sound,
+                    "pitch_follow": True,
+                    "root_midi": 60.22,
+                    "detected_root_midi": 60.22,
+                    "root_confidence": 0.78,
+                    "root_source": "detected",
+                    "pitch_transpose": -2,
+                    "fine_tune_cents": 17.5,
+                    "glide_ms": 275,
+                }
+            },
+            "notes": {"0:60:1": {"follow_pitch_semitones": -2.375}},
+        }
+    )
+
+    channel = doc["channels"]["0"]
+    assert channel["detected_root_midi"] == 60.22
+    assert channel["pitch_transpose"] == -2.0
+    assert channel["fine_tune_cents"] == 17.5
+    assert channel["glide_ms"] == 275
+    assert doc["notes"]["0:60:1"]["follow_pitch_semitones"] == -2.375
+    assert settings.to_compile_kwargs(doc)["channel_pitch_profiles"][0][
+        "fine_tune_cents"
+    ] == 17.5
+    assert settings.to_compile_kwargs(doc)["part_glide_ms"] == {0: 275}
+
+
+def test_version_twelve_sidecar_migrates_without_requiring_new_pitch_fields():
+    old = settings.defaults()
+    old["version"] = 12
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+
+
+def test_version_thirteen_sidecar_migrates_with_glide_off():
+    old = settings.defaults()
+    old["version"] = 13
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_glide_ms"] == {}
+
+
+def test_version_fourteen_sidecar_migrates_with_track_sustain_using_the_default():
+    old = settings.defaults()
+    old["version"] = 14
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_sustain_ms"] == {}
+
+
+def test_version_fifteen_sidecar_migrates_with_global_polyphony_at_32():
+    old = settings.defaults()
+    old["version"] = 15
+    old["tuning"].pop("song_polyphony")
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["song_polyphony"] == 32
+
+
+def test_version_sixteen_sidecar_migrates_with_neutral_track_volume():
+    old = settings.defaults()
+    old["version"] = 16
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_volume_db"] == {}
+
+
+def test_version_seventeen_sidecar_migrates_with_default_track_release():
+    old = settings.defaults()
+    old["version"] = 17
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert settings.to_compile_kwargs(migrated)["part_release_s"] == {}
+
+
+@pytest.mark.parametrize("version", range(1, settings.SETTINGS_VERSION))
+def test_every_prior_sidecar_version_migrates_to_the_current_schema(version):
+    old = settings.defaults()
+    old["version"] = version
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+
+
+@pytest.mark.parametrize("value", [-1, 5001, 1.5, "250", True])
+def test_track_glide_outside_whole_millisecond_bounds_is_refused(value):
+    sound = palette.sounds_in_category("ins_piano")[0]
+    with pytest.raises(settings.SettingsError, match="glide_ms"):
+        _patch({"channels": {"0": {"sound": sound, "glide_ms": value}}})
+
+
+def test_a_keyboard_range_survives_a_round_trip():
+    doc = _patch({"channels": {"0": {"key_range": [40, 90]}}})
+    assert doc["channels"]["0"]["key_range"] == [40, 90]
+
+
+def test_a_keyboard_range_with_the_low_note_above_the_high_note_is_refused():
+    with pytest.raises(settings.SettingsError, match="key_range"):
+        _patch({"channels": {"0": {"key_range": [90, 40]}}})
+
+
+@pytest.mark.parametrize("value", [[-1, 90], [40, 128], [40], [40, 90, 1], "40-90", [1.5, 90], True])
+def test_a_malformed_keyboard_range_is_refused(value):
+    with pytest.raises(settings.SettingsError, match="key_range"):
+        _patch({"channels": {"0": {"key_range": value}}})
 
 
 def test_legacy_relative_reference_is_not_valid_in_a_current_document():
@@ -718,9 +857,185 @@ def test_max_speakers_outside_its_bounds_is_refused(value):
         _patch({"tuning": {"max_speakers": value}})
 
 
+@pytest.mark.parametrize("lever", ["polyphony"])
+def test_a_track_limit_is_absent_until_it_is_set_and_null_puts_it_back(lever):
+    """Absent is how a track says "use the song's", so the key must not appear
+    on its own. Writing `null` into every track would change every settings
+    file ever written for a lever nobody touched, and a patch merge cannot
+    remove a key -- null is the only way the window can hand back control."""
+    empty = _patch({"channels": {"0": {"family": "ins_piano"}}})
+    assert lever not in empty["channels"]["0"]
+
+    doc = _patch({"channels": {"0": {lever: 4}}}, base=empty)
+    assert doc["channels"]["0"][lever] == 4
+
+    doc = _patch({"channels": {"0": {lever: None}}}, base=doc)
+    assert lever not in doc["channels"]["0"]
+    # Clearing one lever leaves the track's other choices alone.
+    assert doc["channels"]["0"]["family"] == "ins_piano"
+
+
+@pytest.mark.parametrize("lever", ["polyphony"])
+@pytest.mark.parametrize("value", [0, -1, 129, "8", 2.5, True])
+def test_a_track_limit_outside_its_bounds_is_refused(lever, value):
+    """Same bounds as the song-wide count, because it names the same thing:
+    speakers a map has to author. Zero is silence wearing a setting."""
+    with pytest.raises(settings.SettingsError, match=lever):
+        _patch({"channels": {"0": {lever: value}}})
+
+
+def test_a_track_polyphony_limit_reaches_the_compiler_keyed_by_part(tmp_path):
+    """Only overriding tracks appear, so an untouched song hands the compiler
+    an empty mapping and compiles exactly as it did before this existed."""
+    doc = _patch({"channels": {"3": {"polyphony": 6}}})
+    levers = settings.to_compile_kwargs(doc)
+    assert levers["part_polyphony"] == {3: 6}
+
+    bare = settings.to_compile_kwargs(_patch({"channels": {"0": {"muted": True}}}))
+    assert bare["part_polyphony"] == {}
+
+
+def test_a_legacy_per_track_voice_limit_is_preserved_during_migration():
+    old = settings.defaults()
+    old["version"] = 11
+    old["channels"] = {"0:1": {"voices": 2, "family": "ins_piano"}}
+
+    migrated = settings.validate(old)
+
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    assert migrated["channels"]["0:1"]["voices"] == 2
+
+
+def test_a_per_track_voice_limit_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"voices": 2}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["voices"] == 2
+    assert levers["part_voices"] == {(0, 1): 2}
+
+
+def test_a_per_track_sustain_limit_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"sustain_ms": 650}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["sustain_ms"] == 650
+    assert levers["part_sustain_ms"] == {(0, 1): 650}
+
+
+def test_a_per_track_release_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"release_s": 0.35}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["release_s"] == 0.35
+    assert levers["part_release_s"] == {(0, 1): 0.35}
+    assert settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"release_s": None}}}, base=doc)
+    )["part_release_s"] == {}
+
+
+def test_track_attack_and_hard_stop_reach_the_compiler():
+    doc = _patch({"channels": {"0:1": {"attack_ms": 250, "hard_stop": True}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["attack_ms"] == 250
+    assert doc["channels"]["0:1"]["hard_stop"] is True
+    assert levers["part_attack_ms"] == {(0, 1): 250}
+    assert levers["part_hard_stop"] == {(0, 1): True}
+
+    cleared = settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"attack_ms": None, "hard_stop": None}}}, base=doc)
+    )
+    assert cleared["part_attack_ms"] == {}
+    assert cleared["part_hard_stop"] == {}
+
+
+def test_track_note_off_reaches_the_compiler_and_the_song_default_too():
+    doc = _patch({"tuning": {"note_off": True}, "channels": {"0:1": {"note_off": False}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["tuning"]["note_off"] is True
+    assert doc["channels"]["0:1"]["note_off"] is False
+    assert levers["note_off"] is True
+    assert levers["part_note_off"] == {(0, 1): False}
+
+    cleared = settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"note_off": None}}}, base=doc)
+    )
+    assert cleared["part_note_off"] == {}
+
+
+def test_track_note_off_floor_reaches_the_compiler_and_the_song_default_too():
+    doc = _patch(
+        {"tuning": {"note_off_floor_ms": 100}, "channels": {"0:1": {"note_off_floor_ms": 400}}}
+    )
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["tuning"]["note_off_floor_ms"] == 100
+    assert doc["channels"]["0:1"]["note_off_floor_ms"] == 400
+    assert levers["note_off_floor_ms"] == 100
+    assert levers["part_note_off_floor_ms"] == {(0, 1): 400}
+
+    cleared = settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"note_off_floor_ms": None}}}, base=doc)
+    )
+    assert cleared["part_note_off_floor_ms"] == {}
+
+
+@pytest.mark.parametrize("value", [-1, 5001, "100", True])
+def test_track_note_off_floor_uses_bounded_whole_milliseconds(value):
+    with pytest.raises(settings.SettingsError, match="note_off_floor_ms"):
+        _patch({"channels": {"0": {"note_off_floor_ms": value}}})
+
+
+@pytest.mark.parametrize("value", [0, -1, 5001, "250", True])
+def test_track_attack_uses_bounded_whole_milliseconds(value):
+    with pytest.raises(settings.SettingsError, match="attack_ms"):
+        _patch({"channels": {"0": {"attack_ms": value}}})
+
+
+@pytest.mark.parametrize("value", [-0.01, 10.01, "0.1", True])
+def test_a_per_track_release_uses_the_release_bounds(value):
+    with pytest.raises(settings.SettingsError, match="release_s"):
+        _patch({"channels": {"0": {"release_s": value}}})
+
+
+def test_a_per_track_volume_offset_is_accepted_and_reaches_the_compiler():
+    doc = _patch({"channels": {"0:1": {"volume_db": -6}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["channels"]["0:1"]["volume_db"] == -6
+    assert levers["part_volume_db"] == {(0, 1): -6}
+    assert settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"volume_db": 0}}})
+    )["part_volume_db"] == {}
+
+
+@pytest.mark.parametrize("value", [-61, 21, 1.5, "3", True])
+def test_a_per_track_volume_offset_uses_snapmap_db_bounds(value):
+    with pytest.raises(settings.SettingsError, match="volume_db"):
+        _patch({"channels": {"0": {"volume_db": value}}})
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, "500", True])
+def test_a_per_track_sustain_limit_requires_positive_whole_milliseconds(value):
+    with pytest.raises(settings.SettingsError, match="sustain_ms"):
+        _patch({"channels": {"0": {"sustain_ms": value}}})
+
+
 def test_max_speakers_at_its_bounds_is_accepted():
     assert _patch({"tuning": {"max_speakers": 1}})["tuning"]["max_speakers"] == 1
     assert _patch({"tuning": {"max_speakers": 128}})["tuning"]["max_speakers"] == 128
+
+
+def test_song_polyphony_at_its_bounds_is_accepted():
+    assert _patch({"tuning": {"song_polyphony": 1}})["tuning"]["song_polyphony"] == 1
+    assert _patch({"tuning": {"song_polyphony": 128}})["tuning"]["song_polyphony"] == 128
+
+
+@pytest.mark.parametrize("value", [0, 129, 2.5, "32", True])
+def test_song_polyphony_requires_a_whole_value_inside_the_voice_range(value):
+    with pytest.raises(settings.SettingsError, match="song_polyphony"):
+        _patch({"tuning": {"song_polyphony": value}})
 
 
 def test_a_release_that_runs_backwards_is_refused():
@@ -804,7 +1119,12 @@ def test_muting_a_channel_does_not_clear_its_instrument():
     moment earlier, and the ruler would jump back to the automatic choice."""
     base = _patch({"channels": {"1": {"family": "ins_marimba"}}})
     doc = _patch({"channels": {"1": {"muted": True}}}, base)
-    assert doc["channels"]["1"] == {"family": "ins_marimba", "muted": True, "soloed": False}
+    assert doc["channels"]["1"] == {
+        "family": "ins_marimba",
+        "percussion": "auto",
+        "muted": True,
+        "soloed": False,
+    }
 
 
 def test_changing_one_channel_leaves_the_others_alone():
@@ -849,7 +1169,9 @@ def test_a_patch_that_spells_a_channel_as_a_number_still_finds_it():
     add a second entry for the same channel and skip the merge entirely."""
     base = _patch({"channels": {"0": {"family": "ins_marimba"}}})
     doc = settings.merge(base, {"channels": {0: {"muted": True}}})
-    assert doc["channels"] == {"0": {"family": "ins_marimba", "muted": True, "soloed": False}}
+    assert doc["channels"] == {
+        "0": {"family": "ins_marimba", "percussion": "auto", "muted": True, "soloed": False}
+    }
 
 
 def test_merge_leaves_the_document_it_was_given_alone():
@@ -884,27 +1206,31 @@ def test_an_integer_channel_key_becomes_the_string_json_will_write():
     file have to be equal, or the session compares them and sees a change
     nobody made."""
     doc = settings.validate({**settings.defaults(), "channels": {0: {"family": "ins_tri"}}})
-    assert doc["channels"] == {"0": {"family": "ins_tri", "muted": False, "soloed": False}}
+    assert doc["channels"] == {
+        "0": {"family": "ins_tri", "percussion": "auto", "muted": False, "soloed": False}
+    }
 
 
 # ---- what the compiler is handed ----
 
 
 def test_channel_keys_become_integers_because_that_is_what_the_parser_compares():
-    """`parse_notes` tests `msg.channel in channel_mutes` against a mido
-    integer. A string key never matches, and the mute silently does nothing."""
+    """`parse_notes` matches these against a mido integer. A string key never
+    matches, and the mute silently does nothing.
+
+    The switches are mappings rather than sets because only a mapping can say
+    that one named part is NOT muted while its channel is -- the case a
+    `track:channel` key exists to express."""
     doc = _patch({"channels": {"0": {"family": "ins_tri"}, "9": {"muted": True}}})
     kwargs = settings.to_compile_kwargs(doc)
     assert kwargs["channel_families"] == {0: "ins_tri"}
-    assert kwargs["channel_mutes"] == {9}
-    assert isinstance(kwargs["channel_mutes"], set)
+    assert kwargs["channel_mutes"] == {0: False, 9: True}
 
 
 def test_multiple_soloed_channels_are_forwarded_as_integer_keys():
     doc = _patch({"channels": {"0": {"soloed": True}, "2": {"soloed": True}}})
     solos = settings.to_compile_kwargs(doc)["channel_solos"]
-    assert solos == {0, 2}
-    assert isinstance(solos, set)
+    assert solos == {0: True, 2: True}
 
 
 def test_a_muted_channel_with_an_instrument_appears_in_both():
@@ -914,7 +1240,7 @@ def test_a_muted_channel_with_an_instrument_appears_in_both():
         _patch({"channels": {"2": {"family": "ins_flute", "muted": True}}})
     )
     assert kwargs["channel_families"] == {2: "ins_flute"}
-    assert kwargs["channel_mutes"] == {2}
+    assert kwargs["channel_mutes"] == {2: True}
 
 
 def test_exact_channel_sounds_reach_the_compiler_with_integer_channel_keys():
@@ -924,7 +1250,7 @@ def test_exact_channel_sounds_reach_the_compiler_with_integer_channel_keys():
     )
     assert kwargs["channel_sounds"] == {9: sound}
     assert kwargs["channel_families"] == {}
-    assert kwargs["channel_mutes"] == {9}
+    assert kwargs["channel_mutes"] == {9: True}
 
 
 @pytest.mark.parametrize("mode,expected", [("auto", "auto"), ("on", True), ("off", False)])
@@ -984,3 +1310,54 @@ def test_the_document_actually_reaches_the_compile():
     _, muted = compile_to_rawmap(TINY_MIDI, **kwargs)
     _, plain = compile_to_rawmap(TINY_MIDI)
     assert muted["notes"] < plain["notes"]
+
+
+def test_an_assumed_root_migrates_to_the_neutral_name():
+    """The two names were the same idea, and `validate` refuses the old one.
+
+    A document written before they were reconciled carries root_source
+    "assumed". Without a migration it does not degrade -- it stops opening,
+    because validate rejects a source it does not recognise.
+    """
+    doc = {
+        "version": 7,
+        "channels": {
+            "0": {
+                "sound": "Play_Custom_Chime",
+                "pitch_follow": True,
+                "root_midi": 60.0,
+                "root_confidence": 0.0,
+                "root_source": "assumed",
+            }
+        },
+    }
+    migrated = settings._migrate(doc)
+    assert migrated["channels"]["0"]["root_source"] == "neutral"
+    assert migrated["version"] == settings.SETTINGS_VERSION
+    # The whole point: it has to survive the gate it used to fail.
+    settings.validate(migrated)
+
+
+def test_playback_octave_keeps_absent_and_zero_as_different_answers():
+    """Absent means "decide automatically"; 0 means "leave this track at the
+    written octave". Collapsing the two would make the control unable to refuse
+    the automatic fold, which is the main reason it exists."""
+    sound = palette.sounds_in_category("ins_piano")[0]
+
+    automatic = _patch({"channels": {"0": {"sound": sound}}})
+    assert "pitch_octave" not in automatic["channels"]["0"]
+    assert settings.to_compile_kwargs(automatic)["part_pitch_octave"] == {}
+
+    refused = _patch({"channels": {"0": {"sound": sound, "pitch_octave": 0}}})
+    assert refused["channels"]["0"]["pitch_octave"] == 0
+    assert settings.to_compile_kwargs(refused)["part_pitch_octave"] == {0: 0}
+
+    pinned = _patch({"channels": {"0": {"sound": sound, "pitch_octave": -3}}})
+    assert settings.to_compile_kwargs(pinned)["part_pitch_octave"] == {0: -3}
+
+
+def test_playback_octave_refuses_a_value_past_the_fold_limit():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    with pytest.raises(settings.SettingsError) as caught:
+        _patch({"channels": {"0": {"sound": sound, "pitch_octave": 11}}})
+    assert "pitch_octave" in str(caught.value)

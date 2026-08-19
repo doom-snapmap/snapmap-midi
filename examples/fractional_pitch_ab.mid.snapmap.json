@@ -1,0 +1,51 @@
+{
+  "version": 13,
+  "midi": "fractional_pitch_ab.mid",
+  "button": "snapmap-midi-song",
+  "out_dir": null,
+  "baseline": null,
+  "channels": {
+    "1:0": {
+      "family": null,
+      "percussion": "auto",
+      "muted": false,
+      "soloed": false,
+      "pitch_follow_preference": true,
+      "sound": "play_pianoc4",
+      "pitch_follow": true,
+      "root_midi": 60.0,
+      "detected_root_midi": 60.0,
+      "root_confidence": 1.0,
+      "root_source": "palette_name"
+    },
+    "2:1": {
+      "family": null,
+      "percussion": "auto",
+      "muted": false,
+      "soloed": false,
+      "pitch_follow_preference": true,
+      "sound": "play_pianoc4",
+      "pitch_follow": true,
+      "fine_tune_cents": 50.0,
+      "root_midi": 60.0,
+      "detected_root_midi": 60.0,
+      "root_confidence": 1.0,
+      "root_source": "palette_name"
+    }
+  },
+  "drums": "auto",
+  "notes": {},
+  "drum_keys": {},
+  "tuning": {
+    "master_volume_db": 0,
+    "max_speakers": 32,
+    "release_s": 0.1,
+    "hard_stop": false,
+    "max_poly": null,
+    "cap_sustain_ms": null,
+    "bass_pitch": 78,
+    "bass_cap_ms": null,
+    "decaying_families": [],
+    "family_caps": {}
+  }
+}
