@@ -103,7 +103,31 @@ def _labels() -> dict:
     return flattened
 
 
-def _event_payload(event, categories, labels, previewable, looping_known=True) -> dict:
+def _source_count(source, name: str) -> int:
+    """How many distinct recordings back one event name, 1 when unknowable.
+
+    Cheap: this reads the already-parsed HIRC object graph and touches no
+    audio. Falling back to 1 keeps an unreadable event out of the warning
+    path rather than accusing it of a defect that was never observed.
+    """
+    try:
+        resolved = wwise.resolve_sources(source.objects, wwise.fnv1_32(name.lower()))
+    except Exception:
+        return 1
+    return len({media for media, _stream in resolved}) or 1
+
+
+def event_source_count(name: str) -> int:
+    """Distinct recordings behind an installed event name; 1 when unknown."""
+    _install, source, _error = _source()
+    if source is None:
+        return 1
+    return _source_count(source, name)
+
+
+def _event_payload(
+    event, categories, labels, previewable, looping_known=True, sources=1
+) -> dict:
     """One installed catalog record in the browser's serializable shape."""
     key = event.name.lower()
     payload = {
@@ -114,6 +138,14 @@ def _event_payload(event, categories, labels, previewable, looping_known=True) -
         "environment": event.environment,
         "looping": event.looping,
         "looping_known": looping_known,
+        # How many DISTINCT recordings this one event name is backed by. More
+        # than one means the engine plays a different child per trigger and
+        # nothing in a map can select or compensate for the choice, so the
+        # event cannot hold a calibrated pitch -- proven live, see
+        # doom-re `docs/truth/engine/snapmap-timeline-sound-modifiers.md`.
+        # The window can only ever extract and audition the first, so this is
+        # invisible in preview and has to be surfaced from here.
+        "sources": int(sources),
         "duration_min": event.duration_min,
         "duration_max": event.duration_max,
         "previewable": bool(previewable),
@@ -358,6 +390,7 @@ def sound_catalog(refresh: bool = False) -> dict:
             labels,
             previewable=source.can_preview(event.name),
             looping_known=source.event_is_looping(event.name) is not None,
+            sources=_source_count(source, event.name),
         )
         for event in events
     ]

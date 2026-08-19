@@ -39,6 +39,24 @@ _SCRATCH_PARAMS = dict(button_name="scratch-test", drums="auto", max_speakers=32
 #: both reachable from one file.
 _UNMAPPED_KEY = 60
 
+#: No curated automatic family is sustained any more -- `gm.SUSTAINED` is
+#: empty because none of their real samples loop. An exact sound with no
+#: installed record now defaults to a one-shot too (most hand-picked sounds
+#: are), so a test that needs a genuinely sustained note reaches for this
+#: name AND confirms it looping via `_confirm_looping` below -- the same
+#: real-catalog path a real installed loop actually takes.
+_FAKE_SUSTAINED_SOUND = "play_test_fixture_has_no_installed_record"
+
+
+def _confirm_looping(monkeypatch, name=_FAKE_SUSTAINED_SOUND):
+    """Make `name` read back as a confirmed installed loop, the same way
+    `library.event_is_looping` would for a real looping catalog event."""
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library, "event_is_looping", lambda shader: True if shader == name else None
+    )
+
 # Default tempo is 500ms per beat over 480 ticks, so one millisecond is 0.96
 # ticks. Spelled out because a held-note test that is quietly 30% short would
 # still pass the wrong threshold.
@@ -199,7 +217,16 @@ def test_an_exact_sound_wins_and_keeps_the_written_midi_pitch(tmp_path):
 
 @pytest.mark.parametrize(
     ("catalog_looping", "sustained"),
-    [(False, False), (True, True), (None, True)],
+    [
+        (False, False),
+        (True, True),
+        # Unconfirmed (no installed record, or the lookup failed) now
+        # defaults to a one-shot rather than a loop -- most hand-picked
+        # sounds are one-shots, and a sustained note has always gotten an
+        # explicit stop since this same session's compile.py fix, so
+        # defaulting to looping bought no real safety anymore either.
+        (None, False),
+    ],
 )
 def test_a_full_game_exact_event_uses_catalog_loop_metadata(tmp_path, catalog_looping, sustained):
     mid = _write_midi(tmp_path, [(0, 60)], programs={0: 0})
@@ -322,16 +349,18 @@ def test_max_speakers_is_echoed_so_peak_voices_can_be_read_against_something():
     assert stats["max_speakers"] == 7
 
 
-def test_long_sustains_counts_notes_held_past_the_practical_target(tmp_path):
+def test_long_sustains_counts_notes_held_past_the_practical_target(tmp_path, monkeypatch):
     """`docs/limits.md`: "notes held under about a second cut reliably"."""
+    _confirm_looping(monkeypatch)
     mid = _held_note_midi(tmp_path, held_ms=2000)
-    _, stats = compile_to_rawmap(mid, channel_families={0: "ins_violin"})
+    _, stats = compile_to_rawmap(mid, channel_sounds={0: _FAKE_SUSTAINED_SOUND})
     assert stats["long_sustains"] == 1
 
 
-def test_a_note_under_the_target_is_not_a_long_sustain(tmp_path):
+def test_a_note_under_the_target_is_not_a_long_sustain(tmp_path, monkeypatch):
+    _confirm_looping(monkeypatch)
     mid = _held_note_midi(tmp_path, held_ms=400)
-    _, stats = compile_to_rawmap(mid, channel_families={0: "ins_violin"})
+    _, stats = compile_to_rawmap(mid, channel_sounds={0: _FAKE_SUSTAINED_SOUND})
     assert stats["sustained"] == 1
     assert stats["long_sustains"] == 0
 
@@ -345,11 +374,14 @@ def test_a_long_one_shot_is_not_a_long_sustain(tmp_path):
     assert stats["long_sustains"] == 0
 
 
-def test_peak_voices_is_the_song_wide_global_pool(tmp_path):
+def test_peak_voices_is_the_song_wide_global_pool(tmp_path, monkeypatch):
     """Global Voices counts the shared allocation after all tracks are
     combined, so the reported peak is exactly the speaker count authored."""
+    _confirm_looping(monkeypatch)
     mid = _lopsided_layers_midi(tmp_path)
-    _, stats = compile_to_rawmap(mid, channel_families={0: "ins_violin", 1: "ins_violin"})
+    _, stats = compile_to_rawmap(
+        mid, channel_sounds={0: _FAKE_SUSTAINED_SOUND, 1: _FAKE_SUSTAINED_SOUND}
+    )
     assert stats["voices"] == 3
     assert stats["peak_voices"] == 3
 
@@ -391,3 +423,182 @@ def test_compiling_with_every_channel_muted_still_produces_a_loadable_map():
     assert stats["notes"] == 0
     assert stats["peak_voices"] == 0
     assert b"idTarget_Timeline" in raw
+
+
+def test_transpose_on_an_automatic_instrument_picks_another_recording(tmp_path):
+    """An automatic instrument is a SET of separately recorded, pre-tuned
+    samples -- 88 of them for piano. Transposing it should therefore reach for
+    the recording made at the new pitch rather than resample the old one: that
+    is what the instrument actually sounds like an octave up, and it leaves the
+    pitch modifier at zero so the note keeps the free shared emitter instead of
+    claiming a dedicated voice."""
+    mid = _write_midi(tmp_path, [(0, 60), (0, 64), (0, 67)], programs={0: 0})
+
+    plain, _ = parse_notes(mid, drums=False)
+    assert [n.shader for n in plain] == ["play_pianoc4", "play_pianoe4", "play_pianog4"]
+
+    up, _ = parse_notes(mid, drums=False, part_transpose={0: 12})
+    assert [n.shader for n in up] == ["play_pianoc5", "play_pianoe5", "play_pianog5"]
+    # The whole point: a different recording, NOT a retuned one.
+    assert [n.pitch_modifier for n in up] == [0.0, 0.0, 0.0]
+    # The roll still draws what the file wrote; transpose is a track property,
+    # not a note edit. Switching this track to a sample must not make notes jump.
+    assert [n.source_pitch for n in up] == [60, 64, 67]
+
+    down, _ = parse_notes(mid, drums=False, part_transpose={0: -5})
+    assert [n.shader for n in down] == ["play_pianog3", "play_pianob3", "play_pianod4"]
+    assert [n.pitch_modifier for n in down] == [0.0, 0.0, 0.0]
+
+
+def test_transpose_past_a_family_range_falls_back_to_retuning(tmp_path):
+    """`ins_sine` holds 32 samples spanning 36..67, so a note transposed above
+    that has no recording to select. It degrades to the ordinary pitch
+    modifier rather than silently refusing to move -- the note still sounds
+    transposed, it just costs a voice to do it."""
+    mid = _write_midi(tmp_path, [(0, 60)], programs={0: 80})
+
+    inside, _ = parse_notes(mid, drums=False, channel_families={0: "ins_sine"})
+    assert inside[0].pitch_modifier == 0.0
+
+    beyond, _ = parse_notes(
+        mid, drums=False, channel_families={0: "ins_sine"}, part_transpose={0: 12}
+    )
+    assert beyond[0].pitch_modifier == 12.0
+
+
+def test_transpose_is_applied_once_to_a_hand_picked_sample(tmp_path):
+    """A sample has only the one recording, so its transpose stays a playback
+    modifier read from its pitch profile. `part_transpose` carries the same
+    number for every part, so the exact-sound path has to ignore it or the
+    note would be transposed twice."""
+    mid = _write_midi(tmp_path, [(0, 60)], programs={0: 0})
+
+    notes, _ = parse_notes(
+        mid,
+        drums=False,
+        channel_sounds={0: "play_test_fixture_has_no_installed_record"},
+        channel_pitch_profiles={0: {"pitch_follow": False, "pitch_transpose": 7}},
+        part_transpose={0: 7},
+    )
+    assert notes[0].pitch_modifier == 7.0
+
+
+def test_a_far_reference_folds_by_octaves_instead_of_flattening_the_melody(tmp_path):
+    """SnapMap's pitch modifier stops at +/-24 semitones, and a sample
+    calibrated far from the music does not merely play badly there: EVERY note
+    past the limit clamps to the same modifier, so the melody collapses onto one
+    pitch. This is the real case that found it -- a sound calibrated to C7 minus
+    7 cents under a part written around C4, asking for about -36 on every note.
+
+    The fold moves the part by whole OCTAVES, which is what makes it safe: 12 is
+    an integer, so the register changes while the pitch class does not."""
+    mid = _write_midi(tmp_path, [(0, 55), (0, 60), (0, 67)], programs={0: 0})
+    profile = {
+        "pitch_follow": True,
+        "root_midi": 95.93,
+        "root_source": "manual",
+    }
+    kwargs = dict(
+        drums=False,
+        channel_sounds={0: "play_test_fixture_has_no_installed_record"},
+        channel_pitch_profiles={0: profile},
+    )
+
+    folded, stats = parse_notes(mid, **kwargs)
+    assert [n.octave_shift for n in folded] == [2, 2, 2], "one fold for the whole part"
+    # In range, and -- the point -- three DIFFERENT pitches again.
+    assert [n.pitch_modifier for n in folded] == [-16.93, -11.93, -4.93]
+    assert not any(n.pitch_limited for n in folded)
+    # The intervals the file wrote survive exactly.
+    assert folded[1].pitch_modifier - folded[0].pitch_modifier == 5.0
+    assert folded[2].pitch_modifier - folded[1].pitch_modifier == 7.0
+    # The calibration is reported back untouched: the fold is a playback
+    # decision about the part, not a claim about the recording.
+    assert [n.root_pitch for n in folded] == [95.93, 95.93, 95.93]
+    # And the window is told, so an octave never moves silently.
+    assert stats["octave_shift_channels"] == [{"channel": 0, "octaves": 2}]
+
+    # Cents survive, because an octave is a whole number of semitones.
+    for note in folded:
+        assert round(note.pitch_modifier % 1, 6) == round(-0.93 % 1, 6)
+
+
+def test_a_part_already_corrected_by_hand_is_not_folded_twice(tmp_path):
+    """The fold is measured from the FINAL pitch request, transpose included.
+    Someone who already fixed an out-of-range sound by typing +24 measures as in
+    range and must not be moved again -- otherwise this feature would break
+    every song that had worked around the bug it fixes."""
+    mid = _write_midi(tmp_path, [(0, 55), (0, 60), (0, 67)], programs={0: 0})
+    notes, stats = parse_notes(
+        mid,
+        drums=False,
+        channel_sounds={0: "play_test_fixture_has_no_installed_record"},
+        channel_pitch_profiles={
+            0: {
+                "pitch_follow": True,
+                "root_midi": 95.93,
+                "root_source": "manual",
+                "pitch_transpose": 24,
+            }
+        },
+    )
+    assert [n.octave_shift for n in notes] == [0, 0, 0]
+    assert [n.pitch_modifier for n in notes] == [-16.93, -11.93, -4.93]
+    assert stats["octave_shift_channels"] == []
+
+
+def test_an_in_range_part_is_never_moved(tmp_path):
+    """The fold must be inert for the ordinary case. A sound whose reference
+    sits inside the engine's range is left exactly where it was written."""
+    mid = _write_midi(tmp_path, [(0, 55), (0, 60), (0, 67)], programs={0: 0})
+    notes, stats = parse_notes(
+        mid,
+        drums=False,
+        channel_sounds={0: "play_test_fixture_has_no_installed_record"},
+        channel_pitch_profiles={
+            0: {"pitch_follow": True, "root_midi": 60.0, "root_source": "manual"},
+        },
+    )
+    assert [n.octave_shift for n in notes] == [0, 0, 0]
+    assert [n.pitch_modifier for n in notes] == [-5.0, 0.0, 7.0]
+    assert stats["octave_shift_channels"] == []
+
+
+def test_a_pinned_playback_octave_overrules_the_automatic_choice(tmp_path):
+    """The control exists because the automatic answer is the smallest fit --
+    closest to the written octave, but also the most resampled. Pinning a
+    further octave has to win, including pinning 0 to refuse the fold entirely."""
+    mid = _write_midi(tmp_path, [(0, 55), (0, 60), (0, 67)], programs={0: 0})
+    kwargs = dict(
+        drums=False,
+        channel_sounds={0: "play_test_fixture_has_no_installed_record"},
+        channel_pitch_profiles={
+            0: {"pitch_follow": True, "root_midi": 95.93, "root_source": "manual"},
+        },
+    )
+
+    pinned, _ = parse_notes(mid, part_pitch_octave={0: 4}, **kwargs)
+    assert [n.octave_shift for n in pinned] == [4, 4, 4]
+    assert pinned[1].pitch_modifier == 12.07
+
+    # 0 is a real answer, not "unset": the user refusing the fold.
+    refused, stats = parse_notes(mid, part_pitch_octave={0: 0}, **kwargs)
+    assert [n.octave_shift for n in refused] == [0, 0, 0]
+    assert all(n.pitch_limited for n in refused)
+    assert stats["octave_shift_channels"] == []
+
+
+def test_only_a_following_sound_is_folded(tmp_path):
+    """A sound playing at its natural pitch asks for 0 wherever it was
+    recorded, so it can never be out of range and must never be moved."""
+    mid = _write_midi(tmp_path, [(0, 55), (0, 60), (0, 67)], programs={0: 0})
+    notes, _ = parse_notes(
+        mid,
+        drums=False,
+        channel_sounds={0: "play_test_fixture_has_no_installed_record"},
+        channel_pitch_profiles={
+            0: {"pitch_follow": False, "root_midi": 95.93, "root_source": "manual"},
+        },
+    )
+    assert [n.octave_shift for n in notes] == [0, 0, 0]
+    assert [n.pitch_modifier for n in notes] == [0.0, 0.0, 0.0]

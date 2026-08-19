@@ -223,8 +223,8 @@ those are reachable by the automatic General MIDI mapping; `ins_square`, `ins_tr
 **12 have no pitched sound at all**: `amb_air`, `amb_hellish`, `amb_hums`,
 `dlc1_ui_user_defined`, `dlc2_classicsfx`, `eff_explosions`, `eff_gore`,
 `eff_miscellaneous`, `ins_noise`, `ins_percussion`, `ins_string`, `ins_synth`. Two of those
-carry the `ins_` prefix and are still silent for every note — `ins_string` is even listed
-among the sustained families beside the violins, and holds twelve unpitched effect samples.
+carry the `ins_` prefix and are still silent for every note — `ins_string` is named like the
+other pitched instruments and holds twelve unpitched effect samples instead.
 **Never split the list by name prefix.** `pitched_families()` derives it from which
 categories actually have a pitch index, which is the only version that cannot be wrong.
 

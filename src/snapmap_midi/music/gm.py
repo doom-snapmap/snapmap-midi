@@ -9,7 +9,15 @@ Families split into two groups that are scheduled completely differently.
 DECAYING samples fade on their own and are fired and forgotten. SUSTAINED
 samples hold at full volume until something stops them, so they need a
 dedicated voice and an explicit note-off. Getting a family into the wrong
-group is audible: a sustained note with no note-off rings its whole sample.
+group is audible: a sustained note with no note-off rings its whole sample --
+and so is the opposite mistake, which is what this set used to be. It once
+named every curated instrument family that SOUNDED like it ought to hold: the
+winds, the brass, the strings. `library.event_is_looping` against the
+installed game says otherwise for every sample any of them actually uses --
+none of them loop, all of them are ordinary one-shot recordings a few seconds
+long, the same fact that emptied this set of the synth waveforms earlier.
+Membership here has to answer the installed catalog's question, not sound
+like the right English word for a bowed or blown instrument.
 """
 
 from __future__ import annotations
@@ -19,13 +27,11 @@ from functools import lru_cache
 from pathlib import Path
 
 #: Families whose samples hold at full volume and must be stopped explicitly.
-SUSTAINED = {
-    "ins_violin",
-    "ins_horns",
-    "ins_trumpet",
-    "ins_flute",
-    "ins_string",
-}
+#: Empty because none of the curated instrument families' actual samples are
+#: installed-catalog loops -- see the module docstring. An automatic family
+#: assignment's sustain now always follows this set; an EXACT sound assignment
+#: has never used it; both, correctly, now agree that nothing here holds.
+SUSTAINED: set = set()
 
 #: MIDI reserves channel 10 (zero-indexed 9) for percussion.
 DRUM_CHANNEL = 9

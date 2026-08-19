@@ -35,10 +35,10 @@ def test_pitched_families_are_the_ones_that_can_play_a_note():
 
 
 def test_ins_string_is_never_offered():
-    """`ins_string` is the trap: it is named like an instrument, it is listed
-    in `SUSTAINED` beside the violins, and it has zero pitched sounds. A user
-    scanning a dropdown picks it for the string part and gets silence plus a
-    held voice allocation for notes that never sound.
+    """`ins_string` is the trap: it is named like an instrument and has zero
+    pitched sounds. A user scanning a dropdown picks it for the string part
+    and gets silence -- every note it is given is dropped for want of a
+    shader, with no sound and no warning that says why.
     """
     assert "ins_string" not in palette.pitched_families()
     assert palette.family_range("ins_string") is None

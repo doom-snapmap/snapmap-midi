@@ -294,8 +294,7 @@ def pitched_families() -> list:
     purpose -- so the filtering has to happen where the choice is offered.
 
     `ins_string` is the one that makes this necessary rather than tidy. It is
-    named like an instrument and listed in `SUSTAINED` beside the violins, and
-    it holds twelve unpitched effect samples.
+    named like an instrument, but holds twelve unpitched effect samples.
 
     Filtered, never sorted. Declaration order is the palette's own, and a list
     that reorders itself moves the option someone is reaching for.

@@ -52,6 +52,25 @@ _SYNTHETIC_INDEX = {
     "ins_sine": {48: "play_sinec3", 67: "play_sineg4"},
 }
 
+# No curated automatic family is sustained any more -- see `gm.SUSTAINED`,
+# which is empty because none of their real samples loop. An unrecognised
+# exact event now defaults to a one-shot too, so a test that needs a
+# genuinely sustained note for its own purpose (hard stop, release, voice
+# accounting) reaches for this name AND confirms it looping via
+# `_confirm_looping` below, the same real-catalog path a real installed loop
+# actually takes.
+_FAKE_SUSTAINED_SOUND = "play_test_fixture_has_no_installed_record"
+
+
+def _confirm_looping(monkeypatch, name=_FAKE_SUSTAINED_SOUND):
+    """Make `name` read back as a confirmed installed loop, the same way
+    `library.event_is_looping` would for a real looping catalog event."""
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library, "event_is_looping", lambda shader: True if shader == name else None
+    )
+
 
 # ---- pure logic ----
 
@@ -208,6 +227,16 @@ def test_track_voice_cap_limits_its_track_before_the_global_budget(tmp_path):
     assert capped["voices"] <= 32
 
 
+def test_keyboard_range_silences_notes_outside_it_at_export(tmp_path):
+    """Same filter as mute/solo: a note outside its track's Keyboard Range
+    never reaches the exported map at all."""
+    song = _drumless_midi(tmp_path)
+    _, plain = compile_to_rawmap(song)
+    _, ranged = compile_to_rawmap(song, part_key_range={0: (61, 127)})  # channel 0's note is 60
+
+    assert ranged["notes"] == plain["notes"] - 1
+
+
 def test_track_polyphony_mutes_notes_where_global_voices_would_cut_them(tmp_path):
     """The two levers are not the same and must not be made the same.
 
@@ -245,7 +274,7 @@ def test_parse_notes_pairing_families_and_sustain():
     piano = by_channel[0][0]
     assert piano.fam == "ins_piano" and piano.sustained is False
     assert piano.end > piano.start
-    assert all(n.fam == "ins_violin" and n.sustained for n in by_channel[1])
+    assert all(n.fam == "ins_violin" and n.sustained is False for n in by_channel[1])
     assert stats["drums_on"] is True
     assert by_channel[9][0].shader == DRUM_MAP[36]
     assert by_channel[9][0].fam == "drums"
@@ -409,7 +438,10 @@ def test_hermetic_compile_structure(minimal_timeline_map):
         for e in obj["entities"]
     )
     assert stats["notes"] == 4
-    assert stats["decaying"] == 2 and stats["sustained"] == 2
+    # Piano and violin are both one-shots now -- see `gm.SUSTAINED`, which is
+    # empty because none of the curated instrument families' real samples
+    # loop. Nothing in `_SYNTHETIC_INDEX` is sustained any more either.
+    assert stats["decaying"] == 4 and stats["sustained"] == 0
 
 
 def test_midi_filename_names_the_interactive_and_unknowns_follow_it(
@@ -510,15 +542,19 @@ def test_parked_sharding_path_remains_executable(minimal_timeline_map, monkeypat
     assert event_count == stats["events"]
 
 
-def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
+def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map, monkeypatch):
     """Hard stop replaces only the release fade.
 
     Velocity expression legitimately emits fadeSound at note onset.
     """
+    _confirm_looping(monkeypatch)
     raw, _ = compile_to_rawmap(
         TINY_MIDI,
         json.dumps(minimal_timeline_map).encode("utf-8"),
         note_index=_SYNTHETIC_INDEX,
+        # Hard stop only replaces a SUSTAINED note's release; channel 1 needs
+        # to genuinely hold for this test to mean anything.
+        channel_sounds={1: _FAKE_SUSTAINED_SOUND},
         hard_stop=True,
         button_name="hermetic-test",
     )
@@ -527,7 +563,8 @@ def test_hermetic_hard_stop_emits_stop_not_fade(minimal_timeline_map):
     assert '"float":-60.0' not in text
 
 
-def test_track_hard_stop_can_override_the_song_default(tmp_path, minimal_timeline_map):
+def test_track_hard_stop_can_override_the_song_default(tmp_path, minimal_timeline_map, monkeypatch):
+    _confirm_looping(monkeypatch)
     midi = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()
     midi.tracks.append(track)
@@ -547,6 +584,9 @@ def test_track_hard_stop_can_override_the_song_default(tmp_path, minimal_timelin
         path,
         json.dumps(minimal_timeline_map).encode("utf-8"),
         note_index=_SYNTHETIC_INDEX,
+        # Both channels need to genuinely sustain, or neither one's note-off
+        # says anything about hard stop vs. release fade.
+        channel_sounds={0: _FAKE_SUSTAINED_SOUND, 1: _FAKE_SUSTAINED_SOUND},
         hard_stop=True,
         part_hard_stop={1: False},
     )
@@ -587,8 +627,9 @@ def test_track_attack_mutes_the_live_sound_before_starting_its_gain_ramp(minimal
 
 
 def test_track_release_overrides_the_default_note_off_fade(
-    tmp_path, minimal_timeline_map
+    tmp_path, minimal_timeline_map, monkeypatch
 ):
+    _confirm_looping(monkeypatch)
     midi_path = tmp_path / "track-release.mid"
     mid = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()
@@ -606,6 +647,8 @@ def test_track_release_overrides_the_default_note_off_fade(
         midi_path,
         json.dumps(minimal_timeline_map).encode("utf-8"),
         note_index=_SYNTHETIC_INDEX,
+        # Release only fades a SUSTAINED note's note-off; needs a genuine hold.
+        channel_sounds={0: _FAKE_SUSTAINED_SOUND},
         release_s=0.1,
         part_release_s={0: 0.35},
         button_name="track-release-test",
@@ -631,6 +674,136 @@ def test_track_release_overrides_the_default_note_off_fade(
     assert all(call["args"]["item[2]"] == {"float": 0.35} for call in release_events)
 
 
+def test_sustained_note_gets_an_explicit_stop_after_its_release_fade(
+    tmp_path, minimal_timeline_map, monkeypatch
+):
+    """Same bug as the sustain_limited path above: `fadeSound` only lowers
+    volume, it never releases a genuinely looping sound's emitter. Nothing
+    retriggers this note's voice (it is the last on its emitter), so a fade
+    alone would leave it looping, silently, until the engine's own recycling
+    eventually reclaims it -- the exact "recycled note rings to the end of
+    its sample under the next phrase" failure the app's own sustain-count
+    warning describes."""
+    _confirm_looping(monkeypatch)
+    midi_path = tmp_path / "sustained-release-stop.mid"
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=40, time=0),
+            mido.Message("note_on", channel=0, note=67, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=67, velocity=0, time=480),
+        ]
+    )
+    mid.save(midi_path)
+
+    raw, _ = compile_to_rawmap(
+        midi_path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: _FAKE_SUSTAINED_SOUND},
+        release_s=0.2,
+    )
+    fade_time, stop_time = _stop_and_fade_times(raw)
+
+    # The fade begins exactly at note-off; the stop only lands once the
+    # 200ms release has fully played out, never before.
+    assert stop_time == fade_time + 200
+
+
+def _timeline_event_times(raw):
+    """Every (eventTime, eventDef) across all Timeline entities, time-sorted."""
+    obj = deserialize(raw)
+    eventDef = "\neventHandle_t eventDef"
+    timed = []
+    for entity in obj["entities"]:
+        if (entity.get("entityDef") or {}).get("className") != "idTarget_Timeline":
+            continue
+        groups = entity["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+        for group_index in range(groups["num"]):
+            block = groups["item[%d]" % group_index]["events"]
+            for event_index in range(block["num"]):
+                event = block["item[%d]" % event_index]
+                timed.append((event["eventTime"], event["eventCall"][eventDef]))
+    return sorted(timed)
+
+
+def _assert_retunes_land_on_an_idle_emitter(raw):
+    """No `fadePitch` may land while a previously started sound is still
+    live. The emitter is idle when the newest stop before that modifier is
+    later than the newest start before it."""
+    timed = _timeline_event_times(raw)
+    retunes = [t for t, defn in timed if defn == "fadePitch"]
+    assert retunes, timed
+    for retune in retunes:
+        last_start = max(
+            (t for t, defn in timed if defn == "startSoundShader" and t < retune),
+            default=None,
+        )
+        if last_start is None:
+            continue  # the first note: nothing was playing to intercept it
+        last_stop = max(
+            (t for t, defn in timed if defn == "stopSound" and t < retune), default=None
+        )
+        assert last_stop is not None and last_stop > last_start, (
+            retune, last_start, last_stop, timed
+        )
+
+
+@pytest.mark.parametrize(
+    ("gap_ticks", "sustain_ms"),
+    [
+        (0, None),      # legato: the outgoing loop is still sounding outright
+        (24, None),     # 25ms gap: shorter than the 100ms release tail
+        (48, None),     # 50ms gap: still inside the release tail
+        (480, None),    # wide gap: already silent, needs no extra stop
+        (0, 150),       # legato under a Sustain Limit that stops it early
+    ],
+)
+def test_looping_note_retunes_only_on_an_idle_emitter(
+    tmp_path, minimal_timeline_map, monkeypatch, gap_ticks, sustain_ms
+):
+    """A looping sound is STILL SOUNDING when the next note on its emitter
+    begins, and `fadePitch` addresses the wildcard channel -- whatever is
+    currently playing. Without clearing the outgoing loop first, each note's
+    pitch bends its PREDECESSOR's sound instead of its own, so a phrase reads
+    as pitch wandering unpredictably (reported live on a B4/A4 pattern against
+    a manually tuned loop).
+
+    "Still sounding" includes the release TAIL, not just an overlapping
+    written block: the 25ms and 50ms gaps below both end their note before the
+    next one starts, yet their 100ms release is still audibly fading when that
+    next note retunes the emitter. The wide gap is the control -- already
+    silent, so no redundant stop should be needed to pass."""
+    _confirm_looping(monkeypatch)
+    midi_path = tmp_path / ("loop-retune-%s-%s.mid" % (gap_ticks, sustain_ms))
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    pattern = [71, 69, 71]
+    track.append(mido.Message("program_change", channel=0, program=40, time=0))
+    for index, pitch in enumerate(pattern):
+        track.append(
+            mido.Message(
+                "note_on", channel=0, note=pitch, velocity=100,
+                time=0 if index == 0 else gap_ticks,
+            )
+        )
+        track.append(mido.Message("note_off", channel=0, note=pitch, velocity=0, time=240))
+    mid.save(midi_path)
+
+    raw, _ = compile_to_rawmap(
+        midi_path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: _FAKE_SUSTAINED_SOUND},
+        channel_pitch_profiles={0: {"pitch_follow": True, "root_midi": 49.6}},
+        part_sustain_ms={0: sustain_ms} if sustain_ms else None,
+    )
+    _assert_retunes_land_on_an_idle_emitter(raw)
+
+
 def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
     def compile_shape(final_note_ticks):
         mid = mido.MidiFile(ticks_per_beat=96)
@@ -647,7 +820,13 @@ def test_decaying_note_off_and_trailing_rest_do_not_add_stop_events(tmp_path):
         # Reuse one filename so this test compares scheduling only.
         path = tmp_path / "shape.mid"
         mid.save(path)
-        return compile_to_rawmap(path, note_index=_SYNTHETIC_INDEX)
+        # Automatic instruments default Note Off ON, which explicitly stops
+        # the note -- exactly the kind of stop event this test exists to
+        # prove does NOT come from natural decay or trailing rest. Turn the
+        # new default off so it stays isolated to its own concern.
+        return compile_to_rawmap(
+            path, note_index=_SYNTHETIC_INDEX, part_note_off={0: False}
+        )
 
     short_raw, short_stats = compile_shape(24)
     bar_raw, bar_stats = compile_shape(96)
@@ -828,6 +1007,10 @@ def test_neutral_one_shot_keeps_the_shared_timeline_fast_path(tmp_path, minimal_
         path,
         json.dumps(minimal_timeline_map).encode("utf-8"),
         note_index=_SYNTHETIC_INDEX,
+        # Automatic instruments default Note Off ON, which would route this
+        # note to its own isolated voice -- the opposite of the shared
+        # fast-path this test exists to prove.
+        part_note_off={0: False},
         button_name="neutral-test",
     )
     obj = deserialize(raw)
@@ -868,6 +1051,10 @@ def test_sustain_limited_one_shot_gets_its_own_release_event(
         json.dumps(minimal_timeline_map).encode("utf-8"),
         note_index=_SYNTHETIC_INDEX,
         cap_sustain_ms=300,
+        # Isolate Sustain Limit as the thing under test: an automatic
+        # instrument's own default Note Off would ALSO isolate this note,
+        # for a shorter, different reason.
+        part_note_off={0: False},
     )
     obj = deserialize(raw)
     timeline = next(
@@ -892,7 +1079,389 @@ def test_sustain_limited_one_shot_gets_its_own_release_event(
     assert stats["expressive_one_shots"] == 1
     assert stats["voices"] == 1
     assert cap_release["eventCall"]["args"]["item[1]"] == {"float": -60.0}
-    assert cap_release["eventCall"]["args"]["item[2]"] == {"float": 0.1}
+
+    # `fadeSound` only ramps volume -- it never releases the voice, so a
+    # capped one-shot without this stop keeps rendering (silently) all the
+    # way to its own natural sample end instead of freeing its emitter. The
+    # stop has to land at the cap's own deadline (n.end == 300), never before
+    # the fade above has finished, or the release would be cut audibly short.
+    cap_stop = next(
+        event
+        for event in calls
+        if event["eventCall"]["\neventHandle_t eventDef"] == "stopSound"
+    )
+    assert cap_stop["eventTime"] == 300
+
+
+def test_playback_speed_scales_the_exported_start_time(tmp_path, minimal_timeline_map):
+    """Wiring check: `playback_speed` reaches the compiled map, not just the
+    preview. 1.0 plays the file's own tempo untouched; 2.0 halves every
+    elapsed millisecond, including the note's own start."""
+    midi_path = tmp_path / "speed.mid"
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=480),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=120),
+        ]
+    )
+    mid.save(midi_path)
+
+    normal, _ = compile_to_rawmap(
+        midi_path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_pianoc4"},
+    )
+    doubled, _ = compile_to_rawmap(
+        midi_path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_pianoc4"},
+        playback_speed=2.0,
+    )
+
+    normal_start = next(
+        t for t, defn in _timeline_event_times(normal) if defn == "startSoundShader"
+    )
+    doubled_start = next(
+        t for t, defn in _timeline_event_times(doubled) if defn == "startSoundShader"
+    )
+    assert normal_start == 500
+    assert doubled_start == 250
+
+
+def test_note_off_reaches_compile_and_caps_a_short_note_to_its_own_length(
+    tmp_path, minimal_timeline_map
+):
+    """Wiring check: `note_off` threaded end to end from `compile_to_rawmap`
+    down to the same per-note cap `voices.py` already proves correct.
+
+    A hand-picked exact sound, not an automatic instrument: automatic
+    instruments now default Note Off ON regardless of this song-wide lever
+    (see `test_automatic_instruments_default_note_off_on_without_being_asked`
+    below), so testing the LEVER itself needs a track that still reads it."""
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=120),
+        ]
+    )
+    path = tmp_path / "note-off-staccato.mid"
+    mid.save(str(path))
+    kwargs = dict(
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: "play_pianoc4"},
+    )
+
+    without, plain_stats = compile_to_rawmap(
+        path, json.dumps(minimal_timeline_map).encode("utf-8"), **kwargs
+    )
+    with_note_off, stats = compile_to_rawmap(
+        path, json.dumps(minimal_timeline_map).encode("utf-8"), note_off=True, **kwargs
+    )
+
+    # Uncapped, the note is neutral and shares the Timeline's start-only path.
+    assert plain_stats["shared_one_shots"] == 1
+    assert plain_stats["expressive_one_shots"] == 0
+    # Note Off routes it to its own isolated, explicitly-stopped voice --
+    # the same voice-isolation `test_sustain_limit_routes_a_capped_one_shot_to_an_isolated_voice`
+    # already proves happens the instant a note is marked `sustain_limited`.
+    assert stats["expressive_one_shots"] == 1
+    assert stats["shared_one_shots"] == 0
+    assert without != with_note_off
+
+
+def test_automatic_instruments_default_note_off_on_without_being_asked(
+    tmp_path, minimal_timeline_map
+):
+    """An automatic instrument is built from real-instrument recordings that
+    commonly ring past the written note. `_AUTOMATIC_NOTE_OFF_OVERRIDES`
+    curates this per family rather than blanket-on for every automatic
+    instrument -- violin (GM program 40, `ins_violin`) is one of the four
+    families that keeps the ON default, sharing the 300ms floor with
+    flute/horns/trumpet. It defaults ON even with the song-wide lever left at its
+    own default (False), with no per-track override either. Note 48: an
+    exact match in `_SYNTHETIC_INDEX`'s violin entries, so no octave-fallback
+    pitch correction shortens its natural fallback duration underneath the
+    floor's own cap."""
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=40, time=0),  # violin
+            mido.Message("note_on", channel=0, note=48, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=48, velocity=0, time=120),
+        ]
+    )
+    path = tmp_path / "automatic-note-off-default.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(
+        path, json.dumps(minimal_timeline_map).encode("utf-8"), note_index=_SYNTHETIC_INDEX
+    )
+
+    # Same isolated-voice signature `test_note_off_reaches_compile_and_caps_a_short_note_to_its_own_length`
+    # proves for an explicit `note_off=True` -- reached here with nothing set.
+    assert stats["expressive_one_shots"] == 1
+    assert stats["shared_one_shots"] == 0
+    assert b"stopSound" in raw
+
+
+def test_curated_automatic_families_default_note_off_off(tmp_path, minimal_timeline_map):
+    """The other half of the curation: piano, guitar, marimba, brass bells,
+    and every synth waveform already stop close enough to their own written
+    note that capping them added nothing audible, so they were excluded from
+    the automatic ON default -- unlike violin, flute, horns, and trumpet."""
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),  # piano
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=120),
+        ]
+    )
+    path = tmp_path / "piano-note-off-default-off.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(
+        path, json.dumps(minimal_timeline_map).encode("utf-8"), note_index=_SYNTHETIC_INDEX
+    )
+
+    assert stats["shared_one_shots"] == 1
+    assert stats["expressive_one_shots"] == 0
+    assert b"stopSound" not in raw
+
+
+def test_drums_stay_off_the_automatic_note_off_default(tmp_path, minimal_timeline_map):
+    """Drums are automatic too, but excluded from the new default: a drum
+    hit's written MIDI length is rarely its real ring time -- drum notation
+    commonly uses a short, arbitrary duration since velocity and timing
+    carry the part, not note length -- so capping a kick there would clip
+    most hits short. Channel 9 note 36 is a standard GM kick."""
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            # Full velocity: below 127 already forces the expressive voice
+            # path for an unrelated reason, which would mask what this test
+            # is actually checking.
+            mido.Message("note_on", channel=9, note=36, velocity=127, time=0),
+            mido.Message("note_off", channel=9, note=36, velocity=0, time=120),
+        ]
+    )
+    path = tmp_path / "drum-note-off-default.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(
+        path, json.dumps(minimal_timeline_map).encode("utf-8"), note_index=_SYNTHETIC_INDEX
+    )
+
+    assert stats["shared_one_shots"] == 1
+    assert stats["expressive_one_shots"] == 0
+    assert b"stopSound" not in raw
+
+
+def test_violins_note_off_default_includes_a_300ms_floor(tmp_path, minimal_timeline_map):
+    """Shares the 300ms floor with flute/horns/trumpet by choice: measured
+    against the installed recordings, violin's own median time to reach half
+    its own peak loudness is ~437ms, well past 300ms, but 300ms flat across
+    all four is the deliberately simpler answer."""
+    mid = mido.MidiFile(ticks_per_beat=960)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    # 100ms at the default 120 BPM (500 ticks/ms) -- shorter than the floor.
+    # Note 48: an exact match in `_SYNTHETIC_INDEX`'s violin entries, so no
+    # octave-fallback pitch correction changes its natural fallback duration.
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=40, time=0),  # violin
+            mido.Message("note_on", channel=0, note=48, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=48, velocity=0, time=192),
+        ]
+    )
+    path = tmp_path / "violin-short.mid"
+    mid.save(str(path))
+
+    raw, _ = compile_to_rawmap(
+        path, json.dumps(minimal_timeline_map).encode("utf-8"), note_index=_SYNTHETIC_INDEX
+    )
+
+    _, stop_time = _stop_and_fade_times(raw)
+    # The written note was 100ms; the 300ms floor pushed the audible cap out
+    # past it, so the release (100ms default) cannot land the stop before
+    # 300ms in.
+    assert stop_time >= 300
+
+
+def test_automatic_instrument_note_off_default_can_still_be_turned_off(tmp_path, minimal_timeline_map):
+    """The new default has to stay overridable per track -- someone who
+    genuinely wants an automatic instrument's full natural ring cannot be
+    stuck with the cap."""
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=120),
+        ]
+    )
+    path = tmp_path / "automatic-note-off-opt-out.mid"
+    mid.save(str(path))
+
+    raw, stats = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        part_note_off={0: False},
+    )
+
+    assert stats["shared_one_shots"] == 1
+    assert stats["expressive_one_shots"] == 0
+    assert b"stopSound" not in raw
+
+
+def _stop_and_fade_times(raw):
+    obj = deserialize(raw)
+    calls = []
+    for timeline in obj["entities"]:
+        if (timeline.get("entityDef") or {}).get("className") != "idTarget_Timeline":
+            continue
+        groups = timeline["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+        calls.extend(
+            groups["item[%d]" % group_index]["events"]["item[%d]" % event_index]
+            for group_index in range(groups["num"])
+            for event_index in range(groups["item[%d]" % group_index]["events"]["num"])
+        )
+    # An unattacked note's initial gain is also set via a zero-duration
+    # `fadeSound` at the note's own start, alongside its `startSoundShader` --
+    # the release fade this is after is whichever `fadeSound` lands LATEST.
+    eventDef = "\neventHandle_t eventDef"
+    fade_time = max(e["eventTime"] for e in calls if e["eventCall"][eventDef] == "fadeSound")
+    stop_time = next(e["eventTime"] for e in calls if e["eventCall"][eventDef] == "stopSound")
+    return fade_time, stop_time
+
+
+def test_note_off_floor_moves_the_stop_along_with_the_extended_cap(
+    tmp_path, minimal_timeline_map
+):
+    """The stop added above has to track wherever the floor pushed `n.end`
+    to, not the note's original too-short written length -- otherwise a
+    floor that successfully extends the audible fade would still free the
+    voice at the OLD, unextended time, clicking the release short."""
+    mid = mido.MidiFile()
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=0, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=1),
+        ]
+    )
+    path = tmp_path / "note-off-floor.mid"
+    mid.save(str(path))
+    # Program 0 is piano, one of the families `_AUTOMATIC_NOTE_OFF_OVERRIDES`
+    # now defaults OFF -- force it on per-track so the song-wide `note_off`
+    # lever this test passes actually reaches this note. The floor/cap
+    # timing math under test does not depend on which family produced it.
+    kwargs = dict(part_note_off={0: True})
+
+    raw_no_floor, _ = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        note_off=True,
+        **kwargs,
+    )
+    raw_with_floor, _ = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        note_off=True,
+        note_off_floor_ms=500,
+        **kwargs,
+    )
+
+    _, stop_no_floor = _stop_and_fade_times(raw_no_floor)
+    fade_with_floor, stop_with_floor = _stop_and_fade_times(raw_with_floor)
+
+    # The floor pushed the stop out to the later, extended deadline -- it is
+    # never left behind at the original too-short cap's time.
+    assert stop_with_floor > stop_no_floor
+    # And the release (100ms default) still finishes fully before the stop
+    # lands, exactly as it does without a floor.
+    assert stop_with_floor == fade_with_floor + 100
+
+
+def test_wrongly_sustained_exact_sound_gets_no_spurious_extra_start(
+    tmp_path, minimal_timeline_map
+):
+    """Live report reproduction: a hand-picked exact sound with no installed
+    record (so it is conservatively treated as sustained, same convention as
+    `_FAKE_SUSTAINED_SOUND`) but that is ACTUALLY a one-shot in the real
+    game, tuned with coarse transpose and fine cents, playing two back to
+    back notes with Track Note Off on. The user hears the sample's own
+    beginning again right before the second note -- this checks whether that
+    is a genuine extra/stray `startSoundShader` in the compiled Timeline, or
+    whether exactly the two real notes' own starts explain it (in which case
+    the bug is the sustained MISCLASSIFICATION itself, not the scheduling)."""
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.extend(
+        [
+            mido.Message("program_change", channel=0, program=40, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=127, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=420),
+            mido.Message("note_on", channel=0, note=62, velocity=127, time=60),
+            mido.Message("note_off", channel=0, note=62, velocity=0, time=480),
+        ]
+    )
+    path = tmp_path / "wrongly-sustained-pitched.mid"
+    mid.save(path)
+
+    raw, stats = compile_to_rawmap(
+        path,
+        json.dumps(minimal_timeline_map).encode("utf-8"),
+        note_index=_SYNTHETIC_INDEX,
+        channel_sounds={0: _FAKE_SUSTAINED_SOUND},
+        channel_pitch_profiles={
+            0: {"pitch_follow": False, "pitch_transpose": -5, "fine_tune_cents": 30}
+        },
+        note_off=True,
+        part_note_off={0: True},
+    )
+    obj = deserialize(raw)
+    starts = []
+    for entity in obj["entities"]:
+        if (entity.get("entityDef") or {}).get("className") != "idTarget_Timeline":
+            continue
+        groups = entity["entityDef"]["state"]["edit"]["componentTimeLine"]["entityEvents"]
+        for group_index in range(groups["num"]):
+            block = groups["item[%d]" % group_index]["events"]
+            for event_index in range(block["num"]):
+                event = block["item[%d]" % event_index]
+                if event["eventCall"]["\neventHandle_t eventDef"] == "startSoundShader":
+                    starts.append(event["eventTime"])
+
+    print("stats:", stats)
+    print("starts:", sorted(starts))
+    # Exactly two notes were written -- exactly two starts should exist. A
+    # third, unexplained one would be the actual scheduling bug; none would
+    # confirm this is purely the sustained-classification problem instead.
+    assert len(starts) == 2, starts
 
 
 def test_hermetic_multi_voice_authors_generic_timeline_emitters(minimal_timeline_map):

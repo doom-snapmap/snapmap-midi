@@ -30,6 +30,9 @@
   <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></symbol>
   <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"></path></symbol>
   <symbol id="icon-music-2" viewBox="0 0 24 24"><circle cx="8" cy="18" r="4"></circle><path d="M12 18V2l7 4"></path></symbol>
+  <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></symbol>
+  <symbol id="icon-wave-sine" viewBox="0 0 24 24"><path d="M2 12c1.5-6 3.5-6 5-3s3.5 9 5 6 3.5-9 5-6 3.5 3 5 3"></path></symbol>
+  <symbol id="icon-stack" viewBox="0 0 24 24"><path d="m12 2 8 5-8 5-8-5z"></path><path d="m4 12 8 5 8-5"></path><path d="m4 17 8 5 8-5"></path></symbol>
 </svg>
 <!-- Track rows and category controls are built from the Python payload. The
      fixed markup is the one-screen workstation shell: desktop menus, global
@@ -67,7 +70,7 @@
       <div class="menu">
         <button type="button" class="menu-label" data-menu="options" aria-haspopup="menu" aria-expanded="false">Options</button>
         <div class="menu-popup" id="menu-options" role="menu" hidden>
-          <button type="button" id="menuConversion" role="menuitem"><span>Conversion Settings...</span><kbd>Ctrl+,</kbd></button>
+          <button type="button" id="menuConversion" role="menuitem"><span>Default Settings...</span><kbd>Ctrl+,</kbd></button>
           <button type="button" id="menuAudio" role="menuitem"><span>Refresh Audio Source</span></button>
         </div>
       </div>
@@ -94,9 +97,14 @@
   <div class="transport" id="transport">
     <button type="button" class="transport-play" id="transportPlay" aria-label="Play" disabled><span id="playGlyph"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg></span></button>
     <span class="transport-time mono" id="currentTime">0:00.0</span>
-    <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Song position" disabled>
-    <span class="transport-time mono" id="totalTime">0:00.0</span>
-    <button type="button" class="tool-button icon-tool-button" id="conversionBtn" title="Conversion settings" aria-label="Conversion settings" aria-controls="conversionInspector" aria-expanded="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-settings"></use></svg></button>
+    <span class="transport-time-sep" aria-hidden="true">/</span>
+    <span class="transport-time mono muted" id="totalTime">0:00.0</span>
+    <div class="transport-spacer"></div>
+    <div class="tempo-box" id="tempoBox" title="Drag up or down to change tempo, or click to type a value">
+      <input type="text" inputmode="decimal" class="tempo-input mono" id="tempoInput" value="120.00" aria-label="Song tempo in beats per minute" readonly disabled>
+      <span class="tempo-unit">BPM</span>
+    </div>
+    <button type="button" class="tool-button icon-tool-button" id="conversionBtn" title="Default settings" aria-label="Default settings" aria-controls="conversionInspector" aria-expanded="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-settings"></use></svg></button>
     <button type="button" class="tool-button primary" id="exportBtn" disabled>Export</button>
   </div>
 
@@ -197,9 +205,9 @@
     </label>
   </div>
 
-  <aside class="inspector" id="conversionInspector" aria-label="Conversion settings" hidden>
+  <aside class="inspector" id="conversionInspector" aria-label="Default settings" hidden>
     <div class="inspector-head">
-      <div><strong>Conversion settings</strong><div class="muted">SnapMap engine limits</div></div>
+      <div><strong>Default settings</strong></div>
       <button type="button" class="close-button" id="closeInspector" aria-label="Close conversion settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body">
@@ -232,14 +240,35 @@
         <div class="range-number dependent" id="sustainControls"><input type="range" id="sustainRange" min="50" max="5000" step="10"><input type="number" id="sustainNumber" min="1" step="10"><span class="unit">ms</span></div>
       </div>
       <div class="control-group">
+        <div class="control-title"><span>Default Note Off</span><span class="hint">all tracks</span></div>
+        <div class="expression-readout">Caps a one-shot at its own written length instead of its full sample, on tracks without their own setting. Unlike Sustain Limit's single fixed ceiling, this uses each note's own duration, so a staccato note and a held note on the same track each get their own real cutoff instead of one number that can only fit one of them.</div>
+        <label class="check-line"><input type="checkbox" id="noteOff"> Stop one-shots at their own note-off</label>
+        <div class="range-number dependent" id="noteOffFloorControls"><input type="range" id="noteOffFloorRange" min="0" max="2000" step="10"><input type="number" id="noteOffFloorNumber" min="0" max="5000" step="10"><span class="unit">ms</span></div>
+        <div class="expression-readout">Never cuts a one-shot shorter than this, even if its own written length is less -- protects a fast note from clipping the sample's attack (a violin swell, for example) before it can speak. 0 means no floor.</div>
+      </div>
+      <div class="control-group">
         <label class="check-line"><input type="checkbox" id="bassEnabled"> Limit bass-note duration</label>
+        <div class="expression-readout">Caps how long any note below the chosen pitch may ring, no matter which track or instrument played it -- a low note left ringing is the fastest way to mud up a mix. Independent of Sustain Limit and Track Sustain Limit, which cap by track instead of by register.</div>
         <div class="range-number dependent" id="bassControls"><input type="range" id="bassRange" min="50" max="5000" step="10"><input type="number" id="bassNumber" min="1" step="10"><span class="unit">ms</span></div>
         <div class="threshold-line dependent" id="bassPitchControls"><label for="bassPitchNumber">Below MIDI note</label><input type="number" id="bassPitchNumber" min="0" max="127" step="1"><span class="mono" id="bassPitchName"></span></div>
       </div>
+      <!-- Sound behavior is switched off for now -- see `renderFamilyBehavior`
+           in app.js. The "Fire and forget" checkbox it showed was checking
+           membership in `decaying_families`, which only still affects `amb_`
+           category sounds now that `SUSTAINED` (gm.py) is empty: every
+           curated instrument family's real installed sample is already a
+           one-shot, confirmed against the game files, so the checkbox was
+           dead for every instrument row it ever showed. The per-family ms
+           cap field beside it is unrelated and still fully functional, so
+           this is commented out rather than deleted -- it may come back with
+           just that part, or scoped to only the sounds where it still means
+           something. -->
+      <!--
       <div class="control-group">
         <div class="control-title"><span>Sound behavior</span><span class="hint">Used categories</span></div>
         <div class="family-behavior" id="familyBehavior"></div>
       </div>
+      -->
     </div>
     <div class="inspector-foot"><button type="button" class="btn" id="restoreDefaults">Restore defaults</button></div>
   </aside>
@@ -263,127 +292,171 @@
       <button type="button" class="close-button" id="closeChannelInspector" aria-label="Close track settings"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg></button>
     </div>
     <div class="inspector-body" id="channelInspectorBody">
-      <div class="control-group channel-percussion-group">
-        <div class="control-title"><span>Track type</span><span class="hint">track</span></div>
-        <select id="channelPercussion" aria-label="How this track is played">
-          <option value="auto">Automatic</option>
-          <option value="kit">Drum kit</option>
-          <option value="melodic">Melodic instrument</option>
-        </select>
-        <div class="expression-readout" id="channelPercussionHelp"></div>
+      <div class="channel-settings-tabs" id="channelSettingsTabs">
+        <button type="button" class="channel-tab active" data-tab="source" aria-pressed="true"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-music-2"></use></svg><span>Source</span></button>
+        <button type="button" class="channel-tab" data-tab="pitch" aria-pressed="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-wave-sine"></use></svg><span>Pitch</span></button>
+        <button type="button" class="channel-tab" data-tab="dynamics" aria-pressed="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-settings"></use></svg><span>Dynamics</span></button>
+        <button type="button" class="channel-tab" data-tab="voices" aria-pressed="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-stack"></use></svg><span>Voices</span></button>
       </div>
 
-      <div class="control-group drum-keys-group" id="drumKeysGroup" hidden>
-        <div class="control-title"><span>Drum keys</span><span class="hint" id="drumKeysCount"></span></div>
-        <div class="drum-key-list" id="drumKeyList"></div>
+      <div class="tab-panel active" data-tab="source">
+        <div class="control-group channel-percussion-group">
+          <div class="control-title"><span>Track type</span><span class="hint">track</span></div>
+          <select id="channelPercussion" aria-label="How this track is played">
+            <option value="auto">Automatic</option>
+            <option value="kit">Drum kit</option>
+            <option value="melodic">Melodic instrument</option>
+          </select>
+          <div class="expression-readout" id="channelPercussionHelp"></div>
+        </div>
+
+        <div class="control-group drum-keys-group" id="drumKeysGroup" hidden>
+          <div class="control-title"><span>Drum keys</span><span class="hint" id="drumKeysCount"></span></div>
+          <div class="drum-key-list" id="drumKeyList"></div>
+        </div>
+
+        <div class="control-group channel-pitch-group" id="channelPitchGroup">
+          <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
+          <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
+          <div class="expression-readout" id="channelPitchModeHelp"></div>
+        </div>
       </div>
 
-      <div class="control-group channel-pitch-group" id="channelPitchGroup">
-        <div class="control-title"><span>Pitch mode</span><span class="hint">channel</span></div>
-        <label class="check-line channel-setting-primary"><input type="checkbox" id="channelPitchFollow"> Follow MIDI note</label>
-        <div class="expression-readout" id="channelPitchModeHelp"></div>
-      </div>
+      <div class="tab-panel" data-tab="pitch">
+        <!-- First: when a sound is calibrated past +/-24 semitones, the whole
+             track gets folded into a playable octave automatically, and that
+             folded octave is the thing most likely to need a manual nudge --
+             ahead of transpose, which only makes sense once the track is
+             already sitting in the octave the user wants. -->
+        <div class="control-group" id="channelOctaveGroup">
+          <div class="control-title"><label for="channelOctaveRange">Playback octave</label><span class="control-title-meta"><span class="hint">whole octaves</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What playback octave does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">SnapMap can only pitch a sound 24 semitones. When this track's sound is calibrated further away than that, the whole track is moved by whole octaves so every note stays in range and in tune. Octaves are exact, so calibration cents never change. Leave it automatic unless you want the track in a different octave.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelOctaveEnabled"> Set for this track</label>
+          <div class="range-number dependent" id="channelOctaveControls"><input type="range" id="channelOctaveRange" min="-4" max="4" step="1"><input type="number" id="channelOctaveNumber" min="-10" max="10" step="1"></div>
+          <div class="expression-readout" id="channelOctaveHelp"></div>
+        </div>
 
-      <div class="control-group">
-        <div class="control-title"><label for="channelVolumeRange">Track Volume</label><span class="hint">dB</span></div>
-        <div class="expression-readout">Raises or lowers every note on this track. Individual note volume remains an additional per-note setting.</div>
-        <div class="range-number"><input type="range" id="channelVolumeRange" min="-60" max="20" value="0" step="1"><input type="number" id="channelVolumeNumber" min="-60" max="20" value="0" step="1"></div>
-        <div class="expression-readout" id="channelVolumeHelp"></div>
-      </div>
+        <div class="control-group" id="channelPitchRegular">
+          <div class="control-title"><label for="channelTransposeRange">Track transpose</label><span class="control-title-meta"><span class="hint">semitones</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track transpose does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Moves every note on this track up or down in whole semitones.</span></span></span></div>
+          <div class="range-number"><input type="range" id="channelTransposeRange" min="-24" max="24" step="1"><input type="number" id="channelTransposeNumber" min="-24" max="24" step="1"></div>
+          <div class="expression-readout" id="channelEffectivePitch"></div>
+        </div>
 
-      <div class="control-group">
-        <div class="control-title"><label for="channelVoicesRange">Track Voices</label><span class="hint">share of global pool</span></div>
-        <div class="expression-readout">Caps how many Global Voices this track can use. Set 1 for a monophonic track; each new note takes over its one pitch-controlled emitter.</div>
-        <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
-        <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
-        <div class="expression-readout" id="channelVoicesHelp"></div>
-      </div>
-
-      <div class="control-group">
-        <div class="control-title"><label for="channelPolyRange">Track Polyphony</label><span class="hint">this track</span></div>
-        <div class="expression-readout">Caps simultaneous notes on this track. Extra low notes are muted and shown as dashed outlines; playing notes are not cut off.</div>
-        <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
-        <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
-        <div class="expression-readout" id="channelPolyHelp"></div>
-      </div>
-
-      <div class="control-group" id="channelPitchRegular">
-        <div class="control-title"><label for="channelTransposeRange">Track transpose</label><span class="hint">semitones</span></div>
-        <div class="expression-readout control-description">Moves every note on this track up or down in whole semitones.</div>
-        <div class="range-number"><input type="range" id="channelTransposeRange" min="-24" max="24" step="1"><input type="number" id="channelTransposeNumber" min="-24" max="24" step="1"></div>
-        <div class="expression-readout" id="channelEffectivePitch"></div>
-      </div>
-
-      <details class="channel-advanced-settings" id="channelAdvancedSettings">
-        <summary>Advanced track settings</summary>
-        <div class="channel-advanced-body">
-          <div class="control-group channel-pitch-advanced" id="channelPitchAdvanced">
-            <div class="control-title"><span>Manual sample calibration</span><span class="hint">advanced</span></div>
-
+        <details class="channel-advanced-settings" id="channelPitchAdvanced">
+          <summary>Manual sample calibration</summary>
+          <div class="channel-advanced-body">
             <div class="channel-pitch-analysis-row">
               <button type="button" class="btn" id="channelAnalyzePitch">Analyze sound</button>
               <button type="button" class="btn" id="channelClearPitch">Clear pitch setup</button>
-              <span class="hint">find natural pitch</span>
+              <span class="tip"><button type="button" class="tip-trigger" aria-label="What analyze and clear do"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Finds the sound's natural note and cents offset. Confidence shows how reliable the detection is. Clear pitch setup removes analysis and manual calibration, then plays the sound unchanged.</span></span>
             </div>
-            <div class="expression-readout control-description">Finds the sound's natural note and cents offset. Confidence shows how reliable the detection is. Clear pitch setup removes analysis and manual calibration, then plays the sound unchanged.</div>
             <div class="expression-readout" id="channelPitchAnalysis">Not analyzed yet.</div>
 
             <div class="channel-pitch-analysis-row channel-reference-row">
               <button type="button" class="btn" id="channelPlayReference">Play C4 reference</button>
               <span class="hint" id="channelReferenceHelp">MIDI 60 · 261.63 Hz</span>
+              <span class="tip"><button type="button" class="tip-trigger" aria-label="What the reference tone does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Loops a built-in pure tone until you press Stop. It uses no DOOM sound asset and never changes the track.</span></span>
             </div>
-            <div class="expression-readout control-description">Loops a built-in pure tone until you press Stop. It uses no DOOM sound asset and never changes the track.</div>
 
-            <div class="control-title"><label for="channelCalibrationRange">Coarse sample tuning</label><span class="hint">semitones</span></div>
-            <div class="expression-readout control-description">Calibrates an unanalyzed sound against the reference in whole semitones. Positive pitches the sample higher; negative pitches it lower. Every MIDI note then follows from that tuning.</div>
+            <div class="control-title"><label for="channelCalibrationRange">Coarse sample tuning</label><span class="control-title-meta"><span class="hint">semitones</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What coarse tuning does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Calibrates an unanalyzed sound against the reference in whole semitones. Positive pitches the sample higher; negative pitches it lower. Every MIDI note then follows from that tuning.</span></span></span></div>
             <div class="range-number"><input type="range" id="channelCalibrationRange" min="-24" max="24" step="1"><input type="number" id="channelCalibrationNumber" min="-24" max="24" step="1"></div>
 
-            <div class="control-title"><label for="channelCalibrationCentsRange">Sample tuning fine adjustment</label><span class="hint">cents</span></div>
-            <div class="expression-readout control-description">Finishes the manual sample calibration between semitones. This is saved as the sample's inferred natural note.</div>
+            <div class="control-title"><label for="channelCalibrationCentsRange">Sample tuning fine adjustment</label><span class="control-title-meta"><span class="hint">cents</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What fine adjustment does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Finishes the manual sample calibration between semitones. This is saved as the sample's inferred natural note.</span></span></span></div>
             <div class="range-number"><input type="range" id="channelCalibrationCentsRange" min="-100" max="100" step="1"><input type="number" id="channelCalibrationCentsNumber" min="-100" max="100" step="1"></div>
             <div class="expression-readout" id="channelCalibrationHelp"></div>
 
             <label class="field-label" id="channelRootLabel" for="channelRootValue">Sample root or Follow MIDI reference</label>
             <input type="text" class="mono" id="channelRootValue" placeholder="60 or C4 (optional)" autocomplete="off">
-            <div class="expression-readout control-description" id="channelRootDescription">Shows the analyzer result or the note inferred from manual sample tuning. Edit it only when you already know the sound's natural note. Correction equals the imported MIDI note minus this value.</div>
+            <div class="expression-readout" id="channelRootDescription">Shows the analyzer result or the note inferred from manual sample tuning. Edit it only when you already know the sound's natural note. Correction equals the imported MIDI note minus this value.</div>
             <div class="expression-readout" id="channelRootHelp"></div>
-
-            <div class="control-title"><label for="channelGlideRange">Track glide</label><span class="hint">milliseconds</span></div>
-            <div class="expression-readout control-description">Slides this fixed sound from its previous note into the next. Default: No glide (0 ms). Track Voices 1 gives monophonic portamento.</div>
-            <div class="range-number"><input type="range" id="channelGlideRange" min="0" max="5000" value="0" step="1"><input type="number" id="channelGlideNumber" min="0" max="5000" value="0" step="1"></div>
           </div>
+        </details>
+      </div>
 
-          <div class="control-group">
-            <div class="control-title"><label for="channelAttackRange">Track Attack</label><span class="hint">note-on fade</span></div>
-            <div class="expression-readout control-description">Fades every sound on this track in from silence at note-on, including Automatic instruments. Leave it off for the source sound's natural attack; enabling it routes this track's notes through dedicated emitters.</div>
-            <label class="check-line"><input type="checkbox" id="channelAttackEnabled"> Set for this track</label>
-            <div class="range-number dependent" id="channelAttackControls"><input type="range" id="channelAttackRange" min="10" max="5000" step="10"><input type="number" id="channelAttackNumber" min="1" max="5000" step="10"><span class="unit">ms</span></div>
-            <div class="expression-readout" id="channelAttackHelp"></div>
-          </div>
-
-          <div class="control-group">
-            <div class="control-title"><label for="channelSustainRange">Track Sustain Limit</label><span class="hint">this track</span></div>
-            <div class="expression-readout">Caps how long any sound on this track may remain audible. One-shots use a dedicated emitter only when this cap cuts their natural ring. It does not change how many voices the track can use.</div>
-            <label class="check-line"><input type="checkbox" id="channelSustainEnabled"> Set for this track</label>
-            <div class="range-number dependent" id="channelSustainControls"><input type="range" id="channelSustainRange" min="50" max="5000" step="10"><input type="number" id="channelSustainNumber" min="1" step="10"><span class="unit">ms</span></div>
-            <div class="expression-readout" id="channelSustainHelp"></div>
-          </div>
-
-          <div class="control-group">
-            <div class="control-title"><label for="channelReleaseRange">Track Release</label><span class="hint">note-off fade</span></div>
-            <div class="expression-readout">Fades sustained or looping notes after MIDI note-off, and finishes a Sustain Limit fade by its deadline. It does not change attack or the sample's natural decay.</div>
-            <label class="check-line"><input type="checkbox" id="channelReleaseEnabled"> Set for this track</label>
-            <div class="range-number dependent" id="channelReleaseControls"><input type="range" id="channelReleaseRange" min="0" max="2" step="0.01"><input type="number" id="channelReleaseNumber" min="0" max="10" step="0.01"><span class="unit">s</span></div>
-            <div class="expression-readout" id="channelReleaseHelp"></div>
-
-            <div class="control-title"><span>Track Hard Stop</span><span class="hint">immediate note-off</span></div>
-            <div class="expression-readout">Stops this track immediately at note-off or its Sustain Limit instead of using its Release fade. Leave it inherited to follow Default Track Release's Hard stop notes choice.</div>
-            <label class="check-line"><input type="checkbox" id="channelHardStopEnabled"> Set for this track</label>
-            <label class="check-line dependent" id="channelHardStopControls"><input type="checkbox" id="channelHardStop"> Hard stop notes</label>
-            <div class="expression-readout" id="channelHardStopHelp"></div>
-          </div>
+      <div class="tab-panel" data-tab="dynamics">
+        <div class="control-group">
+          <div class="control-title"><label for="channelVolumeRange">Track Volume</label><span class="control-title-meta"><span class="hint">dB</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track volume does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Raises or lowers every note on this track. Individual note volume remains an additional per-note setting.</span></span></span></div>
+          <div class="range-number"><input type="range" id="channelVolumeRange" min="-60" max="20" value="0" step="1"><input type="number" id="channelVolumeNumber" min="-60" max="20" value="0" step="1"></div>
+          <div class="expression-readout" id="channelVolumeHelp"></div>
         </div>
-      </details>
+
+        <div class="control-group">
+          <div class="control-title"><span>Track Note Off</span><span class="control-title-meta"><span class="hint">this track's one-shots</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track note off does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Caps a one-shot at its own written length instead of its full sample. Unlike Sustain Limit's single fixed ceiling, this uses each note's own duration, so a staccato note and a held note on this track each get their own real cutoff. Automatic instruments default this per instrument (most on, a few off); a hand-picked exact sound follows Default Note Off unless set here.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelNoteOffEnabled"> Set for this track</label>
+          <div class="dependent" id="channelNoteOffControls">
+            <label class="check-line"><input type="checkbox" id="channelNoteOff"> Stop one-shots at their own note-off</label>
+            <div class="range-number"><input type="range" id="channelNoteOffFloorRange" min="0" max="2000" step="10"><input type="number" id="channelNoteOffFloorNumber" min="0" max="5000" step="10"><span class="unit">ms floor</span></div>
+          </div>
+          <div class="expression-readout" id="channelNoteOffHelp"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-title"><label for="channelAttackRange">Track Attack</label><span class="control-title-meta"><span class="hint">note-on fade</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track attack does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Fades every sound on this track in from silence at note-on, including Automatic instruments. Leave it off for the source sound's natural attack; enabling it routes this track's notes through dedicated emitters.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelAttackEnabled"> Set for this track</label>
+          <div class="range-number dependent" id="channelAttackControls"><input type="range" id="channelAttackRange" min="10" max="5000" step="10"><input type="number" id="channelAttackNumber" min="1" max="5000" step="10"><span class="unit">ms</span></div>
+          <div class="expression-readout" id="channelAttackHelp"></div>
+        </div>
+
+        <!-- Exact-sound only, same as Manual sample calibration: glide slides
+             one recording's pitch into the next, and an automatic instrument
+             switches recordings per note rather than retuning one, so there
+             is nothing here for it to slide between. -->
+        <div class="control-group" id="channelGlideGroup">
+          <div class="control-title"><label for="channelGlideRange">Track glide</label><span class="control-title-meta"><span class="hint">milliseconds</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track glide does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Slides this fixed sound from its previous note into the next. Default: No glide (0 ms). Track Voices 1 gives monophonic portamento.</span></span></span></div>
+          <div class="range-number"><input type="range" id="channelGlideRange" min="0" max="5000" value="0" step="1"><input type="number" id="channelGlideNumber" min="0" max="5000" value="0" step="1"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-title"><label for="channelSustainRange">Track Sustain Limit</label><span class="control-title-meta"><span class="hint">this track</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What sustain limit does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Caps how long any sound on this track may remain audible. One-shots use a dedicated emitter only when this cap cuts their natural ring. It does not change how many voices the track can use.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelSustainEnabled"> Set for this track</label>
+          <div class="range-number dependent" id="channelSustainControls"><input type="range" id="channelSustainRange" min="50" max="5000" step="10"><input type="number" id="channelSustainNumber" min="1" step="10"><span class="unit">ms</span></div>
+          <div class="expression-readout" id="channelSustainHelp"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-title"><label for="channelReleaseRange">Track Release</label><span class="control-title-meta"><span class="hint">note-off fade</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track release does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Fades sustained or looping notes after MIDI note-off, and finishes a Sustain Limit fade by its deadline. It does not change attack or the sample's natural decay.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelReleaseEnabled"> Set for this track</label>
+          <div class="range-number dependent" id="channelReleaseControls"><input type="range" id="channelReleaseRange" min="0" max="2" step="0.01"><input type="number" id="channelReleaseNumber" min="0" max="10" step="0.01"><span class="unit">s</span></div>
+          <div class="expression-readout" id="channelReleaseHelp"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-title"><span>Track Hard Stop</span><span class="control-title-meta"><span class="hint">immediate note-off</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track hard stop does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Stops this track immediately at note-off or its Sustain Limit instead of using its Release fade. Leave it inherited to follow Default Track Release's Hard stop notes choice.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelHardStopEnabled"> Set for this track</label>
+          <label class="check-line dependent" id="channelHardStopControls"><input type="checkbox" id="channelHardStop"> Hard stop notes</label>
+          <div class="expression-readout" id="channelHardStopHelp"></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="voices">
+        <div class="control-group">
+          <div class="control-title"><label for="channelVoicesRange">Track Voices</label><span class="control-title-meta"><span class="hint">share of global pool</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track voices does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Caps how many Global Voices this track can use. Set 1 for a monophonic track; each new note takes over its one pitch-controlled emitter.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelVoicesEnabled"> Set for this track</label>
+          <div class="range-number dependent" id="channelVoicesControls"><input type="range" id="channelVoicesRange" min="1" max="128" step="1"><input type="number" id="channelVoicesNumber" min="1" max="128" step="1"></div>
+          <div class="expression-readout" id="channelVoicesHelp"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-title"><label for="channelPolyRange">Track Polyphony</label><span class="control-title-meta"><span class="hint">this track</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What track polyphony does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Caps simultaneous notes on this track. Extra low notes are muted and shown as dashed outlines; playing notes are not cut off.</span></span></span></div>
+          <label class="check-line"><input type="checkbox" id="channelPolyEnabled"> Set for this track</label>
+          <div class="range-number dependent" id="channelPolyControls"><input type="range" id="channelPolyRange" min="1" max="128" step="1"><input type="number" id="channelPolyNumber" min="1" max="128" step="1"></div>
+          <div class="expression-readout" id="channelPolyHelp"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-title"><span>Key range</span><span class="control-title-meta"><span class="hint">this track</span><span class="tip"><button type="button" class="tip-trigger" aria-label="What key range does"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg></button><span class="tip-text" role="tooltip">Notes outside this range are silenced on this track, like a keyboard split. Full range by default, so every note plays.</span></span></span></div>
+          <div class="dual-key-range">
+            <div class="key-track"></div>
+            <div class="key-fill" id="channelKeyFill"></div>
+            <input type="range" id="channelKeyLowRange" min="0" max="127" step="1" value="0" aria-label="Lowest note">
+            <input type="range" id="channelKeyHighRange" min="0" max="127" step="1" value="127" aria-label="Highest note">
+          </div>
+          <div class="key-range-values">
+            <span class="key-range-value"><input type="number" id="channelKeyLowNumber" min="0" max="127" step="1" value="0" aria-label="Lowest note number"><span class="mono" id="channelKeyLowName"></span></span>
+            <span class="key-range-value"><input type="number" id="channelKeyHighNumber" min="0" max="127" step="1" value="127" aria-label="Highest note number"><span class="mono" id="channelKeyHighName"></span></span>
+          </div>
+          <div class="expression-readout" id="channelKeyRangeHelp"></div>
+        </div>
+      </div>
 
       <dl class="channel-facts">
         <div><dt>Sound</dt><dd id="channelSound">-</dd></div>
@@ -391,6 +464,7 @@
         <div><dt>Notes</dt><dd class="mono" id="channelNoteCount">-</dd></div>
       </dl>
     </div>
+    <div class="inspector-foot"><button type="button" class="btn" id="restoreChannelDefaults">Restore defaults</button></div>
   </aside>
 
   <aside class="inspector note-inspector" id="noteInspector" aria-label="Note expression" hidden>

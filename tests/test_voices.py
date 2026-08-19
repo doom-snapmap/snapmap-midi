@@ -357,6 +357,148 @@ def test_sustain_limit_routes_a_capped_one_shot_to_an_isolated_voice():
     assert note.end == note.voice_end == 300
 
 
+def test_note_off_caps_each_decaying_note_at_its_own_length_not_a_shared_ceiling():
+    """The problem a single Sustain Limit cannot solve: a staccato note and a
+    held note on the same track need two different cutoffs, and Note Off's
+    cap is each note's own written length rather than one shared number."""
+    staccato = Note(0, 100, "play_pianoc4", False, 0, "ins_piano")
+    staccato.pitch_modifier = staccato.volume_db = 0
+    held = Note(500, 2500, "play_pianoc4", False, 0, "ins_piano")
+    held.pitch_modifier = held.volume_db = 0
+
+    prepare_voice_layers(
+        [staccato, held], [], note_off=True, duration_lookup=lambda _sound: 1000
+    )
+
+    # The staccato note's sample would otherwise ring its full 1000ms;
+    # capped down to its own 100ms.
+    assert staccato.end == 100
+    assert staccato.sustain_limited is True
+    # The held note's own 2000ms length already exceeds the sample's natural
+    # 1000ms, so nothing needs capping -- it plays out its natural decay
+    # unchanged, exactly as it would with Note Off off.
+    assert held.end == 2500
+    assert getattr(held, "sustain_limited", False) is False
+
+
+def test_note_off_never_touches_a_genuinely_sustained_note():
+    """A looping family already stops at its own note-off through the
+    ordinary `n.sustained` path in `compile.py`; Note Off is only for the
+    one-shot families that otherwise ignore note-off entirely."""
+    note = Note(0, 2000, "play_violinc4", True, 0, "ins_violin")
+    note.track = 0
+    note.chan = 0
+
+    prepare_voice_layers([], [note], note_off=True, duration_lookup=lambda _sound: 1000)
+
+    assert note.end == 2000
+    assert getattr(note, "sustain_limited", False) is False
+
+
+def test_note_off_composes_with_a_shorter_fixed_sustain_limit():
+    """Whichever ceiling is lower wins, the same way the bass cap already
+    composes with a fixed Sustain Limit."""
+    note = Note(0, 5000, "play_pianoc4", False, 0, "ins_piano")
+    note.pitch_modifier = note.volume_db = 0
+
+    prepare_voice_layers(
+        [note], [], note_off=True, cap_sustain_ms=200, duration_lookup=lambda _sound: 1000
+    )
+
+    assert note.end == 200
+    assert note.sustain_limited is True
+
+
+def test_track_note_off_can_override_the_song_default():
+    on_track = Note(0, 100, "play_pianoc4", False, 0, "ins_piano")
+    on_track.track = 1
+    on_track.pitch_modifier = on_track.volume_db = 0
+    off_track = Note(0, 100, "play_pianoc4", False, 0, "ins_piano")
+    off_track.track = 2
+    off_track.pitch_modifier = off_track.volume_db = 0
+
+    prepare_voice_layers(
+        [on_track, off_track],
+        [],
+        note_off=False,
+        part_note_off={(1, 0): True},
+        duration_lookup=lambda _sound: 1000,
+    )
+
+    assert on_track.sustain_limited is True
+    assert on_track.end == 100
+    assert getattr(off_track, "sustain_limited", False) is False
+    assert off_track.end == 100
+
+
+def test_note_off_floor_extends_a_too_short_note_but_leaves_long_notes_alone():
+    """A fast note gets bumped up to the floor so the sample's attack has time
+    to speak; a note already past the floor is untouched -- the floor only
+    ever adds room to the notes that would otherwise clip."""
+    staccato = Note(0, 100, "play_violinc4", False, 0, "ins_violin")
+    staccato.pitch_modifier = staccato.volume_db = 0
+    held = Note(500, 3000, "play_violinc4", False, 0, "ins_violin")
+    held.pitch_modifier = held.volume_db = 0
+
+    prepare_voice_layers(
+        [staccato, held],
+        [],
+        note_off=True,
+        note_off_floor_ms=250,
+        duration_lookup=lambda _sound: 1000,
+    )
+
+    # Written 100ms, floor 250ms: capped to the floor instead of its own
+    # too-short length.
+    assert staccato.end == 250
+    assert staccato.sustain_limited is True
+    # Written 2500ms, already past the 250ms floor: the floor never shortens
+    # anything, so this note is exactly as untouched as it is without a floor.
+    assert held.end == 3000
+    assert getattr(held, "sustain_limited", False) is False
+
+
+def test_note_off_floor_never_widens_past_a_smaller_fixed_sustain_limit():
+    """The floor only ever raises Note Off's OWN per-note cap. It composes
+    into the same `min()` as everything else, so an explicit Sustain Limit
+    that is already tighter than the floor still wins."""
+    note = Note(0, 50, "play_pianoc4", False, 0, "ins_piano")
+    note.pitch_modifier = note.volume_db = 0
+
+    prepare_voice_layers(
+        [note],
+        [],
+        note_off=True,
+        note_off_floor_ms=500,
+        cap_sustain_ms=200,
+        duration_lookup=lambda _sound: 1000,
+    )
+
+    assert note.end == 200
+    assert note.sustain_limited is True
+
+
+def test_track_note_off_floor_can_override_the_song_default():
+    on_track = Note(0, 50, "play_pianoc4", False, 0, "ins_piano")
+    on_track.track = 1
+    on_track.pitch_modifier = on_track.volume_db = 0
+    off_track = Note(0, 50, "play_pianoc4", False, 0, "ins_piano")
+    off_track.track = 2
+    off_track.pitch_modifier = off_track.volume_db = 0
+
+    prepare_voice_layers(
+        [on_track, off_track],
+        [],
+        note_off=True,
+        note_off_floor_ms=100,
+        part_note_off_floor_ms={(1, 0): 800},
+        duration_lookup=lambda _sound: 1000,
+    )
+
+    assert on_track.end == 800
+    assert off_track.end == 100
+
+
 def test_track_voice_setting_routes_neutral_notes_through_its_voice_lane():
     note = Note(0, 100, "play_pianoc4", False, 0, "ins_piano")
     note.track = 3

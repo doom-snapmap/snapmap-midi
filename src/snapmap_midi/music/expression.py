@@ -12,6 +12,11 @@ from dataclasses import dataclass
 
 PITCH_MIN = -24
 PITCH_MAX = 24
+
+#: How far the automatic octave fold may reach, in octaves. MIDI spans a little
+#: over ten octaves, so nothing legitimate needs more than this and a runaway
+#: root cannot send a part somewhere absurd.
+OCTAVE_FOLD_LIMIT = 10
 VOLUME_MIN = -60
 VOLUME_MAX = 20
 MIDI_MIN = 0
@@ -29,6 +34,7 @@ class NoteExpression:
     pitch_offset: float
     pitch_semitones: float | None
     track_transpose: float
+    octave_shift: int
     fine_tune_cents: float
     volume_trim_db: int
     note_volume_db: int
@@ -60,6 +66,49 @@ def nearest_int(value: float) -> int:
     """Round halves away from zero rather than with Python's even-number rule."""
 
     return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
+def octave_fold(root_pitch, lowest, highest, extra_semitones: float = 0.0) -> int:
+    """How many octaves to move a part so its notes fit the engine's range.
+
+    SnapMap's pitch modifier stops at +/-24 semitones. A sound whose natural
+    note sits further than that from the music does not merely play badly: every
+    note past the limit clamps to the SAME modifier, so a melody collapses onto
+    one pitch. A sample calibrated to C7 under a part written around C4 asks for
+    -36 on every note and gets -24 on every note.
+
+    Moving by whole OCTAVES is what makes this safe. Twelve is an integer, so a
+    fold shifts the register while preserving the pitch class exactly -- and,
+    because it is added to a fractional reference rather than replacing it, a
+    calibration of "C7 -7 cents" stays seven cents flat after the fold. Folding
+    by anything other than an octave would transpose the part.
+
+    `extra_semitones` carries whatever the track already adds on top of the
+    reference -- transpose and fine tune. Including it is what makes this
+    idempotent: someone who has ALREADY corrected an out-of-range sound by hand
+    with +24 of transpose measures as in-range here and is not shifted a second
+    time.
+
+    The smallest fit wins, because that is the one closest to the written
+    octave. A part whose own span exceeds the engine's 48-semitone window
+    cannot fit at any offset; it is centered instead, leaving the ordinary
+    clamp to handle the extremes rather than pretending they were solved.
+    """
+
+    if root_pitch is None or lowest is None or highest is None:
+        return 0
+    low = float(lowest) - float(root_pitch) + float(extra_semitones)
+    high = float(highest) - float(root_pitch) + float(extra_semitones)
+    if PITCH_MIN <= low and high <= PITCH_MAX:
+        return 0
+    smallest = math.ceil((PITCH_MIN - low) / 12.0)
+    largest = math.floor((PITCH_MAX - high) / 12.0)
+    if smallest <= largest:
+        # 0 is not among them -- an in-range part returned above.
+        fold = smallest if smallest > 0 else largest
+    else:
+        fold = nearest_int(-(low + high) / 24.0)
+    return int(clamp(fold, -OCTAVE_FOLD_LIMIT, OCTAVE_FOLD_LIMIT))
 
 
 def midi_velocity_db(velocity: int) -> int:
@@ -101,6 +150,7 @@ def expression_for(
     pitch_offset: float = 0,
     pitch_semitones: float | None = None,
     track_transpose: float = 0,
+    octave_shift: int = 0,
     fine_tune_cents: float = 0,
     volume_trim_db: int = 0,
     note_volume_db: int | None = None,
@@ -130,6 +180,7 @@ def expression_for(
     if pitch_semitones is not None:
         pitch_semitones = clean_float(clamp(float(pitch_semitones), PITCH_MIN, PITCH_MAX))
     track_transpose = clean_float(clamp(float(track_transpose), PITCH_MIN, PITCH_MAX))
+    octave_shift = int(clamp(int(octave_shift), -OCTAVE_FOLD_LIMIT, OCTAVE_FOLD_LIMIT))
     fine_tune_cents = clean_float(clamp(float(fine_tune_cents), -100.0, 100.0))
     volume_trim_db = int(clamp(int(volume_trim_db), VOLUME_MIN, VOLUME_MAX))
     track_volume_db = int(clamp(int(track_volume_db), VOLUME_MIN, VOLUME_MAX))
@@ -144,8 +195,12 @@ def expression_for(
         requested_pitch = automatic_pitch + pitch_offset
     if pitch_semitones is not None:
         requested_pitch = pitch_semitones
+    # The octave fold joins transpose and fine tune rather than moving
+    # `root_pitch`, so the reference stays the honest natural note of the
+    # recording in every readout and every saved sidecar. It is a playback
+    # decision about where the part sits, not a claim about the sample.
     requested_pitch = clean_float(
-        requested_pitch + track_transpose + fine_tune_cents / 100.0
+        requested_pitch + track_transpose + fine_tune_cents / 100.0 + 12 * octave_shift
     )
     pitch_modifier = clean_float(clamp(requested_pitch, PITCH_MIN, PITCH_MAX))
     playback_rate = pitch_playback_rate(pitch_modifier)
@@ -170,6 +225,7 @@ def expression_for(
         pitch_offset=pitch_offset,
         pitch_semitones=pitch_semitones,
         track_transpose=track_transpose,
+        octave_shift=octave_shift,
         fine_tune_cents=fine_tune_cents,
         volume_trim_db=volume_trim_db,
         note_volume_db=note_volume,
