@@ -19,6 +19,33 @@ from collections.abc import Callable
 from snapmap_midi.music.expression import pitched_duration_ms
 from snapmap_midi.sound.palette import shader_pitch
 
+#: Per-family override of the blanket automatic-instrument Note Off default
+#: (on, no family-specific floor) below. A family absent from this table
+#: keeps that blanket default. Curated by ear against the actual installed
+#: samples: the eight `False` families already stop close enough to their
+#: written note on their own that capping them added nothing audible; the
+#: four with a floor have a slow enough attack (a horn or violin swell, for
+#: instance) that a note shorter than the floor would be cut before it can
+#: finish speaking. 300ms was chosen by ear across all four rather than
+#: measured per family -- a real envelope measurement puts violin's own
+#: "clearly speaking" point well past 300ms (median ~437ms against the
+#: installed recordings), so a 300ms violin note is a deliberate, known
+#: compromise, not an oversight.
+_AUTOMATIC_NOTE_OFF_OVERRIDES: dict = {
+    "ins_guitar": (False, None),
+    "ins_pulse": (False, None),
+    "ins_sine": (False, None),
+    "ins_square": (False, None),
+    "ins_tri": (False, None),
+    "ins_brass_bells": (False, None),
+    "ins_piano": (False, None),
+    "ins_marimba": (False, None),
+    "ins_flute": (True, 300),
+    "ins_horns": (True, 300),
+    "ins_trumpet": (True, 300),
+    "ins_violin": (True, 300),
+}
+
 
 def prepare_voice_layers(
     decaying,
@@ -33,6 +60,10 @@ def prepare_voice_layers(
     part_attack_ms: dict | None = None,
     part_voices: dict | None = None,
     part_sustain_ms: dict | None = None,
+    note_off: bool = False,
+    part_note_off: dict | None = None,
+    note_off_floor_ms: int | None = None,
+    part_note_off_floor_ms: dict | None = None,
 ):
     """Apply duration policy and build the isolated per-track voice layers.
 
@@ -48,6 +79,26 @@ def prepare_voice_layers(
     could escape to the shared path and overlap even when Track Voices is 1.
     This function is shared by map export and browser preview so their cutoffs
     cannot drift apart.
+
+    Note Off is a Sustain Limit whose cap is each note's OWN written duration
+    rather than one shared millisecond ceiling. A one-shot otherwise plays its
+    full installed sample regardless of how long it was written -- fine for a
+    family meant to ring past its note, wrong for one whose real instrument
+    stops close to when the player releases it. A single fixed cap cannot
+    serve both a staccato and a held note on the same track: set low enough to
+    trim the held note, it does nothing for the short one already under it;
+    set to fit the short note, it cuts the held note down to match. Note Off
+    sidesteps that by capping every note at ITS OWN length instead, composing
+    with any fixed cap already in force the same way the bass cap does --
+    whichever ceiling is lower wins.
+
+    ``note_off_floor_ms`` guards the short end of that same cap: a written
+    note shorter than the floor is capped to the floor instead of its own
+    length. Without it, a fast/staccato note on a track that needs Note Off
+    for its held notes gets clipped mid-attack -- the cap that fixes the long
+    notes cuts the short ones off before the sample can finish speaking. A
+    note already longer than the floor is untouched; only the ones the floor
+    would otherwise clip get the extra room.
     """
 
     family_caps = family_caps or {}
@@ -55,6 +106,8 @@ def prepare_voice_layers(
     part_glide_ms = part_glide_ms or {}
     part_attack_ms = part_attack_ms or {}
     part_voices = part_voices or {}
+    part_note_off = part_note_off or {}
+    part_note_off_floor_ms = part_note_off_floor_ms or {}
 
     # Cache the installed duration by Play event. Exact sounds commonly repeat
     # hundreds of times in a part; querying Wwise metadata for every note made
@@ -76,7 +129,15 @@ def prepare_voice_layers(
             natural_duration(note), getattr(note, "pitch_modifier", 0)
         )
 
-    if cap_sustain_ms or bass_cap_ms or family_caps or part_sustain_ms:
+    # `decaying` alone earns its place in this gate now that Note Off has a
+    # default that is not simply `note_off`: an automatic instrument's
+    # one-shots default per family (see `_AUTOMATIC_NOTE_OFF_OVERRIDES`
+    # below), independent of the song-wide lever, so any one-shot at all
+    # means this loop has real work to do.
+    if (
+        cap_sustain_ms or bass_cap_ms or family_caps or part_sustain_ms
+        or note_off or part_note_off or decaying
+    ):
         for note in sustained + decaying:
             # Most-specific duration wins: a track override, then its sound
             # category, then the song's default. The bass cap remains an
@@ -88,6 +149,50 @@ def prepare_voice_layers(
             pitch = _note_pitch(note)
             if bass_cap_ms and pitch < bass_pitch:
                 cap = min(cap, bass_cap_ms) if cap is not None else bass_cap_ms
+            # Note Off never touches a genuinely sustained (loop-capable)
+            # note -- that family already stops at its own note-off through
+            # the ordinary `n.sustained` path in `compile.py`. This is purely
+            # for the one-shot families that otherwise ignore note-off.
+            #
+            # An automatic instrument's one-shots default per family,
+            # independent of the song-wide lever (`_AUTOMATIC_NOTE_OFF_OVERRIDES`
+            # above): most default ON, since these are built from
+            # real-instrument recordings that commonly ring past the written
+            # note, but several -- piano, guitar, marimba, brass bells, and
+            # every synth waveform -- already stop close enough to their
+            # written note on their own that capping them added nothing
+            # audible. A hand-picked exact sound keeps the old song-wide
+            # default -- it was chosen on purpose, often as a short one-shot
+            # already, and a user who picked one specifically to ring past
+            # its note should not have that silently cut.
+            # `is False` on purpose: only a note the real pipeline has
+            # actually classified as automatic gets the new default. A note
+            # built directly (every test in this module, and any future
+            # caller that skips `parse_notes`) carries no `uses_exact_sound`
+            # at all -- `None`, not `False` -- and has to fall back to the
+            # plain song-wide `note_off` exactly as it always did, or a
+            # completely unrelated voice-allocation test starts failing the
+            # instant it constructs a bare `Note`.
+            #
+            # Drums are excluded even though they are automatic: a drum hit's
+            # written MIDI length is rarely its real ring time -- drum
+            # notation commonly uses a short, arbitrary duration since
+            # velocity and timing carry the part, not note length -- so
+            # capping a kick or snare there would clip most hits short.
+            automatic = getattr(note, "uses_exact_sound", None) is False and note.fam != "drums"
+            if automatic:
+                family_note_off, family_floor = _AUTOMATIC_NOTE_OFF_OVERRIDES.get(
+                    note.fam, (True, None)
+                )
+            else:
+                family_note_off, family_floor = note_off, None
+            if not note.sustained and _part_value(part_note_off, note, family_note_off):
+                own_length = note.end - note.start
+                floor_default = family_floor if family_floor is not None else note_off_floor_ms
+                floor = _part_value(part_note_off_floor_ms, note, floor_default)
+                if floor:
+                    own_length = max(own_length, floor)
+                cap = min(cap, own_length) if cap is not None else own_length
             if cap is None:
                 continue
 

@@ -662,7 +662,16 @@ class Bridge:
                 if name not in seen:
                     requested.append(name)
                     seen.add(name)
-            allowed = set(self._session.preview_manifest()["sounds"])
+            manifest = self._session.preview_manifest()
+            # `sounds` names only what is audible under THIS INSTANT's mute
+            # and solo state. The browser also retains buffers for every
+            # sound a muted or solo-excluded track could still use, so an
+            # unmute never has to redecode one from scratch -- checking
+            # against `sounds` alone refused exactly those, toasting a real,
+            # currently-unheard instrument as "not used by this song."
+            allowed = set(manifest["sounds"]) | {
+                event["sound"] for event in manifest["display_events"]
+            }
             outside = [name for name in requested if name not in allowed]
             if outside:
                 raise ValueError("%r is not used by the current converted song" % outside[0])

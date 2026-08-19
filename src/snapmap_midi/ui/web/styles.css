@@ -88,9 +88,38 @@ html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans
 #playGlyph { display: block; }
 .transport-play:hover:not(:disabled), .control-button:hover { border-color: var(--accent); color: var(--accent); }
 .transport-play:disabled { opacity: .45; }
-.transport-time { width: 48px; text-align: center; color: var(--muted); }
-#scrubber { flex: 1; min-width: 90px; accent-color: var(--accent); cursor: ew-resize; }
-#scrubber:disabled { opacity: .45; }
+.transport-time { width: 48px; text-align: center; }
+.transport-time.muted { color: var(--muted); }
+.transport-time-sep { color: var(--muted); }
+.transport-spacer { flex: 1; }
+.tempo-box {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  height: 29px;
+  padding: 0 9px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: ns-resize;
+  user-select: none;
+}
+.tempo-box:hover { border-color: var(--accent); }
+.tempo-box.dragging, .tempo-box.editing { border-color: var(--accent); }
+.tempo-box.disabled { opacity: .45; cursor: default; }
+.tempo-input {
+  width: 58px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.tempo-box.editing .tempo-input { pointer-events: auto; }
+.tempo-input:focus { outline: none; }
+.tempo-unit { font-size: 10px; color: var(--muted); letter-spacing: .04em; }
 .tool-button { min-height: 27px; padding: 3px 11px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
 .icon-tool-button { width: 29px; height: 29px; min-height: 29px; display: grid; place-items: center; padding: 0; }
 .icon-tool-button .ui-icon { width: 15px; height: 15px; }
@@ -286,7 +315,10 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .close-button { width: 27px; height: 27px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
 .close-button .ui-icon { width: 15px; height: 15px; }
 .close-button:hover { background: var(--sel); color: var(--selText); }
-.inspector-body { flex: 1; min-height: 0; overflow-y: auto; padding: 5px 13px 12px; }
+/* Reserves the scrollbar's width whether or not content is tall enough to
+   need one, so switching tabs or expanding a fold never shifts every
+   control sideways by the scrollbar's width the instant one appears. */
+.inspector-body { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 5px 13px 12px; }
 .inspector-foot { flex-shrink: 0; display: flex; justify-content: flex-end; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--panel2); }
 .control-group { padding: 11px 0; border-bottom: 1px solid var(--border); }
 .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
@@ -316,20 +348,73 @@ input[type=checkbox], input[type=range] { accent-color: var(--accent); }
 .channel-setting-primary { margin: 0; padding: 2px 0; font-weight: 600; }
 .channel-setting-primary input:disabled { opacity: .72; }
 .channel-pitch-group > .expression-readout { margin-top: 8px; }
-.channel-pitch-advanced > .control-title { margin-top: 13px; }
-.channel-pitch-advanced .control-description { margin: 4px 0 7px; }
+.channel-advanced-body > .control-title { margin-top: 13px; }
 .channel-pitch-analysis-row { display: flex; align-items: center; gap: 9px; margin-bottom: 3px; }
 .channel-reference-row { margin-top: 0; }
-.channel-pitch-advanced .field-label { display: block; margin: 12px 0 6px; color: var(--text); font-weight: 600; }
-.channel-pitch-advanced > input[type=text] { width: 100%; }
+.channel-advanced-body .field-label { display: block; margin: 12px 0 6px; color: var(--text); font-weight: 600; }
+.channel-advanced-body > input[type=text] { width: 100%; }
 .channel-advanced-settings { border-bottom: 1px solid var(--border); }
 .channel-advanced-settings > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; color: var(--text); font-weight: 600; cursor: pointer; list-style: none; }
 .channel-advanced-settings > summary::-webkit-details-marker { display: none; }
 .channel-advanced-settings > summary::after { content: "\203A"; color: var(--muted); font-size: 20px; line-height: 1; transform-origin: center; transition: transform .12s ease; }
 .channel-advanced-settings[open] > summary::after { transform: rotate(90deg); }
 .channel-advanced-settings > summary:hover { color: var(--sel); }
-.channel-advanced-body { border-top: 1px solid var(--border); }
+.channel-advanced-body { border-top: 1px solid var(--border); padding-top: 12px; }
 .channel-advanced-body > .control-group:last-child { border-bottom: 0; }
+
+/* Track settings tab strip. */
+.channel-settings-tabs { display: flex; gap: 2px; margin: 4px 0 10px; background: var(--panel2); border-radius: 8px; padding: 3px; }
+.channel-tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 10px; font-family: inherit; cursor: pointer; }
+.channel-tab .ui-icon { width: 16px; height: 16px; }
+.channel-tab:hover:not(.active) { color: var(--text); }
+.channel-tab.active { background: var(--panel); color: var(--text); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* A short static explanation, tucked behind an (i) so the control it labels
+   is the thing a newcomer sees first -- the panel used to show every
+   explanation at once regardless of whether the control's name already said
+   it. */
+/* Groups a control-title's unit hint with its (i) so `justify-content:
+   space-between` treats them as one trailing cluster -- with the hint and
+   the icon as two separate flex children, space-between spread them apart
+   across the row instead of keeping the hint next to the icon it belongs to. */
+.control-title-meta { display: inline-flex; align-items: center; gap: 4px; }
+.tip { position: relative; display: inline-flex; }
+.tip-trigger { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; margin: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; flex: none; line-height: 1; }
+.tip-trigger:hover, .tip-trigger:focus-visible { color: var(--text); background: var(--sel); outline: none; }
+.tip-trigger .ui-icon { width: 14px; height: 14px; }
+/* Opens leftward, anchored at the icon's own right edge. Every tip icon in
+   this panel sits at the trailing end of its row, so a bubble that opened
+   rightward (or from a left anchor) ran straight past the panel's edge and
+   was clipped instead of read. */
+.tip-text { display: none; position: absolute; right: 0; left: auto; top: 20px; width: 220px; max-width: calc(100vw - 40px); background: var(--panel2); border: 1px solid var(--border2); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.45; color: var(--muted); z-index: 20; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
+.tip:hover .tip-text, .tip:focus-within .tip-text { display: block; }
+
+/* Ghost value fields: flat text at rest, a hairline underline as the only
+   hint that it is editable, a soft fill on hover/focus. Sits next to a
+   slider that already shows the value's position -- a boxed number here
+   read as its own competing control rather than a readout of the one next
+   to it. */
+.channel-inspector .range-number input[type=number] { background: transparent; border: 1px solid transparent; border-bottom-color: var(--border2); border-radius: 4px; text-align: right; font-variant-numeric: tabular-nums; }
+.channel-inspector .range-number input[type=number]:hover,
+.channel-inspector .range-number input[type=number]:focus { background: var(--panel2); border-color: var(--panel2); }
+
+/* Key range: two native range inputs overlaid on one hand-drawn track, so
+   dragging either end works exactly like the browser's own slider while
+   reading as one control instead of two full-width sliders stacked on top
+   of each other. */
+.dual-key-range { position: relative; height: 26px; margin: 6px 2px 2px; }
+.dual-key-range .key-track { position: absolute; top: 11px; left: 0; right: 0; height: 4px; border-radius: 2px; background: var(--border2); }
+.dual-key-range .key-fill { position: absolute; top: 11px; height: 4px; border-radius: 2px; background: var(--accent); }
+.dual-key-range input[type=range] { position: absolute; top: 0; left: 0; width: 100%; height: 26px; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; pointer-events: none; }
+.dual-key-range input[type=range]::-webkit-slider-runnable-track { background: transparent; }
+.dual-key-range input[type=range]::-moz-range-track { background: transparent; }
+.dual-key-range input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 2px solid var(--panel); margin-top: -6px; cursor: pointer; }
+.dual-key-range input[type=range]::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 2px solid var(--panel); cursor: pointer; }
+.key-range-values { display: flex; justify-content: space-between; gap: 12px; margin: 2px 2px 0; }
+.key-range-values .key-range-value { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--muted); }
+.key-range-values input[type=number] { width: 52px; }
 .channel-facts { margin: 5px 0 0; }
 .channel-facts > div { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .channel-facts dt { color: var(--muted); }

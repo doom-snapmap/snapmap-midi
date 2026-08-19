@@ -56,8 +56,7 @@
     scrollLeft: null,
     scrollTop: null,
     transportTenth: null,
-    transportDuration: null,
-    scrubberPaintAt: 0
+    transportDuration: null
   };
 
   var STATE = {
@@ -103,7 +102,6 @@
   var DRAW_FRAME = null;
   var LANE_DRAW_FRAME = null;
   var SEEK_DRAG = null;
-  var SCRUB_DRAG = null;
   var NOTE_POINTER = null;
   var PANE_SPLIT_DRAG = null;
   var TRACKS_PREFERRED_WIDTH = TRACKS_DEFAULT_WIDTH;
@@ -158,7 +156,8 @@
     scheduledThrough: 0,
     generation: 0,
     preparing: false,
-    prepareError: null
+    prepareError: null,
+    scheduledIds: {}
   };
 
   function el(id) { return document.getElementById(id); }
@@ -814,8 +813,17 @@
         button.className = "track-toggle track-" + kind + "-toggle";
         button.appendChild(iconElement(kind === "mute" ? "volume-2" : "headphones"));
         button.addEventListener("click", function () {
+          var entry = partEntry(channel);
+          var turningOn = !entry[setting];
           var values = {};
-          values[setting] = !partEntry(channel)[setting];
+          values[setting] = turningOn;
+          // Mute and solo are mutually exclusive per track. A track that is
+          // both is a dead state -- soloed implies "this plays," muted
+          // silences it regardless, and nobody solos a track wanting it to
+          // stay silent. Turning one on for a track clears the other rather
+          // than leaving that trap in place.
+          var opposite = setting === "muted" ? "soloed" : "muted";
+          if (turningOn && entry[opposite]) { values[opposite] = false; }
           applyPatch(partPatch(channel, values), true);
         });
         return button;
@@ -1067,6 +1075,23 @@
   // ruler above it would drift apart. Guarded both ways so mirroring one
   // doesn't re-fire the others in a loop.
   var LANES_SCROLL_SYNCING = false;
+
+  // `lanesView` scrolls both axes; once zoom pushes its content wider than the
+  // viewport, its own horizontal scrollbar eats a strip of vertical space that
+  // `trackList` -- vertical-only, never a horizontal scrollbar -- never loses.
+  // Their true scroll ranges diverge by that strip's width, so copying
+  // `scrollTop` 1:1 leaves the shorter side unable to reach ITS OWN top or
+  // bottom once the taller side is dragged past that point. Mapping by
+  // fraction of each side's own range means both always reach their true
+  // extremes together; only a couple of stray pixels of row alignment are
+  // traded for that while a horizontal scrollbar is showing.
+  function mirrorScrollTop(target, sourceScrollTop, sourceMax) {
+    var targetMax = target.scrollHeight - target.clientHeight;
+    target.scrollTop = sourceMax > 0 && targetMax > 0
+      ? (sourceScrollTop / sourceMax) * targetMax
+      : sourceScrollTop;
+  }
+
   function initLanesScrollSync() {
     var list = el("trackList");
     var lanes = el("lanesView");
@@ -1075,13 +1100,13 @@
     list.addEventListener("scroll", function () {
       if (LANES_SCROLL_SYNCING) { return; }
       LANES_SCROLL_SYNCING = true;
-      lanes.scrollTop = list.scrollTop;
+      mirrorScrollTop(lanes, list.scrollTop, list.scrollHeight - list.clientHeight);
       LANES_SCROLL_SYNCING = false;
     });
     lanes.addEventListener("scroll", function () {
       if (LANES_SCROLL_SYNCING) { return; }
       LANES_SCROLL_SYNCING = true;
-      list.scrollTop = lanes.scrollTop;
+      mirrorScrollTop(list, lanes.scrollTop, lanes.scrollHeight - lanes.clientHeight);
       if (viewport) { viewport.scrollLeft = lanes.scrollLeft; }
       LANES_SCROLL_SYNCING = false;
       queueLaneDraw();
@@ -1507,6 +1532,13 @@
     return (STATE.catalog && STATE.catalog.drum_folders) || [];
   }
 
+  // Whether one event name is backed by several distinct recordings, which
+  // the engine picks among per trigger. Proven live, and unselectable from a
+  // map: doom-re `docs/truth/engine/snapmap-timeline-sound-modifiers.md`.
+  function multiSource(event) {
+    return !!event && Number(event.sources || 1) > 1;
+  }
+
   // Two rules, and both are needed. The folder is the only place the game says
   // what a sound is FOR -- a half-second event is as likely to be a scope chirp
   // as a drum hit -- and the loop flag is the only thing that says whether
@@ -1673,9 +1705,16 @@
         var metadata = [
           event._path || "Unfiled",
           event.bus ? "Bus: " + event.bus : "",
+          // A "multi-source" event is backed by several different recordings
+          // and the engine plays a different one per trigger, which no map
+          // can select or compensate for. Said here, in the row the sound is
+          // chosen from, because the window can only ever audition the first
+          // recording -- so nothing in preview reveals it.
           event.looping_known === false
-            ? "Loop behavior unknown"
-            : (event.looping ? "Looping" : "One-shot"),
+            ? (multiSource(event) ? "Multi-source, loop behavior unknown" : "Loop behavior unknown")
+            : multiSource(event)
+              ? (event.looping ? "Multi-source loop" : "Multi-source one-shot")
+              : (event.looping ? "Loop" : "One-shot"),
           event.previewable ? "Local preview" : "In-game only; local preview unavailable",
           eventDuration(event),
           "Wwise ID " + event.id
@@ -1975,7 +2014,8 @@
       ticks_per_beat: 480,
       duration_ticks: 0,
       tempo_changes: [{ tick: 0, time_ms: 0, tempo: 500000 }],
-      time_signatures: [{ tick: 0, time_ms: 0, numerator: 4, denominator: 4 }]
+      time_signatures: [{ tick: 0, time_ms: 0, numerator: 4, denominator: 4 }],
+      base_bpm: 120
     };
   }
 
@@ -2011,7 +2051,6 @@
     RENDER.overviewCanvas = null;
     RENDER.transportTenth = null;
     RENDER.transportDuration = null;
-    RENDER.scrubberPaintAt = 0;
     invalidateRollAll();
   }
 
@@ -2871,6 +2910,34 @@
     context.stroke();
   }
 
+  function drawKeyRangeBounds(context, width, height, scrollTop) {
+    // Only meaningful for one track's own roll -- several tracks can have
+    // different ranges, and overlaying all of them in the combined "All
+    // tracks" view would be lines nobody could attribute to a track.
+    if (!ROLL_PART || ROLL_GLOBAL) { return; }
+    var channel = partByKey(ROLL_PART);
+    if (!channel) { return; }
+    var range = partEntry(channel).key_range;
+    if (!Array.isArray(range)) { return; }
+    var low = range[0];
+    var high = range[1];
+    if (low <= 0 && high >= 127) { return; }
+    context.save();
+    context.strokeStyle = partColor(channel);
+    context.globalAlpha = 0.55;
+    context.lineWidth = 2;
+    context.setLineDash([6, 4]);
+    [high, low - 1].forEach(function (boundaryPitch) {
+      var y = (127 - boundaryPitch) * ROLL.rowHeight - scrollTop;
+      if (y < -2 || y > height + 2) { return; }
+      context.beginPath();
+      context.moveTo(0, Math.round(y) + 0.5);
+      context.lineTo(width, Math.round(y) + 0.5);
+      context.stroke();
+    });
+    context.restore();
+  }
+
   function drawNoteLabel(context, record, geometry, alpha, color) {
     if (ROLL.rowHeight < 14 || geometry.width < 25 || geometry.x < 0) { return; }
     var labelSize = clamp(Math.floor(geometry.height * 0.58), 9, 12);
@@ -3170,6 +3237,7 @@
         palette
       );
     }
+    drawKeyRangeBounds(context, width, height, viewport.scrollTop);
     RENDER.surfaceDirty = false;
   }
 
@@ -3481,8 +3549,34 @@
       .then(function (buffer) { return context.decodeAudioData(buffer); });
   }
 
+  function allSongSoundNames() {
+    // Every sound this song's current instrument assignments could ever
+    // need, full stop -- deliberately independent of mute, solo, audible AND
+    // converted, all four of which describe THIS INSTANT's mix rather than
+    // the song. `converted` was the trap: it looks like a stable per-note
+    // fact but Python only ever sets it true for a note that ran through
+    // voice allocation, which a muted or solo-excluded note never does -- so
+    // it reads true right after a mute (nothing has recomputed yet) and
+    // false again the moment the next real settings round trip lands, taking
+    // the retained buffer down with it. A mute-unmute cycle that outlives one
+    // round trip evicted the sample and paid to redecode it on every single
+    // unmute after, which is a fixed bridge round trip no matter how big the
+    // song is -- exactly the size-independent lag this was reported as.
+    // A sound's identity does not depend on whether its track happens to be
+    // audible right now, so retention should not either.
+    var display = (STATE.preview && STATE.preview.display_events) || [];
+    var seen = {};
+    var names = [];
+    display.forEach(function (event) {
+      if (!event.sound || seen[event.sound]) { return; }
+      seen[event.sound] = true;
+      names.push(event.sound);
+    });
+    return names;
+  }
+
   function requiredAudioNames() {
-    var names = ((STATE.preview && STATE.preview.sounds) || []).slice();
+    var names = allSongSoundNames();
     if (AUDIO.playing && AUDIO.performance) {
       (AUDIO.performance.sounds || []).forEach(function (name) {
         if (names.indexOf(name) < 0) { names.push(name); }
@@ -3653,6 +3747,7 @@
   function forgetSource(source) {
     var index = AUDIO.sources.indexOf(source);
     if (index >= 0) { AUDIO.sources.splice(index, 1); }
+    if (source._event) { delete AUDIO.scheduledIds[source._event.id]; }
   }
 
   function scheduleEvent(event, audiblePosition, when) {
@@ -3800,6 +3895,9 @@
         }
       }
     }
+    source._event = event;
+    source._gain = gain;
+    AUDIO.scheduledIds[event.id] = true;
     AUDIO.sources.push(source);
     source.onended = function () { forgetSource(source); };
   }
@@ -3815,22 +3913,114 @@
     return low;
   }
 
+  function estimatedEventEnd(event, performance, buffer) {
+    var hardStop = event.hard_stop === undefined ? performance.hard_stop : !!event.hard_stop;
+    return event.sustained
+      ? event.end + (hardStop || event.cut
+        ? 0 : (Number(event.release_s === undefined
+          ? performance.release_s : event.release_s) || 0) * 1000)
+      : (event.cut
+        ? event.end
+        : (event.voice_end || (event.start + (buffer ? buffer.duration * 1000 / Number(event.playback_rate || 1) : 0))));
+  }
+
   function scheduleActiveAt(position) {
     var events = playbackEvents();
     var performance = playbackPreview();
     for (var index = 0; index < AUDIO.nextIndex; index += 1) {
       var event = events[index];
       var buffer = AUDIO.buffers[event.sound];
-      var hardStop = event.hard_stop === undefined ? performance.hard_stop : !!event.hard_stop;
-      var end = event.sustained
-        ? event.end + (hardStop || event.cut
-          ? 0 : (Number(event.release_s === undefined
-            ? performance.release_s : event.release_s) || 0) * 1000)
-        : (event.cut
-          ? event.end
-          : (event.voice_end || (event.start + (buffer ? buffer.duration * 1000 / Number(event.playback_rate || 1) : 0))));
+      var end = estimatedEventEnd(event, performance, buffer);
       if (end > position) { scheduleEvent(event, position, AUDIO.context.currentTime + 0.025); }
     }
+  }
+
+  function retargetActiveGains(matches) {
+    // Volume does not change which notes play or when -- only the number
+    // `scheduleEvent` turns into a gain value -- so unlike mute/solo this
+    // never needs to stop or start a single source. It only needs the gain
+    // node already ringing for each affected note retargeted in place. That
+    // used to go through a stop-and-restart of every ringing source in the
+    // whole song, which is why a volume DRAG -- many of these in a couple of
+    // seconds -- sounded like a stream of pops instead of a fader move.
+    //
+    // Skipped near a note's edges rather than made to fight them: an attack
+    // or a release/cutoff fade is itself a scheduled ramp on this same
+    // AudioParam, and cancelling it to insert a new target would either cut
+    // the attack short or -- worse -- undo a fade to silence and leave the
+    // note briefly loud right before its already-scheduled stop. Both edges
+    // are brief; the note picks up the new volume on its own next start.
+    if (!AUDIO.playing || !AUDIO.context) { return; }
+    var position = currentPosition();
+    var now = AUDIO.context.currentTime;
+    AUDIO.sources.forEach(function (source) {
+      var event = source._event;
+      var gain = source._gain;
+      if (!event || !gain || !matches(event)) { return; }
+      var attackMs = Number(event.attack_ms || 0);
+      if (position < event.start + attackMs + 10 || position > event.end - 300) { return; }
+      var target = Math.max(0.0001, 0.34 * Math.pow(10, Number(event.volume_db || 0) / 20));
+      var current = gain.gain.value;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(current, now);
+      gain.gain.linearRampToValueAtTime(target, now + 0.03);
+    });
+  }
+
+  function resyncMixSurgically() {
+    // Mute and solo only ever change which tracks are heard, never a note's
+    // timing or pitch, so unlike a conversion edit this does not need a full
+    // stop-and-restart of the whole song. That used to stop and re-attack
+    // every currently ringing note in the WHOLE song just to
+    // silence the one track that changed -- the click and the momentary
+    // freeze (`scheduleActiveAt` re-scanning every note the song has played
+    // so far, on every click) that this exists to remove. Instead: stop only
+    // the sources whose own note just became inaudible, and start only the
+    // notes that just became audible and are already due. Every other
+    // track's sources are never touched, so they keep ringing exactly as
+    // they were.
+    if (!AUDIO.playing || !AUDIO.context) { return; }
+    var position = currentPosition();
+    var performance = playbackPreview();
+    var horizon = position + LOOKAHEAD_MS;
+
+    // `applyOptimisticMixPatch` mutates the SAME event objects `_event`
+    // points to, so each source's own event already carries fresh
+    // muted/solo_excluded/audible/converted state by the time this runs.
+    AUDIO.sources.slice().forEach(function (source) {
+      var event = source._event;
+      var stillAudible = event
+        && event.converted && event.audible && !event.muted && !event.solo_excluded;
+      if (stillAudible) { return; }
+      try { source.stop(); } catch (_error) { /* already ended */ }
+      // Cleared synchronously rather than waiting on `onended` -- that fires
+      // a moment later on the audio thread, and a rapid mute-then-unmute in
+      // that window would otherwise see this id as "already scheduled" and
+      // skip restarting a note that was actually just silenced.
+      if (event) { delete AUDIO.scheduledIds[event.id]; }
+    });
+
+    (STATE.preview.display_events || []).forEach(function (event) {
+      if (!event.converted || !event.audible || event.muted || event.solo_excluded) { return; }
+      if (AUDIO.scheduledIds[event.id] || event.start > horizon) { return; }
+      var buffer = AUDIO.buffers[event.sound];
+      if (estimatedEventEnd(event, performance, buffer) <= position) { return; }
+      var audiblePosition = Math.max(event.start, position);
+      var when = event.start <= position
+        ? AUDIO.context.currentTime + 0.025
+        : AUDIO.anchorTime + (event.start - AUDIO.anchorPosition) / 1000;
+      if (when < AUDIO.context.currentTime + 0.01) { when = AUDIO.context.currentTime + 0.01; }
+      scheduleEvent(event, audiblePosition, when);
+    });
+
+    // The events array itself just changed size, so `AUDIO.performance` and
+    // the forward cursor have to agree with it, or the next `scheduleAhead`
+    // tick walks an index against an array it no longer matches.
+    var boundary = Math.max(position, AUDIO.scheduledThrough);
+    AUDIO.performance = capturePlaybackPreview();
+    AUDIO.nextIndex = firstFutureEvent(boundary + 0.001);
+    AUDIO.scheduledThrough = boundary;
+    scheduleAhead();
   }
 
   function scheduleAhead() {
@@ -3945,7 +4135,6 @@
     var duration = (STATE.preview && STATE.preview.duration_ms) || 0;
     var bounded = clamp(position, 0, duration);
     var tenth = Math.floor(bounded / 100);
-    var now = window.performance ? performance.now() : Date.now();
     if (immediate || RENDER.transportTenth !== tenth) {
       RENDER.transportTenth = tenth;
       el('currentTime').textContent = formatTime(bounded);
@@ -3953,11 +4142,6 @@
     if (RENDER.transportDuration !== duration) {
       RENDER.transportDuration = duration;
       el('totalTime').textContent = formatTime(duration);
-      el('scrubber').max = String(duration);
-    }
-    if (immediate || !AUDIO.playing || now - RENDER.scrubberPaintAt >= 33) {
-      RENDER.scrubberPaintAt = now;
-      el('scrubber').value = String(bounded);
     }
     if (AUDIO.playing) { revealPlayhead(position, true); }
     drawPianoRoll(position);
@@ -3997,11 +4181,112 @@
   function renderTransportState() {
     var playable = hasSong();
     el('transportPlay').disabled = !playable;
-    el('scrubber').disabled = !playable;
     setIcon(el('playGlyph'), AUDIO.playing ? 'pause' : 'play');
     el('transportPlay').setAttribute('aria-label', AUDIO.playing ? 'Pause' : 'Play');
+    el('tempoInput').disabled = !playable;
+    el('tempoBox').classList.toggle('disabled', !playable);
     renderHorizontalScrollLock();
     updateMenuState();
+  }
+
+  // Mirrors the settings module's _MIN_PLAYBACK_SPEED / _MAX_PLAYBACK_SPEED:
+  // quarter speed to quadruple speed, expressed here in BPM once the song's
+  // own base tempo is known.
+  var _MIN_PLAYBACK_SPEED = 0.25;
+  var _MAX_PLAYBACK_SPEED = 4.0;
+  var TEMPO_DRAG = null;
+
+  function baseBpm() {
+    return Number(timingManifest().base_bpm) || 120;
+  }
+
+  function effectiveBpm() {
+    return baseBpm() * (Number(tuning().playback_speed) || 1);
+  }
+
+  function bpmRange() {
+    var base = baseBpm();
+    return [base * _MIN_PLAYBACK_SPEED, base * _MAX_PLAYBACK_SPEED];
+  }
+
+  function syncTempoBox() {
+    if (TEMPO_DRAG || document.activeElement === el('tempoInput')) { return; }
+    el('tempoInput').value = effectiveBpm().toFixed(2);
+  }
+
+  function commitBpm(bpm) {
+    var base = baseBpm();
+    var range = bpmRange();
+    bpm = clamp(Number(bpm) || base, range[0], range[1]);
+    var speed = clamp(bpm / base, _MIN_PLAYBACK_SPEED, _MAX_PLAYBACK_SPEED);
+    el('tempoInput').value = (base * speed).toFixed(2);
+    applyPatch({ tuning: { playback_speed: speed } }, true);
+  }
+
+  function enterTempoEdit() {
+    var box = el('tempoBox');
+    var input = el('tempoInput');
+    if (box.classList.contains('disabled')) { return; }
+    box.classList.add('editing');
+    input.readOnly = false;
+    input.focus();
+    input.select();
+  }
+
+  function commitTempoEdit() {
+    var box = el('tempoBox');
+    var input = el('tempoInput');
+    box.classList.remove('editing');
+    input.readOnly = true;
+    commitBpm(input.value);
+  }
+
+  function cancelTempoEdit() {
+    var box = el('tempoBox');
+    var input = el('tempoInput');
+    box.classList.remove('editing');
+    input.readOnly = true;
+    input.value = effectiveBpm().toFixed(2);
+    input.blur();
+  }
+
+  function initTempoControl() {
+    var box = el('tempoBox');
+    var input = el('tempoInput');
+    box.addEventListener('pointerdown', function (event) {
+      if (box.classList.contains('disabled') || box.classList.contains('editing')) { return; }
+      event.preventDefault();
+      box.setPointerCapture(event.pointerId);
+      TEMPO_DRAG = { pointerId: event.pointerId, startY: event.clientY, startBpm: effectiveBpm(), moved: false };
+    });
+    box.addEventListener('pointermove', function (event) {
+      if (!TEMPO_DRAG || event.pointerId !== TEMPO_DRAG.pointerId) { return; }
+      var dy = TEMPO_DRAG.startY - event.clientY;
+      if (Math.abs(dy) > 3) { TEMPO_DRAG.moved = true; }
+      if (!TEMPO_DRAG.moved) { return; }
+      box.classList.add('dragging');
+      var sensitivity = event.shiftKey ? 0.1 : 0.5;
+      var range = bpmRange();
+      var bpm = clamp(TEMPO_DRAG.startBpm + dy * sensitivity, range[0], range[1]);
+      input.value = bpm.toFixed(2);
+    });
+    function endDrag(event) {
+      if (!TEMPO_DRAG || event.pointerId !== TEMPO_DRAG.pointerId) { return; }
+      var moved = TEMPO_DRAG.moved;
+      box.classList.remove('dragging');
+      TEMPO_DRAG = null;
+      if (moved) { commitBpm(input.value); } else { enterTempoEdit(); }
+    }
+    box.addEventListener('pointerup', endDrag);
+    box.addEventListener('pointercancel', endDrag);
+    input.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); input.blur(); }
+      else if (event.key === 'Escape') { event.preventDefault(); cancelTempoEdit(); }
+    });
+    input.addEventListener('blur', function () {
+      if (!box.classList.contains('editing')) { return; }
+      commitTempoEdit();
+    });
   }
 
   /* ------------------------------------------------ conversion inspector */
@@ -4020,6 +4305,16 @@
     el(numberId).value = String(value);
   }
 
+  // Sound behavior is switched off for now -- see the matching HTML comment
+  // in index.html for why: the "Fire and forget" checkbox this rendered was
+  // checking membership in `decaying_families`, which now only affects
+  // `amb_` category sounds (every curated instrument family's real
+  // installed sample is already a one-shot, confirmed against the game
+  // files -- see `gm.py`'s `SUSTAINED`). Commented out rather than deleted:
+  // the per-family ms cap this also rendered is unrelated and still fully
+  // functional, so this may come back scoped to just that, or just to the
+  // sounds where the checkbox still means something.
+  /*
   function usedFamilies() {
     var seen = {};
     previewEvents().forEach(function (event) {
@@ -4082,6 +4377,7 @@
       host.appendChild(row);
     });
   }
+  */
 
   function syncInspector() {
     var values = tuning();
@@ -4093,6 +4389,9 @@
     syncPair('maxPolyRange', 'maxPolyNumber', polyOn ? values.max_poly : recallLimit('max_poly', 16));
     setDependent('polyControls', polyOn);
     el('hardStop').checked = !!values.hard_stop;
+    el('noteOff').checked = !!values.note_off;
+    syncPair('noteOffFloorRange', 'noteOffFloorNumber', Number(values.note_off_floor_ms || 0));
+    setDependent('noteOffFloorControls', !!values.note_off);
     syncPair('releaseRange', 'releaseNumber', Number(values.release_s || 0));
     setDependent('releaseControls', !values.hard_stop);
     var sustainOn = values.cap_sustain_ms !== null && values.cap_sustain_ms !== undefined;
@@ -4110,7 +4409,7 @@
     setDependent('bassPitchControls', bassOn);
     el('bassPitchNumber').value = String(values.bass_pitch === undefined ? 78 : values.bass_pitch);
     el('bassPitchName').textContent = noteName(values.bass_pitch === undefined ? 78 : values.bass_pitch);
-    renderFamilyBehavior();
+    // renderFamilyBehavior(); -- Sound behavior is switched off for now, see above.
   }
 
   function openInspector() {
@@ -4211,7 +4510,7 @@
   }
 
   // Both track limits share an optional slider shape. Global Voices stays in
-  // Conversion settings as the hard ceiling for every track combined.
+  // Default settings as the hard ceiling for every track combined.
   function syncChannelLimit(channel, key, fallbackKey, ids, describe, fallbackValue) {
     var saved = partEntry(channel);
     var own = saved[key];
@@ -4223,6 +4522,50 @@
     setDependent(ids.controls, on);
     syncPair(ids.range, ids.number, on ? own : recallLimit(scope, songWide || fallbackValue || 32));
     el(ids.help).textContent = describe(on ? own : null, songWide, trackOutcomes(channel));
+  }
+
+  // What the exporter actually decided for this track, read back off its notes
+  // rather than recomputed here. The fold depends on the track's note span, its
+  // reference and its transpose together, and a second implementation in the
+  // browser would eventually disagree with the one that writes the map.
+  function effectiveOctave(part) {
+    if (!part) { return 0; }
+    var events = previewDisplayEvents();
+    for (var index = 0; index < events.length; index += 1) {
+      if (String(events[index].part) === String(part.key)) {
+        return Number(events[index].octave_shift) || 0;
+      }
+    }
+    return 0;
+  }
+
+  function octaveWords(value) {
+    value = Number(value) || 0;
+    if (!value) { return "at the written octave"; }
+    return Math.abs(value) + (Math.abs(value) === 1 ? " octave " : " octaves ")
+      + (value > 0 ? "above" : "below") + " written";
+  }
+
+  function syncChannelOctave(channel) {
+    var entry = partEntry(channel);
+    var own = entry.pitch_octave;
+    var on = own !== null && own !== undefined;
+    var automatic = effectiveOctave(channel);
+    el("channelOctaveGroup").hidden = !entry.sound;
+    el("channelOctaveEnabled").checked = on;
+    setDependent("channelOctaveControls", on);
+    syncPair("channelOctaveRange", "channelOctaveNumber", on ? own : automatic);
+    if (on) {
+      el("channelOctaveHelp").textContent = "Pinned: this track plays "
+        + octaveWords(own) + ". Untick to let it be chosen automatically.";
+      return;
+    }
+    el("channelOctaveHelp").textContent = automatic
+      ? "Automatic: this sound is calibrated too far from this track to pitch inside "
+        + "SnapMap's 24 semitones, so the track plays " + octaveWords(automatic)
+        + ". The tuning stays exact -- an octave is a whole 12 semitones, so your "
+        + "calibration cents are untouched."
+      : "Automatic: this track is within range, so nothing is moved.";
   }
 
   function syncChannelPoly(channel) {
@@ -4308,6 +4651,115 @@
       : (effective
         ? "Inherited: Default Track Release stops notes immediately."
         : "Inherited: Default Track Release uses its fade.");
+  }
+
+  // Mirrors `voices.py`'s `_AUTOMATIC_NOTE_OFF_OVERRIDES`: [note_off, floor_ms].
+  // A family absent from this table keeps the blanket automatic default
+  // (on, no family-specific floor). Curated by ear against the actual
+  // installed samples: the eight `false` families already stop close enough
+  // to their own written note that capping them added nothing audible; the
+  // four with a floor have a slow enough attack (a horn or violin swell,
+  // for instance) that a note shorter than the floor would be cut before it
+  // can finish speaking. 300ms was chosen by ear across all four rather
+  // than measured per family -- a real envelope measurement puts violin's
+  // own "clearly speaking" point well past 300ms (median ~437ms against the
+  // installed recordings), so a 300ms violin note is a deliberate, known
+  // compromise, not an oversight.
+  var AUTOMATIC_NOTE_OFF_OVERRIDES = {
+    ins_guitar: [false, null],
+    ins_pulse: [false, null],
+    ins_sine: [false, null],
+    ins_square: [false, null],
+    ins_tri: [false, null],
+    ins_brass_bells: [false, null],
+    ins_piano: [false, null],
+    ins_marimba: [false, null],
+    ins_flute: [true, 300],
+    ins_horns: [true, 300],
+    ins_trumpet: [true, 300],
+    ins_violin: [true, 300]
+  };
+
+  function channelAutomaticNoteOffOverride(channel, entry) {
+    var family = entry.family || channel.auto_family;
+    return AUTOMATIC_NOTE_OFF_OVERRIDES[family] || null;
+  }
+
+  function channelNoteOff(channel) {
+    var entry = partEntry(channel);
+    var own = entry.note_off;
+    if (own !== null && own !== undefined) { return !!own; }
+    // Drums are automatic too, but excluded -- a drum hit's written MIDI
+    // length is rarely its real ring time, so capping there would clip most
+    // hits short. A hand-picked exact sound keeps reading the song-wide
+    // default -- it was chosen on purpose. Matches `voices.py`'s
+    // `family_note_off`.
+    var automatic = !entry.sound && !channel.is_drums;
+    if (!automatic) { return !!tuning().note_off; }
+    var override = channelAutomaticNoteOffOverride(channel, entry);
+    return override ? override[0] : true;
+  }
+
+  function channelNoteOffFloor(channel) {
+    var entry = partEntry(channel);
+    var own = entry.note_off_floor_ms;
+    if (own !== null && own !== undefined) { return Number(own) || 0; }
+    var automatic = !entry.sound && !channel.is_drums;
+    if (automatic) {
+      var override = channelAutomaticNoteOffOverride(channel, entry);
+      if (override && override[1] !== null) { return override[1]; }
+    }
+    return Number(tuning().note_off_floor_ms || 0);
+  }
+
+  function syncChannelNoteOff(channel) {
+    var saved = partEntry(channel);
+    var own = saved.note_off;
+    var on = own !== null && own !== undefined;
+    var automatic = !saved.sound && !channel.is_drums;
+    var effective = channelNoteOff(channel);
+    var floor = channelNoteOffFloor(channel);
+    el("channelNoteOffEnabled").checked = on;
+    el("channelNoteOff").checked = effective;
+    syncPair("channelNoteOffFloorRange", "channelNoteOffFloorNumber", floor);
+    setDependent("channelNoteOffControls", on);
+    el("channelNoteOffHelp").textContent = on
+      ? (effective
+        ? "Each one-shot on this track stops at its own note-off (never shorter than " + floor + " ms)."
+        : "This track's one-shots keep their full sample.")
+      : (automatic
+        ? (effective
+          ? "Automatic default for this instrument: stops at its own note-off (never shorter " +
+            "than " + floor + " ms)."
+          : "Automatic default for this instrument: one-shots keep their full sample.")
+        : (effective
+          ? "Inherited: Default Note Off stops one-shots at their own note-off."
+          : "Inherited: Default Note Off is off; one-shots keep their full sample."));
+  }
+
+  // The two range inputs are overlaid on one visual track via CSS -- neither
+  // browser renders a "fill between two thumbs" on its own, so this bar is
+  // drawn by hand and has to be kept in step by every path that can move
+  // either handle: the initial sync and every commit in bindChannelKeyRange.
+  function updateKeyRangeFill(low, high) {
+    var fill = el("channelKeyFill");
+    fill.style.left = (low / 127 * 100) + "%";
+    fill.style.width = ((high - low) / 127 * 100) + "%";
+  }
+
+  function syncChannelKeyRange(channel) {
+    var saved = partEntry(channel);
+    var range = saved.key_range;
+    var low = Array.isArray(range) ? range[0] : 0;
+    var high = Array.isArray(range) ? range[1] : 127;
+    syncPair("channelKeyLowRange", "channelKeyLowNumber", low);
+    syncPair("channelKeyHighRange", "channelKeyHighNumber", high);
+    updateKeyRangeFill(low, high);
+    el("channelKeyLowName").textContent = noteName(low);
+    el("channelKeyHighName").textContent = noteName(high);
+    el("channelKeyRangeHelp").textContent = (low === 0 && high === 127)
+      ? "Off: every note on this track plays."
+      : "Only " + noteName(low) + " through " + noteName(high) + " play on this track.";
   }
 
   function syncChannelRelease(channel) {
@@ -4504,24 +4956,45 @@
           ? " Saved legacy track detune: " + pitchAdjustment(savedDetuneCents / 100) + "."
           : "");
 
+    var caution = multiSourceCaution(entry.sound);
     if (detected !== null) {
       var confidence = Math.round(clamp(Number(entry.root_confidence || 0), 0, 1) * 100);
       el("channelPitchAnalysis").textContent =
-        "Detected " + pitchReference(detected) + " with " + confidence + "% confidence.";
+        "Detected " + pitchReference(detected) + " with " + confidence + "% confidence." + caution;
     } else if (entry.root_source === "neutral") {
       el("channelPitchAnalysis").textContent =
-        "Not analyzed. Follow MIDI note uses an assumed " + noteName(NEUTRAL_ROOT_MIDI) + " reference.";
+        "Not analyzed. Follow MIDI note uses an assumed " + noteName(NEUTRAL_ROOT_MIDI) +
+        " reference." + caution;
     } else {
-      el("channelPitchAnalysis").textContent = "Not analyzed yet.";
+      el("channelPitchAnalysis").textContent = "Not analyzed yet." + caution;
     }
 
     var adjustment = transpose + savedDetuneCents / 100;
-    if (entry.pitch_follow && root !== null && isFinite(root)) {
+    if (!entry.sound) {
+      // An automatic instrument owns a separately recorded sample per key, so
+      // transpose reaches for a different one rather than retuning the one it
+      // has. Saying so matters: it is why this costs no voice and why it stops
+      // moving notes once the family runs out of samples at that end.
+      el("channelEffectivePitch").textContent = transpose
+        ? "Plays each note's sample " + pitchAdjustment(transpose) +
+          " away, using the recording made at that pitch rather than retuning one." +
+          " Notes past this instrument's range fall back to the nearest sample it has."
+        : "Plays the recording made for each note. Transpose selects a different" +
+          " one per note instead of retuning, so it costs no extra voice.";
+    } else if (entry.pitch_follow && root !== null && isFinite(root)) {
+      // The fold has to be inside this number. It is the one that claims to be
+      // "the final adjustment", and a track moved by an octave whose headline
+      // readout still shows the unfolded figure contradicts the octave readout
+      // directly below it.
+      var folded = entry.pitch_octave === null || entry.pitch_octave === undefined
+        ? effectiveOctave(partByKey(SELECTED_PART))
+        : Number(entry.pitch_octave) || 0;
       el("channelEffectivePitch").textContent =
         "Pitch formula: imported MIDI note − " + pitchName(root) +
         ". At " + noteName(60) + ", the final adjustment is " +
-        pitchAdjustment(referenceCorrection + adjustment) +
-        " after sample calibration and Track transpose." +
+        pitchAdjustment(referenceCorrection + adjustment + 12 * folded) +
+        " after sample calibration and Track transpose" +
+        (folded ? ", including this track's " + octaveWords(folded) : "") + "." +
         (savedDetuneCents
           ? " A saved legacy detune adds " + pitchAdjustment(savedDetuneCents / 100) + "."
           : "");
@@ -4556,8 +5029,18 @@
     var root = entry.root_midi;
     var canFollow = root !== null && root !== undefined &&
       entry.root_source !== "detected_octave_pending";
-    el("channelPitchRegular").hidden = !exact;
+    // Transpose applies to an automatic instrument too -- there it selects a
+    // different pre-tuned recording rather than retuning one, so it is if
+    // anything MORE at home on this path than on a single sample. Manual
+    // sample calibration below stays exact-only: it exists to establish one
+    // recording's natural note, which an automatic family already knows for
+    // every sample it owns.
+    el("channelPitchRegular").hidden = false;
     el("channelPitchAdvanced").hidden = !exact;
+    // Glide moved to Dynamics, but stays exact-only for the same reason
+    // Manual sample calibration does: it retunes ONE recording, which an
+    // automatic instrument never has -- it reaches for a different one.
+    el("channelGlideGroup").hidden = !exact;
     el("channelInspectorSubtitle").textContent =
       partLabel(channel) + " - MIDI channel " + (channel.channel + 1);
     el("channelSound").textContent = assignmentLabel(channel);
@@ -4572,11 +5055,14 @@
     // behind that return.
     syncChannelVoices(channel);
     syncChannelPoly(channel);
+    syncChannelOctave(channel);
     syncChannelSustain(channel);
     syncChannelAttack(channel);
     syncChannelHardStop(channel);
+    syncChannelNoteOff(channel);
     syncChannelRelease(channel);
     syncChannelVolume(channel);
+    syncChannelKeyRange(channel);
 
     // Available for every exact sound. A detected root makes following
     // musically faithful; without one it still works, against a neutral
@@ -4590,6 +5076,12 @@
         : (entry.family
           ? "Pitches this instrument set to match each imported MIDI note."
           : "Pitches the automatic instrument mapping to match each imported MIDI note.");
+      // Track transpose applies here too -- by selecting a different pre-tuned
+      // recording rather than retuning one -- so its own control still has to
+      // be filled in. Everything below this point is manual sample
+      // calibration, which is meaningless for a family that already knows the
+      // natural note of every sample it owns, so the early return stays.
+      syncChannelPitchControls(entry);
       return;
     }
     syncChannelPitchControls(entry);
@@ -4616,6 +5108,7 @@
     SELECTED_PART = channel.key;
     CHANNEL_INSPECTOR_OPEN = true;
     el("channelInspector").hidden = false;
+    switchChannelSettingsTab(CHANNEL_SETTINGS_TAB);
     syncChannelInspector();
     patchTracks();
   }
@@ -4752,6 +5245,30 @@
     applyPatch(partPatch(channel, body), true);
   }
 
+  // How many distinct source recordings each analyzed event turned out to
+  // carry, by sound name. One DOOM event name can front several completely
+  // different recordings -- `Play_vega_bass` fronts three, of 28s, 39s and
+  // 43s -- and the engine picks among them per playback while this window can
+  // only ever extract and audition the first. Calibrating a sample root
+  // against that one recording therefore cannot hold in game: the same
+  // correct semitone modifier lands on a different recording, at a different
+  // inherent pitch, on most notes. Not persisted in settings, because it is a
+  // fact about the installed sound rather than a choice about the song.
+  var SOUND_SOURCE_COUNTS = {};
+
+  function soundSourceCount(sound) {
+    var count = Number(SOUND_SOURCE_COUNTS[sound] || 0);
+    return count > 1 ? count : 0;
+  }
+
+  function multiSourceCaution(sound) {
+    var count = soundSourceCount(sound);
+    if (!count) { return ""; }
+    return " This event fronts " + count + " different recordings and the game" +
+      " picks among them, so a calibrated root cannot hold for every note." +
+      " Only the first is auditioned here.";
+  }
+
   function analyzeSelectedChannelPitch() {
     var channel = partByKey(SELECTED_PART);
     var saved = partEntry(channel);
@@ -4766,6 +5283,7 @@
       }
       var profile = response.profile;
       var plan = response.pitch_plan;
+      SOUND_SOURCE_COUNTS[saved.sound] = Number(profile.sources || 1);
       var detected = profile.pitchable && profile.root_midi !== null &&
         profile.root_midi !== undefined ? Number(profile.root_midi) : null;
       applyPatch(partPatch(channel, {
@@ -4774,10 +5292,23 @@
         root_confidence: Number(plan.root_confidence || 0),
         root_source: plan.root_source || "neutral"
       }), true);
-      toast(detected !== null && isFinite(detected)
-        ? "Detected " + pitchReference(detected) + "."
-        : "No stable root was detected; natural playback remains available.",
-      detected !== null && isFinite(detected) ? "ok" : "warn");
+      var variants = soundSourceCount(saved.sound);
+      if (variants) {
+        // Louder than the readout, because this one silently invalidates the
+        // whole calibration workflow the user is in the middle of.
+        toast(
+          saved.sound + " fronts " + variants + " different recordings. The game" +
+          " picks among them per note, so tuning against the one auditioned here" +
+          " will play at other pitches in game. Prefer a single-recording sound" +
+          " for pitched parts.",
+          "warn"
+        );
+      } else {
+        toast(detected !== null && isFinite(detected)
+          ? "Detected " + pitchReference(detected) + "."
+          : "No stable root was detected; natural playback remains available.",
+        detected !== null && isFinite(detected) ? "ok" : "warn");
+      }
     }).catch(fail).finally(function () {
       setBusy(false);
       button.disabled = false;
@@ -4802,6 +5333,32 @@
       fine_tune_cents: 0
     }), true);
     toast("Pitch analysis and calibration cleared. The sound now plays unchanged.");
+  }
+
+  // Every field a Track settings control can write, restored to null so the
+  // track falls back to whatever the song-wide defaults say. Deliberately
+  // NOT `sound`/`family` or mute/solo -- nothing in this panel assigns those,
+  // so a button living here should not touch them.
+  var CHANNEL_DEFAULT_RESET_FIELDS = [
+    "percussion", "pitch_follow", "pitch_follow_preference",
+    "volume_db", "voices", "polyphony",
+    "pitch_transpose", "pitch_octave",
+    "root_midi", "detected_root_midi", "root_confidence", "root_source",
+    "fine_tune_cents", "glide_ms",
+    "attack_ms", "sustain_ms", "release_s", "hard_stop",
+    "note_off", "note_off_floor_ms", "key_range"
+  ];
+
+  function restoreSelectedChannelDefaults() {
+    var channel = partByKey(SELECTED_PART);
+    if (!channel) { return; }
+    stopPitchReferenceTone();
+    var values = {};
+    CHANNEL_DEFAULT_RESET_FIELDS.forEach(function (field) {
+      values[field] = field === "root_confidence" ? 0 : null;
+    });
+    applyPatch(partPatch(channel, values), true);
+    toast(partLabel(channel) + " reset to song defaults.");
   }
 
   function syncPitchReferenceButton() {
@@ -5072,11 +5629,98 @@
     });
   }
 
+  function bindChannelNoteOff() {
+    var send = debounce(function (values) {
+      var part = partByKey(SELECTED_PART);
+      if (part) { applyPatch(partPatch(part, values), true); }
+    }, 120);
+    el("channelNoteOffEnabled").addEventListener("change", function () {
+      setDependent("channelNoteOffControls", this.checked);
+      send(this.checked
+        ? { note_off: !!el("channelNoteOff").checked, note_off_floor_ms: null }
+        : { note_off: null, note_off_floor_ms: null });
+    });
+    el("channelNoteOff").addEventListener("change", function () {
+      send({ note_off: !!this.checked });
+    });
+    el("channelNoteOffFloorRange").addEventListener("input", function () {
+      el("channelNoteOffFloorNumber").value = this.value;
+      send({ note_off_floor_ms: Math.round(Number(this.value)) });
+    });
+    el("channelNoteOffFloorNumber").addEventListener("change", function () {
+      el("channelNoteOffFloorRange").value = this.value;
+      send({ note_off_floor_ms: Math.round(Number(this.value)) });
+    });
+  }
+
+  function bindChannelKeyRange() {
+    var send = debounce(function (low, high) {
+      var part = partByKey(SELECTED_PART);
+      if (!part) { return; }
+      var value = (low === 0 && high === 127) ? null : [low, high];
+      applyPatch(partPatch(part, { key_range: value }), true);
+    }, 180);
+    function currentLow() {
+      return clamp(Math.round(Number(el("channelKeyLowNumber").value) || 0), 0, 127);
+    }
+    function currentHigh() {
+      return clamp(Math.round(Number(el("channelKeyHighNumber").value) || 127), 0, 127);
+    }
+    function commit(low, high) {
+      el("channelKeyLowRange").value = low;
+      el("channelKeyLowNumber").value = low;
+      el("channelKeyHighRange").value = high;
+      el("channelKeyHighNumber").value = high;
+      updateKeyRangeFill(low, high);
+      el("channelKeyLowName").textContent = noteName(low);
+      el("channelKeyHighName").textContent = noteName(high);
+      send(low, high);
+    }
+    el("channelKeyLowRange").addEventListener("input", function () {
+      var high = currentHigh();
+      commit(Math.min(clamp(Math.round(Number(this.value)), 0, 127), high), high);
+    });
+    el("channelKeyLowNumber").addEventListener("change", function () {
+      var high = currentHigh();
+      commit(Math.min(clamp(Math.round(Number(this.value) || 0), 0, 127), high), high);
+    });
+    el("channelKeyHighRange").addEventListener("input", function () {
+      var low = currentLow();
+      commit(low, Math.max(clamp(Math.round(Number(this.value)), 0, 127), low));
+    });
+    el("channelKeyHighNumber").addEventListener("change", function () {
+      var low = currentLow();
+      commit(low, Math.max(clamp(Math.round(Number(this.value) || 127), 0, 127), low));
+    });
+  }
+
+  // Persisted across tracks on purpose: someone tuning dynamics on every
+  // track in the song should not be sent back to Source each time they pick
+  // a new one.
+  var CHANNEL_SETTINGS_TAB = "source";
+
+  function switchChannelSettingsTab(tab) {
+    CHANNEL_SETTINGS_TAB = tab;
+    el("channelInspectorBody").querySelectorAll(".channel-tab").forEach(function (button) {
+      var on = button.dataset.tab === tab;
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    el("channelInspectorBody").querySelectorAll(".tab-panel").forEach(function (panel) {
+      panel.classList.toggle("active", panel.dataset.tab === tab);
+    });
+  }
+
   function initChannelInspector() {
+    el("channelSettingsTabs").addEventListener("click", function (e) {
+      var button = e.target.closest(".channel-tab");
+      if (button) { switchChannelSettingsTab(button.dataset.tab); }
+    });
     el("closeChannelInspector").addEventListener(
       "click",
       closeChannelInspectorAndClearSelection
     );
+    el("restoreChannelDefaults").addEventListener("click", restoreSelectedChannelDefaults);
     el("rollTrackChipClose").addEventListener("click", function () {
       closeDetailedRoll();
     });
@@ -5098,6 +5742,7 @@
     bindChannelRelease();
     bindChannelAttack();
     bindChannelHardStop();
+    bindChannelNoteOff();
     bindChannelLimit("voices", "max_speakers", {
       enabled: "channelVoicesEnabled", controls: "channelVoicesControls",
       range: "channelVoicesRange", number: "channelVoicesNumber"
@@ -5106,16 +5751,46 @@
       enabled: "channelPolyEnabled", controls: "channelPolyControls",
       range: "channelPolyRange", number: "channelPolyNumber"
     });
+    bindChannelOctave();
     bindChannelLimit("sustain_ms", "cap_sustain_ms", {
       enabled: "channelSustainEnabled", controls: "channelSustainControls",
       range: "channelSustainRange", number: "channelSustainNumber"
     }, 1000);
+    bindChannelKeyRange();
   }
 
   // Unticking writes null rather than removing the key, because a patch merges:
   // an absent key means "leave it alone", so dropping it would leave the old
   // override in force while the box said otherwise. Null is how the settings
   // document spells "use the song's".
+  // Not `bindChannelLimit`, for one reason: that helper resolves its value with
+  // `Number(...) || fallback`, so a typed 0 reads as "nothing set" and becomes
+  // the fallback. Every other lever it serves has a minimum of 1, so 0 was
+  // never a real answer there. Here it is the commonest real answer -- "leave
+  // this track at the written octave" -- and it has to survive.
+  function bindChannelOctave() {
+    var send = debounce(function (value) {
+      var part = partByKey(SELECTED_PART);
+      if (!part) { return; }
+      applyPatch(partPatch(part, { pitch_octave: value }), true);
+    }, 180);
+    el("channelOctaveEnabled").addEventListener("change", function () {
+      setDependent("channelOctaveControls", this.checked);
+      if (!this.checked) { send(null); return; }
+      // Pin whatever the track is doing right now, so ticking the box changes
+      // nothing audible on its own; the sliders are what move it afterwards.
+      send(Math.round(Number(el("channelOctaveNumber").value) || 0));
+    });
+    el("channelOctaveRange").addEventListener("input", function () {
+      el("channelOctaveNumber").value = this.value;
+      send(Math.round(Number(this.value) || 0));
+    });
+    el("channelOctaveNumber").addEventListener("change", function () {
+      el("channelOctaveRange").value = this.value;
+      send(Math.round(Number(this.value) || 0));
+    });
+  }
+
   function bindChannelLimit(key, fallbackKey, ids, fallbackValue) {
     var send = debounce(function (value) {
       var part = partByKey(SELECTED_PART);
@@ -5349,11 +6024,13 @@
     bindPair('maxPolyRange', 'maxPolyNumber', 'max_poly', false);
     bindPair('releaseRange', 'releaseNumber', 'release_s', true);
     bindPair('sustainRange', 'sustainNumber', 'cap_sustain_ms', false);
+    bindPair('noteOffFloorRange', 'noteOffFloorNumber', 'note_off_floor_ms', false);
     bindPair('bassRange', 'bassNumber', 'bass_cap_ms', false);
     el('polyEnabled').addEventListener('change', function () {
       applyPatch({ tuning: { max_poly: this.checked ? Number(el('maxPolyNumber').value || 16) : null } }, true);
     });
     el('hardStop').addEventListener('change', function () { applyPatch({ tuning: { hard_stop: this.checked } }, true); });
+    el('noteOff').addEventListener('change', function () { applyPatch({ tuning: { note_off: this.checked } }, true); });
     el('sustainEnabled').addEventListener('change', function () {
       applyPatch({ tuning: { cap_sustain_ms: this.checked ? Number(el('sustainNumber').value || 1000) : null } }, true);
     });
@@ -5480,6 +6157,7 @@
     if (!api()) { return Promise.resolve(); }
     var patch = JSON.parse(JSON.stringify(body || {}));
     applyOptimisticMixPatch(patch);
+    applyOptimisticVolumePatch(patch);
     PATCH_NEXT = mergePendingPatch(PATCH_NEXT, patch);
     PATCH_PENDING = 1;
     drainPatchQueue();
@@ -5508,8 +6186,28 @@
     display.forEach(function (event) {
       var part = partByKey(event.part);
       var entry = partEntry(part);
+      var wasExcluded = event.muted || event.solo_excluded;
       event.muted = !!entry.muted;
       event.solo_excluded = soloActive && !entry.soloed;
+      // `audible` came from Python computed under the OLD mix state; it has
+      // to be re-derived here or a note just unmuted stays excluded by its
+      // own stale flag one line down. `out_of_key_range` is the only other
+      // input to Python's formula and a mix-only patch never touches it.
+      event.audible = !event.out_of_key_range && !event.muted && !event.solo_excluded;
+      // `converted` is Python's answer to a harder question -- whether this
+      // note also survives polyphony and voice-count thinning -- and it
+      // never runs that thinning on a muted or solo-excluded note, so a note
+      // silenced by either one is ALWAYS converted:false in the payload,
+      // permanently, until a real recompute says otherwise. Left alone, an
+      // unmute or an un-solo would keep failing this filter below and stay
+      // silent for however long that recompute takes -- the asymmetry this
+      // whole function exists to remove reappearing one field over. Assume
+      // it plays the instant it stops being excluded; the recompute a moment
+      // behind this corrects the rare case where the rest of the song's
+      // density would have thinned it, which costs a bar that is briefly
+      // denser than the export, not several seconds of silence that never
+      // was.
+      if (wasExcluded && !event.muted && !event.solo_excluded) { event.converted = true; }
     });
     STATE.preview.events = display.filter(function (event) {
       return event.converted && event.audible && !event.muted && !event.solo_excluded;
@@ -5517,7 +6215,86 @@
     STATE.preview.sounds = STATE.preview.events.map(function (event) { return event.sound; })
       .filter(function (sound, index, all) { return all.indexOf(sound) === index; }).sort();
     invalidatePreviewRenderCache();
+    resyncMixSurgically();
     render();
+  }
+
+  function isTrackVolumeOnlyPatch(patch) {
+    if (!patch || Object.keys(patch).length !== 1 || !patch.channels) { return false; }
+    return Object.keys(patch.channels).every(function (partKey) {
+      var entry = patch.channels[partKey];
+      if (!entry || typeof entry !== 'object') { return false; }
+      var keys = Object.keys(entry);
+      return keys.length === 1 && keys[0] === 'volume_db' && typeof entry.volume_db === 'number';
+    });
+  }
+
+  function isMasterVolumeOnlyPatch(patch) {
+    if (!patch || Object.keys(patch).length !== 1 || !patch.tuning) { return false; }
+    var keys = Object.keys(patch.tuning);
+    return keys.length === 1 && keys[0] === 'master_volume_db'
+      && typeof patch.tuning.master_volume_db === 'number';
+  }
+
+  function isOptimisticVolumePatch(patch) {
+    return isTrackVolumeOnlyPatch(patch) || isMasterVolumeOnlyPatch(patch);
+  }
+
+  // Mirrors `expression_for` in expression.py exactly: note volume plus track
+  // volume plus master volume, clamped to SnapMap's -60..20 dB range. Neither
+  // lever changes which notes convert or when they play, only this sum, so
+  // both can update from the already-loaded events instead of a round trip --
+  // the same reasoning `applyOptimisticMixPatch` above already relies on.
+  function recomputeOptimisticVolume(event, trackVolumeDb, masterVolumeDb) {
+    var requested = event.note_volume_db + trackVolumeDb + masterVolumeDb;
+    event.track_volume_db = trackVolumeDb;
+    event.master_volume_db = masterVolumeDb;
+    event.requested_volume_db = requested;
+    event.volume_db = clamp(requested, -60, 20);
+    event.volume_limited = event.volume_db !== requested;
+  }
+
+  function applyOptimisticTrackVolumePatch(patch) {
+    if (!isTrackVolumeOnlyPatch(patch) || !STATE.settings || !STATE.preview) { return; }
+    STATE.settings = mergePendingPatch(JSON.parse(JSON.stringify(STATE.settings)), patch);
+    var partKey = Object.keys(patch.channels)[0];
+    var trackVolumeDb = patch.channels[partKey].volume_db;
+    var display = STATE.preview.display_events || [];
+    display.forEach(function (event) {
+      if (event.part !== partKey) { return; }
+      recomputeOptimisticVolume(event, trackVolumeDb, event.master_volume_db);
+    });
+    STATE.preview.events = display.filter(function (event) {
+      return event.converted && event.audible && !event.muted && !event.solo_excluded;
+    });
+    invalidatePreviewRenderCache();
+    // Membership and timing are unchanged, and `display`'s event objects are
+    // the same ones `AUDIO.performance` already points to, so the mutation
+    // above is already visible to every future `scheduleAhead` tick with no
+    // snapshot to refresh -- only the currently ringing sources need telling.
+    retargetActiveGains(function (event) { return event.part === partKey; });
+    render();
+  }
+
+  function applyOptimisticMasterVolumePatch(patch) {
+    if (!isMasterVolumeOnlyPatch(patch) || !STATE.settings || !STATE.preview) { return; }
+    STATE.settings = mergePendingPatch(JSON.parse(JSON.stringify(STATE.settings)), patch);
+    var masterVolumeDb = patch.tuning.master_volume_db;
+    var display = STATE.preview.display_events || [];
+    display.forEach(function (event) {
+      recomputeOptimisticVolume(event, event.track_volume_db, masterVolumeDb);
+    });
+    STATE.preview.events = display.filter(function (event) {
+      return event.converted && event.audible && !event.muted && !event.solo_excluded;
+    });
+    invalidatePreviewRenderCache();
+    retargetActiveGains(function () { return true; });
+    render();
+  }
+
+  function applyOptimisticVolumePatch(patch) {
+    if (isTrackVolumeOnlyPatch(patch)) { applyOptimisticTrackVolumePatch(patch); }
+    else if (isMasterVolumeOnlyPatch(patch)) { applyOptimisticMasterVolumePatch(patch); }
   }
 
   function retainPendingSettings(patch) {
@@ -5559,9 +6336,10 @@
       if (!response || !response.ok) { fail(response); render(); return; }
       adopt(response, sequence);
       reportSidecarStatus(response);
-      // Do not briefly paint an older mixer state between coalesced clicks.
-      // The next request already contains the user's newer mute/solo choice.
+      // Do not briefly paint an older mixer or volume state between coalesced
+      // edits. The next request already contains the user's newer choice.
       if (isMixOnlyPatch(PATCH_NEXT)) { applyOptimisticMixPatch(PATCH_NEXT); }
+      else if (isOptimisticVolumePatch(PATCH_NEXT)) { applyOptimisticVolumePatch(PATCH_NEXT); }
       else { retainPendingSettings(PATCH_NEXT); }
       AUDIO.position = clamp(
         AUDIO.position,
@@ -5752,6 +6530,7 @@
     el('globalRollToggle').disabled = !song;
     el('masterVolume').disabled = !song;
     syncMasterVolume();
+    syncTempoBox();
     if (song) { renderTracks(); syncRollFocus(); }
     renderTransportState();
     renderPosition(currentPosition(), true);
@@ -5815,20 +6594,6 @@
     el('transportPlay').addEventListener('click', togglePlayback);
     el('menuPlay').addEventListener('click', function () { closeMenus(); togglePlayback(); });
     el('menuStart').addEventListener('click', function () { closeMenus(); pausePlayback(); setPosition(0); });
-    var scrubber = el('scrubber');
-    scrubber.addEventListener('pointerdown', function () {
-      SCRUB_DRAG = { resume: AUDIO.playing };
-      pausePlayback();
-    });
-    scrubber.addEventListener('input', function () { setPosition(Number(this.value)); });
-    scrubber.addEventListener('pointerup', function () {
-      var resume = SCRUB_DRAG && SCRUB_DRAG.resume;
-      SCRUB_DRAG = null;
-      if (resume) { startPlayback(); }
-    });
-    scrubber.addEventListener('change', function () {
-      if (!SCRUB_DRAG) { pausePlayback(); setPosition(Number(this.value)); }
-    });
     var canvas = el('pianoRoll');
     canvas.addEventListener('pointerdown', beginCanvasSeek);
     canvas.addEventListener('pointermove', moveCanvasSeek);
@@ -5883,6 +6648,28 @@
     });
   }
 
+  // A focused number/text field only commits and releases the keyboard on
+  // blur -- that is how `change` fires at all. Enter had no handler, and the
+  // piano roll and lanes are canvases with nothing for a click to focus, so
+  // neither ever moved focus away on its own. Someone who does not know to
+  // click some OTHER control first stayed trapped in the field: Enter did
+  // nothing, and Space -- meant to toggle playback -- typed into the field
+  // instead of reaching the transport shortcut.
+  function blurActiveFormControl() {
+    var active = document.activeElement;
+    if (active && active.matches && active.matches('input, select, textarea')) {
+      active.blur();
+    }
+  }
+
+  function initFieldCommitOnEnterOrClickAway() {
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { blurActiveFormControl(); }
+    });
+    el('pianoRoll').addEventListener('pointerdown', blurActiveFormControl);
+    el('lanesView').addEventListener('pointerdown', blurActiveFormControl);
+  }
+
   function init() {
     initMenus();
     initTheme();
@@ -5894,9 +6681,11 @@
     initNoteInspector();
     initSoundBrowser();
     initMasterVolume();
+    initTempoControl();
     el('notificationsBtn').addEventListener('click', toggleNotifications);
     el('closeNotifications').addEventListener('click', closeNotifications);
     initTransport();
+    initFieldCommitOnEnterOrClickAway();
     initChrome();
     el('menuImport').addEventListener('click', importMidi);
     el('menuReopen').addEventListener('click', reopenMidi);

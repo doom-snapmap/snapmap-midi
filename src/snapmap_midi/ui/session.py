@@ -68,7 +68,7 @@ _AXIS = (0, 127)
 _GRID_PADDING_BARS = Fraction(1, 32)
 
 
-def _timing_manifest(mid_path) -> dict:
+def _timing_manifest(mid_path, mid=None, speed: float = 1.0) -> dict:
     """Return the source MIDI clock as absolute tick/time change points.
 
     The piano roll is read-only, but its ruler still has to speak in bars and
@@ -79,10 +79,19 @@ def _timing_manifest(mid_path) -> dict:
     MIDI defines 120 BPM and 4/4 when a file omits the corresponding metadata.
     Markers at the same tick replace one another so a normal tick-zero tempo or
     signature does not leave a redundant default entry in the payload.
+
+    `mid` accepts an already-parsed file, the same reuse `parse_notes` offers,
+    since this and the note parse used to each read the file from disk
+    independently on every interactive settings change.
+
+    `speed` is the song's `playback_speed` tuning lever, applied the same way
+    `parse_notes` applies it: it divides elapsed time uniformly, after tempo,
+    so the ruler and every note position keep agreeing with each other.
     """
     import mido
 
-    mid = mido.MidiFile(str(mid_path), clip=True)
+    if mid is None:
+        mid = mido.MidiFile(str(mid_path), clip=True)
     ticks_per_beat = int(mid.ticks_per_beat)
     tick = 0
     elapsed_s = 0.0
@@ -98,7 +107,7 @@ def _timing_manifest(mid_path) -> dict:
 
     for message in mido.merge_tracks(mid.tracks):
         delta = int(message.time)
-        elapsed_s += mido.tick2second(delta, ticks_per_beat, tempo)
+        elapsed_s += mido.tick2second(delta, ticks_per_beat, tempo) / speed
         tick += delta
         time_ms = round(elapsed_s * 1000, 6)
         if message.type == "set_tempo":
@@ -141,7 +150,7 @@ def _timing_manifest(mid_path) -> dict:
             marker = candidate
         return round(
             float(marker["time_ms"])
-            + (target_tick - int(marker["tick"])) * int(marker["tempo"]) / 1000 / ticks_per_beat,
+            + (target_tick - int(marker["tick"])) * int(marker["tempo"]) / 1000 / ticks_per_beat / speed,
             6,
         )
 
@@ -158,6 +167,11 @@ def _timing_manifest(mid_path) -> dict:
         "grid_duration_ms": time_at_tick(grid_duration_ticks),
         "tempo_changes": tempos,
         "time_signatures": signatures,
+        # The file's own initial tempo, unaffected by `speed` -- that lever is a
+        # playback multiplier layered on top, not a rewrite of what the file
+        # says. MIDI's own default (120 BPM, `tempo = 500_000`) stands in when
+        # the file never sets one, exactly as it does for playback itself.
+        "base_bpm": round(60_000_000.0 / tempos[0]["tempo"], 2),
     }
 
 
@@ -234,6 +248,10 @@ class Session:
         self._lock = RLock()
         self._note_index = palette.build_note_index()
         self._analysis = None
+        self._mid = None
+        self._mid_key = None
+        self._timing = None
+        self._timing_key = None
         if settings_path is None:
             self._doc = settings_module.defaults()
         else:
@@ -261,6 +279,51 @@ class Session:
             drums=self._doc["drums"],
             part_percussion=settings_module.to_compile_kwargs(self._doc)["part_percussion"],
         )
+
+    def _current_mid(self):
+        """The open song's own `mido.MidiFile`, parsed at most once per edit.
+
+        A settings patch -- a mute click, a volume drag -- re-derives the whole
+        preview, and both `parse_notes` and the timing ruler used to read the
+        same bytes off disk again for every one of them: on a dense song, two
+        full re-parses per keystroke were most of what made the window feel a
+        beat behind. Nothing about the FILE changes between those patches, only
+        the document describing what to do with it, so the parse is cached
+        here and invalidated by the same fact that would invalidate it for a
+        human -- the file on disk is no longer the one last read.
+        """
+        path = self._doc["midi"]
+        if not path:
+            return None
+        stat = Path(path).stat()
+        key = (path, stat.st_mtime_ns, stat.st_size)
+        if self._mid is None or self._mid_key != key:
+            import mido
+
+            self._mid = mido.MidiFile(str(path), clip=True)
+            self._mid_key = key
+        return self._mid
+
+    def _current_timing(self) -> dict:
+        """The song's tempo/time-signature map, rebuilt when the file or speed is.
+
+        No setting on the document changes a note's tick or a tempo event's
+        time -- only whether and how it plays -- so this is exactly as cache-
+        safe as the parse it is built from, EXCEPT `playback_speed`: that lever
+        stretches or compresses every elapsed second the same way it stretches
+        a note's start and end, so the ruler has to agree with it too. The
+        cache key carries the speed alongside the file identity for that one
+        exception; rebuilding on every mute click was the single largest cost
+        left in an interactive settings change once the parse itself was
+        cached, and speed changes far less often than mutes do.
+        """
+        mid = self._current_mid()
+        speed = self._doc["tuning"]["playback_speed"]
+        key = (self._mid_key, speed)
+        if self._timing is None or self._timing_key != key:
+            self._timing = _timing_manifest(self._doc["midi"], mid=mid, speed=speed)
+            self._timing_key = key
+        return self._timing
 
     def load(self, midi_path) -> dict:
         """Open a song, forgetting the last one's instruments and keeping the setup.
@@ -434,6 +497,7 @@ class Session:
                 self._doc["midi"],
                 self._baseline_bytes(),
                 note_index=self._note_index,
+                mid=self._current_mid(),
                 **settings_module.to_compile_kwargs(self._doc),
             )
 
@@ -465,6 +529,7 @@ class Session:
             if not self._doc["midi"]:
                 raise ValueError("no song is open -- open a MIDI file first")
             levers = settings_module.to_compile_kwargs(self._doc)
+            mid = self._current_mid()
             notes, source_stats = parse_notes(
                 self._doc["midi"],
                 drums=levers["drums"],
@@ -481,7 +546,12 @@ class Session:
                 note_overrides=levers["note_overrides"],
                 part_volume_db=levers["part_volume_db"],
                 master_volume_db=levers["master_volume_db"],
+                part_key_range=levers["part_key_range"],
+                part_transpose=levers["part_transpose"],
+                part_pitch_octave=levers["part_pitch_octave"],
+                playback_speed=levers["playback_speed"],
                 include_silent=True,
+                mid=mid,
             )
             audible_notes = [note for note in notes if note.audible]
             parts = {}
@@ -517,6 +587,10 @@ class Session:
                 part_attack_ms=levers["part_attack_ms"],
                 part_voices=levers["part_voices"],
                 part_sustain_ms=levers["part_sustain_ms"],
+                note_off=levers["note_off"],
+                part_note_off=levers["part_note_off"],
+                note_off_floor_ms=levers["note_off_floor_ms"],
+                part_note_off_floor_ms=levers["part_note_off_floor_ms"],
             )
             prepared = list(shared_decaying)
             isolated = []
@@ -647,6 +721,7 @@ class Session:
                     "audible": bool(note.audible),
                     "muted": bool(note.muted),
                     "solo_excluded": bool(note.solo_excluded),
+                    "out_of_key_range": bool(getattr(note, "out_of_key_range", False)),
                     "converted": bool(converted),
                     "pitch_follow": note.pitch_follow,
                     "root_pitch": note.profile_root_pitch,
@@ -688,6 +763,11 @@ class Session:
                         )
                     ),
                     "pitch_limited": note.pitch_limited,
+                    # The octave the part was folded into, automatic or pinned.
+                    # Sent per note rather than recomputed in the browser so the
+                    # window can never disagree with the exporter about where a
+                    # track sits.
+                    "octave_shift": getattr(note, "octave_shift", 0),
                     "playback_rate": note.playback_rate,
                     "velocity_db": note.velocity_db,
                     "volume_trim_db": note.volume_trim_db,
@@ -710,7 +790,7 @@ class Session:
                 _event_payload(note, converted=id(note) in prepared_ids)
                 for note in sorted(notes, key=_event_order)
             ]
-            timing = _timing_manifest(self._doc["midi"])
+            timing = self._current_timing()
             duration_ms = int(round(timing["grid_duration_ms"]))
             # Both boundaries, so the surface never shrinks under a tuning lever:
             # `midi_end` is what the roll draws, `end` is what playback reaches.
@@ -892,6 +972,85 @@ class Session:
         note = int(note)
         return "%s%d" % (names[note % 12], note // 12 - 1)
 
+    def _multi_source_warnings(self) -> list[str]:
+        """Name any track whose exact sound is several recordings in a trench coat.
+
+        One DOOM event name can be backed by several distinct recordings, and
+        the engine plays a DIFFERENT one per trigger. Nothing in a map selects
+        or compensates for that choice, and each recording carries its own
+        inherent pitch, so a calibrated root cannot hold: the same correct
+        semitone modifier lands at a different audible pitch on most notes.
+
+        This has to be said here because it is invisible everywhere else. The
+        window can only extract and audition the FIRST recording, so preview
+        sounds consistent and correct no matter how wrong the export will be --
+        which is exactly how it cost a full debugging session before the live
+        probe settled it. Proven live; see doom-re
+        `docs/truth/engine/snapmap-timeline-sound-modifiers.md`.
+        """
+        try:
+            from snapmap_midi.audio import library
+        except Exception:
+            return []
+        warnings = []
+        for info in self._parts():
+            entry = self._entry_for(info)
+            sound = entry.get("sound")
+            if not sound:
+                continue
+            try:
+                count = library.event_source_count(sound)
+            except Exception:
+                continue
+            if count <= 1:
+                continue
+            # Only pitch-following tracks are actually harmed. A track playing
+            # the sound unpitched gets variation, which is usually the point of
+            # a multi-recording event and not worth a warning.
+            if entry.get("pitch_follow"):
+                warnings.append(
+                    "%s plays %s, which is %d different recordings under one name. The game "
+                    "picks a different one per note and no map setting can choose or correct "
+                    "for it, so this track will play at randomized pitches in game however "
+                    "right it sounds here -- only the first recording is auditioned. Use a "
+                    "single-recording sound for a pitched part."
+                    % (self._who(info.channel), sound, count)
+                )
+            else:
+                warnings.append(
+                    "%s plays %s, which is %d different recordings under one name. The game "
+                    "picks a different one per note, so it will vary in game while preview "
+                    "always plays the first. Harmless unpitched; do not calibrate a pitch "
+                    "against it." % (self._who(info.channel), sound, count)
+                )
+        return warnings
+
+    def _octave_fold_notices(self, stats) -> list[str]:
+        """Say which tracks were moved, and by how much.
+
+        A fold rescues the melody but moves the part, so it cannot be silent.
+        The alternative was the bug it replaces: every note past the engine's
+        limit clamping to the same modifier, a whole line flattening onto one
+        pitch with nothing anywhere saying why.
+        """
+
+        notices = []
+        for detail in stats.get("octave_shift_channels") or []:
+            octaves = detail["octaves"]
+            notices.append(
+                "%s sits too far from its sound's natural note for SnapMap's -24 to +24 "
+                "semitone range, so it plays %d octave%s %s written. The tuning is exact -- "
+                "an octave is a whole 12 semitones, so calibration cents are unchanged. Set "
+                "the track's Playback octave to pick a different one."
+                % (
+                    self._who(detail["channel"]),
+                    abs(octaves),
+                    "" if abs(octaves) == 1 else "s",
+                    "above" if octaves > 0 else "below",
+                )
+            )
+        return notices
+
     def _pitch_limit_warnings(self, stats) -> list[str]:
         details = stats.get("pitch_limit_channels") or []
         if not details:
@@ -968,6 +1127,10 @@ class Session:
                     % ", ".join(str(key) for key in keys)
                 )
             warnings.append(text)
+
+        warnings.extend(self._multi_source_warnings())
+
+        warnings.extend(self._octave_fold_notices(stats))
 
         if stats.get("pitch_limited"):
             warnings.extend(self._pitch_limit_warnings(stats))

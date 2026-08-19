@@ -217,6 +217,53 @@ def test_preview_manifest_carries_source_tempo_and_meter_changes(tmp_path):
     }
 
 
+def test_preview_manifest_reports_the_source_tempo_as_base_bpm(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.MetaMessage("set_tempo", tempo=600_000, time=0),
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+    )
+
+    timing = Session(midi=midi).preview_manifest()["timing"]
+
+    assert timing["base_bpm"] == 100.0
+
+
+def test_preview_manifest_defaults_base_bpm_to_120_with_no_tempo_track(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+    )
+
+    timing = Session(midi=midi).preview_manifest()["timing"]
+
+    assert timing["base_bpm"] == 120.0
+
+
+def test_playback_speed_scales_note_timing_and_the_ruler_together(tmp_path):
+    midi = _midi(
+        tmp_path,
+        [
+            mido.Message("note_on", channel=0, note=60, velocity=100, time=0),
+            mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        ],
+    )
+    session = Session(midi=midi)
+    session.apply({"tuning": {"playback_speed": 2.0}})
+
+    manifest = session.preview_manifest()
+
+    assert manifest["timing"]["base_bpm"] == 120.0
+    assert manifest["timing"]["source_duration_ms"] == 250.0
+    assert manifest["events"][0]["end"] == 250
+
+
 def test_preview_manifest_preserves_source_end_and_completes_the_final_measure(tmp_path):
     midi = _midi(
         tmp_path,
@@ -938,7 +985,18 @@ def test_preview_manifest_applies_polyphony_thinning_before_playback(tmp_path):
     assert [event["pitch"] for event in events] == [67]
 
 
-def test_global_polyphony_counts_shared_and_isolated_notes_together(tmp_path):
+def test_global_polyphony_counts_shared_and_isolated_notes_together(tmp_path, monkeypatch):
+    from snapmap_midi.audio import library
+
+    # An exact sound with no installed record now defaults to a one-shot
+    # (most hand-picked sounds are), so this test's isolated sustained voice
+    # needs a confirmed-looping catalog answer instead of the old
+    # unconfirmed-defaults-to-sustained fallback.
+    monkeypatch.setattr(
+        library,
+        "event_is_looping",
+        lambda name: True if name == "play_test_fixture_has_no_installed_record" else None,
+    )
     mid = mido.MidiFile(ticks_per_beat=480)
 
     piano = mido.MidiTrack()
@@ -967,6 +1025,7 @@ def test_global_polyphony_counts_shared_and_isolated_notes_together(tmp_path):
 
     session = Session(midi=path)
     session.apply({"tuning": {"song_polyphony": 2}})
+    session.apply({"channels": {"1": {"sound": "play_test_fixture_has_no_installed_record"}}})
     by_pitch = {
         event["pitch"]: event for event in session.preview_manifest()["display_events"]
     }
@@ -1098,8 +1157,8 @@ def test_apply_is_a_patch_and_not_a_replacement():
 
 
 def test_a_refused_patch_changes_nothing():
-    """`ins_string` is in SUSTAINED beside the violins and holds twelve
-    unpitched effect samples. A session that had already stored it would compile
+    """`ins_string` is named like an instrument but holds twelve unpitched
+    effect samples. A session that had already stored it would compile
     the part to silence on the next dry run with nothing left to blame."""
     session = Session(midi=TINY_MIDI)
     before = session.settings()
@@ -1345,6 +1404,28 @@ def test_solo_keeps_only_soloed_channels_audible_and_displays_the_rest():
     excluded = [event for event in manifest["display_events"] if event["channel"] != 0]
     assert excluded
     assert all(event["solo_excluded"] and not event["audible"] for event in excluded)
+
+
+def test_a_keyboard_range_silences_notes_outside_it_like_a_keyboard_split():
+    session = Session(midi=TINY_MIDI)
+    session.apply({"channels": {"0": {"key_range": [61, 127]}}})  # channel 0's note is 60
+    manifest = session.preview_manifest()
+    assert all(event["channel"] != 0 for event in manifest["events"])
+    excluded = [event for event in manifest["display_events"] if event["channel"] == 0]
+    assert excluded
+    assert all(
+        event["out_of_key_range"] and not event["audible"] and not event["muted"]
+        for event in excluded
+    )
+
+
+def test_a_keyboard_range_that_includes_the_note_leaves_it_playing():
+    session = Session(midi=TINY_MIDI)
+    session.apply({"channels": {"0": {"key_range": [40, 90]}}})  # channel 0's note is 60
+    manifest = session.preview_manifest()
+    kept = [event for event in manifest["events"] if event["channel"] == 0]
+    assert kept
+    assert all(not event["out_of_key_range"] for event in kept)
 
 
 def test_an_unmapped_drum_key_names_the_unified_track_choices_that_fix_it(tmp_path):
@@ -1629,13 +1710,21 @@ def test_global_clamping_never_rewrites_the_absolute_note_volume(tmp_path):
     assert restored["volume_limited"] is False
 
 
-def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp_path):
+def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp_path, monkeypatch):
     """`docs/limits.md` gives one practical target: notes held under about a
     second cut reliably. Capping the sustain is the lever the sentence names,
     so it has to be the lever that removes it."""
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library,
+        "event_is_looping",
+        lambda name: True if name == "play_test_fixture_has_no_installed_record" else None,
+    )
     held = round(2000 * _TICKS_PER_MS)
     song = _midi(tmp_path, _hits(0, 67, ticks=held, program=40), name="held.mid")
     session = Session(midi=song)
+    session.apply({"channels": {"0": {"sound": "play_test_fixture_has_no_installed_record"}}})
 
     warning = [w for w in _warnings(session) if "sustained notes hold" in w][0]
     assert warning.startswith("1 sustained notes hold longer than a second.")
@@ -1643,6 +1732,57 @@ def test_a_note_held_past_a_second_is_the_warning_the_engine_limit_justifies(tmp
 
     session.apply({"tuning": {"cap_sustain_ms": 500}})
     assert not any("sustained notes hold" in w for w in _warnings(session))
+
+
+def test_a_multi_recording_event_warns_hardest_when_the_track_is_pitched(
+    tmp_path, monkeypatch
+):
+    """One DOOM event name can be several distinct recordings, and the engine
+    plays a different one per trigger (proven live -- doom-re
+    `docs/truth/engine/snapmap-timeline-sound-modifiers.md`). Nothing in a map
+    selects or compensates for that, and each recording has its own inherent
+    pitch, so a calibrated root cannot hold. It is invisible in the window,
+    which only ever auditions the first recording, so the warning is the only
+    place it can be said at all."""
+    from snapmap_midi.audio import library
+
+    monkeypatch.setattr(
+        library,
+        "event_source_count",
+        lambda name: 3 if name == "play_three_recordings" else 1,
+    )
+    song = _midi(tmp_path, _hits(0, 67, program=40), name="multi.mid")
+
+    pitched = Session(midi=song)
+    pitched.apply(
+        {
+            "channels": {
+                "0": {
+                    "sound": "play_three_recordings",
+                    "pitch_follow": True,
+                    "root_midi": 60,
+                }
+            }
+        }
+    )
+    warning = [w for w in _warnings(pitched) if "3 different recordings" in w][0]
+    assert "randomized pitches" in warning
+    assert "single-recording sound" in warning
+
+    # Unpitched, the variation is usually the point of such an event, so the
+    # note is informational rather than a correction to make.
+    plain = Session(midi=song)
+    plain.apply({"channels": {"0": {"sound": "play_three_recordings"}}})
+    relaxed = [w for w in _warnings(plain) if "3 different recordings" in w][0]
+    assert "randomized pitches" not in relaxed
+    assert "do not calibrate" in relaxed
+
+    # A single-recording sound is silent on this entirely.
+    single = Session(midi=song)
+    single.apply(
+        {"channels": {"0": {"sound": "play_one_recording", "pitch_follow": True, "root_midi": 60}}}
+    )
+    assert not any("different recordings" in w for w in _warnings(single))
 
 
 def test_running_out_of_speakers_is_reported(tmp_path):

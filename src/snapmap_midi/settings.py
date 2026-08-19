@@ -36,12 +36,13 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
+from snapmap_midi.music import expression
 from snapmap_midi.sound import palette
 
 #: Bumped when a document written by this build can no longer be read by the
 #: previous one. `validate` refuses anything it does not recognise rather than
 #: reading the half it understands.
-SETTINGS_VERSION = 19
+SETTINGS_VERSION = 23
 
 
 #: Stable operational pitch basis for rootless exact sounds. This is not an
@@ -69,6 +70,12 @@ _MAX_SPEAKERS = 128
 #: next, so a long one IS the smearing every other lever here exists to remove.
 _MAX_RELEASE_S = 10.0
 
+#: Quarter speed to quadruple speed. Wide enough for a deliberate half-time or
+#: double-time remix without opening onto values that stop reading as the same
+#: song.
+_MIN_PLAYBACK_SPEED = 0.25
+_MAX_PLAYBACK_SPEED = 4.0
+
 _DRUM_MODES = ("auto", "on", "off")
 _CHANNEL_KEYS = frozenset(
     {
@@ -84,15 +91,19 @@ _CHANNEL_KEYS = frozenset(
         "root_confidence",
         "root_source",
         "pitch_transpose",
+        "pitch_octave",
         "fine_tune_cents",
         "glide_ms",
         "attack_ms",
         "release_s",
         "hard_stop",
+        "note_off",
+        "note_off_floor_ms",
         "sustain_ms",
         "volume_db",
         "voices",
         "polyphony",
+        "key_range",
     }
 )
 #: Whether a track is a drum kit. `auto` keeps the channel-10 heuristic, which
@@ -138,12 +149,15 @@ _TUNING_DEFAULTS = {
     "song_polyphony": 32,
     "release_s": 0.1,
     "hard_stop": False,
+    "note_off": False,
+    "note_off_floor_ms": None,
     "max_poly": None,
     "cap_sustain_ms": None,
     "bass_pitch": 78,
     "bass_cap_ms": None,
     "decaying_families": [],
     "family_caps": {},
+    "playback_speed": 1.0,
 }
 
 #: Levers that used to look like candidates and are not. Named so the refusal
@@ -307,6 +321,30 @@ def _optional_whole(value, what: str, low: int, high=None) -> int | None:
     return None if value is None else _whole(value, what, low, high)
 
 
+def _key_range(value, what: str) -> list[int] | None:
+    """A [low, high] MIDI note pair, or None for "every note plays".
+
+    Both ends travel together rather than as two independent optional
+    numbers: a lone low or high bound has no natural default to pair with
+    (0 and 127 are both valid notes, not "unset"), so a half-written range
+    would silently mean something nobody chose.
+    """
+    if value is None:
+        return None
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or any(isinstance(v, bool) or not isinstance(v, int) for v in value)
+    ):
+        raise SettingsError("%s is %r; it has to be a [low, high] pair of MIDI notes" % (what, value))
+    low, high = value
+    if not (0 <= low <= 127) or not (0 <= high <= 127):
+        raise SettingsError("%s is %r; MIDI notes run 0 to 127" % (what, value))
+    if low > high:
+        raise SettingsError("%s is %r; the low note has to be at or below the high note" % (what, value))
+    return [low, high]
+
+
 def _text(value, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SettingsError("%s is %r; it has to be a name" % (what, value))
@@ -411,16 +449,54 @@ def _channels(section, families, sounds) -> dict:
             normalized["hard_stop"] = _flag(
                 entry["hard_stop"], "channel %s: hard_stop" % channel
             )
+        if entry.get("note_off") is not None:
+            normalized["note_off"] = _flag(
+                entry["note_off"], "channel %s: note_off" % channel
+            )
+        note_off_floor_ms = _optional_whole(
+            entry.get("note_off_floor_ms"), "channel %s: note_off_floor_ms" % channel, 0, 5000
+        )
+        if note_off_floor_ms is not None:
+            normalized["note_off_floor_ms"] = note_off_floor_ms
         attack_ms = _optional_whole(
             entry.get("attack_ms"), "channel %s: attack_ms" % channel, 1, 5000
         )
         if attack_ms is not None:
             normalized["attack_ms"] = attack_ms
+        key_range = _key_range(entry.get("key_range"), "channel %s: key_range" % channel)
+        if key_range is not None:
+            normalized["key_range"] = key_range
         if "pitch_follow_preference" in entry:
             normalized["pitch_follow_preference"] = _flag(
                 entry["pitch_follow_preference"],
                 "channel %s: pitch_follow_preference" % channel,
             )
+        # Transpose is the one pitch lever that is NOT specific to a hand-picked
+        # sample, so it is normalized for every channel rather than inside the
+        # `sound is not None` block below. An automatic instrument is a set of
+        # separately recorded, pre-tuned samples, so transposing it selects a
+        # different recording instead of retuning one -- see `parse_notes`. The
+        # stored value is identical either way; only what reads it differs.
+        pitch_transpose = _number(
+            entry.get("pitch_transpose", 0),
+            "channel %s: pitch_transpose" % channel,
+            -24,
+            24,
+        )
+        if pitch_transpose:
+            normalized["pitch_transpose"] = pitch_transpose
+        # Absent means automatic, which is why this is optional rather than
+        # defaulted to 0: 0 is a real answer here ("do not move this part"),
+        # and a stored 0 has to be able to overrule the automatic fold.
+        pitch_octave = _optional_number(
+            entry.get("pitch_octave"),
+            "channel %s: pitch_octave" % channel,
+            -expression.OCTAVE_FOLD_LIMIT,
+            expression.OCTAVE_FOLD_LIMIT,
+        )
+        if pitch_octave is not None:
+            normalized["pitch_octave"] = int(pitch_octave)
+
         if sound is not None:
             normalized["sound"] = sound
             expression_fields = _CHANNEL_KEYS - {
@@ -432,6 +508,8 @@ def _channels(section, families, sounds) -> dict:
                 "pitch_follow_preference",
                 "release_s",
                 "hard_stop",
+                "note_off",
+                "note_off_floor_ms",
                 "attack_ms",
             }
             if any(key in entry for key in expression_fields):
@@ -450,12 +528,6 @@ def _channels(section, families, sounds) -> dict:
                         "channel %s: pitch_follow needs a root_midi between 0 and 127" % channel
                     )
                 normalized["pitch_follow"] = pitch_follow
-                pitch_transpose = _number(
-                    entry.get("pitch_transpose", 0),
-                    "channel %s: pitch_transpose" % channel,
-                    -24,
-                    24,
-                )
                 fine_tune_cents = _number(
                     entry.get("fine_tune_cents", 0),
                     "channel %s: fine_tune_cents" % channel,
@@ -468,8 +540,6 @@ def _channels(section, families, sounds) -> dict:
                     0,
                     5000,
                 )
-                if pitch_transpose:
-                    normalized["pitch_transpose"] = pitch_transpose
                 if fine_tune_cents:
                     normalized["fine_tune_cents"] = fine_tune_cents
                 if glide_ms:
@@ -672,12 +742,17 @@ def _tuning(section, families) -> dict:
     )
     out["release_s"] = _release(out["release_s"])
     out["hard_stop"] = _flag(out["hard_stop"], "hard_stop")
+    out["note_off"] = _flag(out["note_off"], "note_off")
+    out["note_off_floor_ms"] = _optional_whole(out["note_off_floor_ms"], "note_off_floor_ms", 0, 5000)
     out["max_poly"] = _optional_whole(out["max_poly"], "max_poly", 1)
     out["cap_sustain_ms"] = _optional_whole(out["cap_sustain_ms"], "cap_sustain_ms", 1)
     out["bass_pitch"] = _whole(out["bass_pitch"], "bass_pitch", 0, _MAX_NOTE)
     out["bass_cap_ms"] = _optional_whole(out["bass_cap_ms"], "bass_cap_ms", 1)
     out["decaying_families"] = _decaying_families(out["decaying_families"], families)
     out["family_caps"] = _family_caps(out["family_caps"], families)
+    out["playback_speed"] = _number(
+        out["playback_speed"], "playback_speed", _MIN_PLAYBACK_SPEED, _MAX_PLAYBACK_SPEED
+    )
     return out
 
 
@@ -700,6 +775,11 @@ def _release(value) -> float:
 
 def _migrate(doc: dict) -> dict:
     """Upgrade older sidecars while preserving their stored user choices.
+
+    Version 23 adds a song-wide `playback_speed` multiplier. No stored value
+    changes: the key is absent on every migrated document, and absent means
+    the compiler's own default of 1.0 applies, which is the tempo the file
+    already compiled at.
 
     Version 16 adds a strict song-wide audible-note limit. Older documents use
     the new default of 32 notes.
@@ -733,6 +813,12 @@ def _migrate(doc: dict) -> dict:
     reference and stores user-facing note pitch as an absolute SnapMap value.
     Existing relative pitch offsets remain valid and keep their original
     playback behavior.
+
+    Version 22 adds a per-track octave fold. No stored value changes: the key
+    is absent on every migrated document, and absent means the fold is decided
+    automatically from how far the track's notes sit from its reference. A
+    track already corrected by hand with transpose measures as in range and is
+    therefore not moved again.
 
     Version 7 separates the user's channel-wide Follow MIDI note preference
     from the effective pitch plan of one selected sound. A version-6 choice is
@@ -1024,12 +1110,25 @@ def to_compile_kwargs(doc) -> dict:
             for c, entry in channels.items()
             if entry.get("hard_stop") is not None
         },
+        "note_off": tuning["note_off"],
+        "part_note_off": {
+            part_selector(c): entry["note_off"]
+            for c, entry in channels.items()
+            if entry.get("note_off") is not None
+        },
+        "note_off_floor_ms": tuning["note_off_floor_ms"],
+        "part_note_off_floor_ms": {
+            part_selector(c): entry["note_off_floor_ms"]
+            for c, entry in channels.items()
+            if entry.get("note_off_floor_ms") is not None
+        },
         "cap_sustain_ms": tuning["cap_sustain_ms"],
         "bass_pitch": tuning["bass_pitch"],
         "bass_cap_ms": tuning["bass_cap_ms"],
         "max_poly": tuning["max_poly"],
         "decaying_families": set(tuning["decaying_families"]),
         "family_caps": dict(tuning["family_caps"]),
+        "playback_speed": tuning["playback_speed"],
         "channel_families": {
             part_selector(channel): entry["family"]
             for channel, entry in channels.items()
@@ -1071,6 +1170,25 @@ def to_compile_kwargs(doc) -> dict:
             for c, entry in channels.items()
             if entry.get("sustain_ms") is not None
         },
+        # Every part's transpose, not just the hand-picked-sample ones. An
+        # exact sound reads its transpose from the pitch profile above and
+        # applies it as a playback modifier on the one recording it has; an
+        # automatic instrument reads it from here and applies it by selecting
+        # a different pre-tuned recording. Same stored number, two mechanisms,
+        # because the two instrument kinds are genuinely different things.
+        "part_transpose": {
+            part_selector(c): entry["pitch_transpose"]
+            for c, entry in channels.items()
+            if entry.get("pitch_transpose")
+        },
+        # Absent keys mean "decide automatically", so only channels the user has
+        # actually pinned appear here. An explicit 0 is kept, because 0 is the
+        # user saying "leave this part where it was written".
+        "part_pitch_octave": {
+            part_selector(c): entry["pitch_octave"]
+            for c, entry in channels.items()
+            if entry.get("pitch_octave") is not None
+        },
         "part_glide_ms": {
             part_selector(c): entry["glide_ms"]
             for c, entry in channels.items()
@@ -1080,6 +1198,11 @@ def to_compile_kwargs(doc) -> dict:
             part_selector(c): entry["attack_ms"]
             for c, entry in channels.items()
             if entry.get("attack_ms") is not None
+        },
+        "part_key_range": {
+            part_selector(c): tuple(entry["key_range"])
+            for c, entry in channels.items()
+            if entry.get("key_range") is not None
         },
         "drum_key_overrides": {int(key): sound for key, sound in doc["drum_keys"].items()},
     }

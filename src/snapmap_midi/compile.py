@@ -199,6 +199,8 @@ def compile_to_rawmap(
     max_speakers: int = 32,
     release_s: float = 0.1,
     hard_stop: bool = False,
+    note_off: bool = False,
+    note_off_floor_ms: Optional[int] = None,
     max_events: Optional[int] = None,
     drop_sustain_over_ms: Optional[int] = None,
     min_sustain_ms: Optional[int] = None,
@@ -214,6 +216,8 @@ def compile_to_rawmap(
     part_attack_ms: Optional[dict] = None,
     part_release_s: Optional[dict] = None,
     part_hard_stop: Optional[dict] = None,
+    part_note_off: Optional[dict] = None,
+    part_note_off_floor_ms: Optional[dict] = None,
     part_sustain_ms: Optional[dict] = None,
     decaying_families: Optional[set] = None,
     family_caps: Optional[dict] = None,
@@ -230,8 +234,17 @@ def compile_to_rawmap(
     note_overrides: Optional[dict] = None,
     part_volume_db: Optional[dict] = None,
     master_volume_db: int = 0,
+    part_key_range: Optional[dict] = None,
+    part_transpose: Optional[dict] = None,
+    part_pitch_octave: Optional[dict] = None,
+    playback_speed: float = 1.0,
+    mid=None,
 ):
     """Compile a MIDI file into finished map bytes plus a statistics summary.
+
+    `mid` accepts an already-parsed `mido.MidiFile`, threaded straight to
+    `parse_notes` so a caller holding one open song does not pay a fresh disk
+    read and parse on every compile.
 
     `baseline_bytes` is optional. Omit it and the song is staged in a blank
     room authored from nothing; pass a saved map and the song is added to it,
@@ -271,6 +284,11 @@ def compile_to_rawmap(
         note_overrides=note_overrides,
         part_volume_db=part_volume_db,
         master_volume_db=master_volume_db,
+        part_key_range=part_key_range,
+        part_transpose=part_transpose,
+        part_pitch_octave=part_pitch_octave,
+        playback_speed=playback_speed,
+        mid=mid,
     )
     decaying = [n for n in notes if not n.sustained]
     sustained = [n for n in notes if n.sustained]
@@ -313,6 +331,10 @@ def compile_to_rawmap(
         part_attack_ms=part_attack_ms,
         part_voices=part_voices,
         part_sustain_ms=part_sustain_ms,
+        note_off=note_off,
+        part_note_off=part_note_off,
+        note_off_floor_ms=note_off_floor_ms,
+        part_note_off_floor_ms=part_note_off_floor_ms,
     )
     shared_events = sorted(
         (
@@ -354,11 +376,49 @@ def compile_to_rawmap(
         timeline_by_target[emitter_id] = emitter
 
         scheduled = []
+        # When the note before this one on this emitter is guaranteed silent,
+        # or None if nothing stops it. Recorded as each note's own stop is
+        # scheduled below rather than recomputed here, so the two cannot drift.
+        previous_silent_at = None
         for i, n in enumerate(voice_notes):
             glide_ms = int(getattr(n, "glide_ms", 0) or 0)
             start_pitch = (
                 getattr(n, "glide_from_pitch") if glide_ms else n.pitch_modifier
             )
+            # A LOOPING sound is still playing when the next note on this
+            # emitter begins, and `fadePitch`/`fadeSound` address the wildcard
+            # channel -- "whatever is currently playing". So without clearing
+            # the outgoing loop first, this note's pitch lands on the PREVIOUS
+            # note's still-sounding loop and bends that instead, while the
+            # sound started just below inherits nothing of its own. Every note
+            # ends up pitched by its successor, which reads as pitch wandering
+            # unpredictably across the phrase.
+            #
+            # This does not arise for a one-shot: by the time the next note
+            # fires its sample has already finished, so nothing intercepts the
+            # modifier and the fresh sound inherits the emitter state -- which
+            # is why the ordering below was proven correct against one-shots
+            # and still failed on loops. Only a genuine sustain this note is
+            # taking over from needs the explicit clear.
+            #
+            # "Still sounding" deliberately includes a release TAIL, not just
+            # an overlapping written block: a note ending 50 ms before the next
+            # one, with a 100 ms release, is still audibly fading when that
+            # next note retunes the emitter. Checking the previous note's real
+            # silence time covers the legato case and that short-gap case with
+            # the same test. Equality counts as still sounding, because a stop
+            # sharing this note's timestamp has no defined order against its
+            # modifier.
+            previous = voice_notes[i - 1] if i else None
+            if (
+                previous is not None
+                and previous.sustained
+                and (previous_silent_at is None or previous_silent_at >= n.start)
+            ):
+                # One millisecond earlier so it serializes before this note's
+                # own modifier, leaving the emitter genuinely idle for it.
+                scheduled.append(_events.stop(max(previous.start, n.start - 1)))
+            previous_silent_at = None
             # Live-engine probes established that an instantaneous modifier has
             # to be serialized BEFORE the same-time start. Speaker entities
             # swallow this path; an ordinary Timeline target applies it. Every
@@ -404,11 +464,23 @@ def compile_to_rawmap(
             # explicit hard stop at its virtual cutoff.
             if voice_cap_end is not None and (following is None or following.start > stop_at):
                 scheduled.append(_events.stop(stop_at))
+                previous_silent_at = stop_at
             elif getattr(n, "sustain_limited", False):
                 # A Sustain Limit is a maximum *audible* duration, not the
                 # time at which a release merely begins. Finish the release
-                # by its deadline so this voice is genuinely free when the
-                # allocator reuses it, instead of cutting a live fade short.
+                # by its deadline, then actually free the voice: `fadeSound`
+                # only ramps volume, it does not stop the underlying one-shot
+                # from rendering. Left at a fade alone, a Note-Off-capped
+                # sample -- whose whole reason for being capped is that its
+                # natural ring runs far past `n.end` -- keeps occupying its
+                # voice, silently, all the way to that natural ring's real
+                # end. Under a whole song of these the allocator's bookkeeping
+                # and the engine's real occupancy drift apart badly enough to
+                # exhaust real voices and start recycling emitters out from
+                # under still-sounding notes. The browser preview cannot show
+                # this: it does not model real voice exhaustion, so it plays
+                # a fade-only capped note as cleanly as this stop makes it
+                # play in game.
                 note_release = for_part(
                     part_release_s or {},
                     getattr(n, "track", 0),
@@ -433,6 +505,13 @@ def compile_to_rawmap(
                             (n.end - release_start) / 1000.0,
                         )
                     )
+                    # The stop lands exactly when the fade above reaches
+                    # silence (`release_start + release duration == n.end`),
+                    # never before it -- the release still finishes audibly
+                    # first, this only reclaims the voice once nothing is
+                    # left to click.
+                    scheduled.append(_events.stop(n.end))
+                previous_silent_at = n.end
             elif n.sustained and (following is None or following.start > n.end):
                 note_release = for_part(
                     part_release_s or {},
@@ -446,11 +525,25 @@ def compile_to_rawmap(
                     n.chan,
                     hard_stop,
                 )
-                scheduled.append(
-                    _events.stop(n.end)
-                    if note_hard_stop
-                    else _events.fade(n.end, -60.0, note_release)
-                )
+                if note_hard_stop:
+                    scheduled.append(_events.stop(n.end))
+                    previous_silent_at = n.end
+                else:
+                    scheduled.append(_events.fade(n.end, -60.0, note_release))
+                    # Same reasoning as the sustain_limited branch above:
+                    # `fadeSound` only lowers volume, it never releases a
+                    # genuinely looping sound's emitter. Nothing else is
+                    # coming to retrigger this voice (that is what the
+                    # `following` check above already ruled out), so a fade
+                    # alone leaves it looping, silently, until the engine's
+                    # own recycling eventually reclaims it -- which is
+                    # exactly the "recycled note rings to the end of its
+                    # sample under the next phrase" the sustain-count
+                    # warning describes. The stop once the release finishes
+                    # actually frees it instead of leaving that to chance.
+                    release_ms = max(0, int(round(float(note_release) * 1000)))
+                    scheduled.append(_events.stop(n.end + release_ms))
+                    previous_silent_at = n.end + release_ms
         groups.append((emitter_id, sorted(scheduled, key=lambda e: e["eventTime"])))
 
     entity_events = {

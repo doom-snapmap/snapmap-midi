@@ -90,6 +90,16 @@ def test_the_named_defaults_are_the_ones_the_docs_promise():
     assert tuning["bass_cap_ms"] is None
     assert tuning["decaying_families"] == []
     assert tuning["family_caps"] == {}
+    assert tuning["playback_speed"] == 1.0
+
+
+def test_playback_speed_is_bounded_to_quarter_through_quadruple():
+    with pytest.raises(settings.SettingsError, match="playback_speed"):
+        _patch({"tuning": {"playback_speed": 0.1}})
+    with pytest.raises(settings.SettingsError, match="playback_speed"):
+        _patch({"tuning": {"playback_speed": 5.0}})
+    doc = _patch({"tuning": {"playback_speed": 2.0}})
+    assert doc["tuning"]["playback_speed"] == 2.0
 
 
 def test_max_events_is_not_a_setting_at_all():
@@ -418,8 +428,8 @@ def test_a_family_that_cannot_play_a_pitch_is_refused():
 
 
 def test_ins_string_is_refused_like_any_other_silent_family():
-    """The trap: named like an instrument, listed in `SUSTAINED` beside the
-    violins, and holding twelve unpitched effect samples."""
+    """The trap: named like an instrument, but holding twelve unpitched
+    effect samples."""
     with pytest.raises(settings.SettingsError, match="ins_string"):
         _patch({"channels": {"0": {"family": "ins_string"}}})
 
@@ -578,6 +588,22 @@ def test_track_glide_outside_whole_millisecond_bounds_is_refused(value):
     sound = palette.sounds_in_category("ins_piano")[0]
     with pytest.raises(settings.SettingsError, match="glide_ms"):
         _patch({"channels": {"0": {"sound": sound, "glide_ms": value}}})
+
+
+def test_a_keyboard_range_survives_a_round_trip():
+    doc = _patch({"channels": {"0": {"key_range": [40, 90]}}})
+    assert doc["channels"]["0"]["key_range"] == [40, 90]
+
+
+def test_a_keyboard_range_with_the_low_note_above_the_high_note_is_refused():
+    with pytest.raises(settings.SettingsError, match="key_range"):
+        _patch({"channels": {"0": {"key_range": [90, 40]}}})
+
+
+@pytest.mark.parametrize("value", [[-1, 90], [40, 128], [40], [40, 90, 1], "40-90", [1.5, 90], True])
+def test_a_malformed_keyboard_range_is_refused(value):
+    with pytest.raises(settings.SettingsError, match="key_range"):
+        _patch({"channels": {"0": {"key_range": value}}})
 
 
 def test_legacy_relative_reference_is_not_valid_in_a_current_document():
@@ -921,6 +947,44 @@ def test_track_attack_and_hard_stop_reach_the_compiler():
     )
     assert cleared["part_attack_ms"] == {}
     assert cleared["part_hard_stop"] == {}
+
+
+def test_track_note_off_reaches_the_compiler_and_the_song_default_too():
+    doc = _patch({"tuning": {"note_off": True}, "channels": {"0:1": {"note_off": False}}})
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["tuning"]["note_off"] is True
+    assert doc["channels"]["0:1"]["note_off"] is False
+    assert levers["note_off"] is True
+    assert levers["part_note_off"] == {(0, 1): False}
+
+    cleared = settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"note_off": None}}}, base=doc)
+    )
+    assert cleared["part_note_off"] == {}
+
+
+def test_track_note_off_floor_reaches_the_compiler_and_the_song_default_too():
+    doc = _patch(
+        {"tuning": {"note_off_floor_ms": 100}, "channels": {"0:1": {"note_off_floor_ms": 400}}}
+    )
+    levers = settings.to_compile_kwargs(doc)
+
+    assert doc["tuning"]["note_off_floor_ms"] == 100
+    assert doc["channels"]["0:1"]["note_off_floor_ms"] == 400
+    assert levers["note_off_floor_ms"] == 100
+    assert levers["part_note_off_floor_ms"] == {(0, 1): 400}
+
+    cleared = settings.to_compile_kwargs(
+        _patch({"channels": {"0:1": {"note_off_floor_ms": None}}}, base=doc)
+    )
+    assert cleared["part_note_off_floor_ms"] == {}
+
+
+@pytest.mark.parametrize("value", [-1, 5001, "100", True])
+def test_track_note_off_floor_uses_bounded_whole_milliseconds(value):
+    with pytest.raises(settings.SettingsError, match="note_off_floor_ms"):
+        _patch({"channels": {"0": {"note_off_floor_ms": value}}})
 
 
 @pytest.mark.parametrize("value", [0, -1, 5001, "250", True])
@@ -1272,3 +1336,28 @@ def test_an_assumed_root_migrates_to_the_neutral_name():
     assert migrated["version"] == settings.SETTINGS_VERSION
     # The whole point: it has to survive the gate it used to fail.
     settings.validate(migrated)
+
+
+def test_playback_octave_keeps_absent_and_zero_as_different_answers():
+    """Absent means "decide automatically"; 0 means "leave this track at the
+    written octave". Collapsing the two would make the control unable to refuse
+    the automatic fold, which is the main reason it exists."""
+    sound = palette.sounds_in_category("ins_piano")[0]
+
+    automatic = _patch({"channels": {"0": {"sound": sound}}})
+    assert "pitch_octave" not in automatic["channels"]["0"]
+    assert settings.to_compile_kwargs(automatic)["part_pitch_octave"] == {}
+
+    refused = _patch({"channels": {"0": {"sound": sound, "pitch_octave": 0}}})
+    assert refused["channels"]["0"]["pitch_octave"] == 0
+    assert settings.to_compile_kwargs(refused)["part_pitch_octave"] == {0: 0}
+
+    pinned = _patch({"channels": {"0": {"sound": sound, "pitch_octave": -3}}})
+    assert settings.to_compile_kwargs(pinned)["part_pitch_octave"] == {0: -3}
+
+
+def test_playback_octave_refuses_a_value_past_the_fold_limit():
+    sound = palette.sounds_in_category("ins_piano")[0]
+    with pytest.raises(settings.SettingsError) as caught:
+        _patch({"channels": {"0": {"sound": sound, "pitch_octave": 11}}})
+    assert "pitch_octave" in str(caught.value)

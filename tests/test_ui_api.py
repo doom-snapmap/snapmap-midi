@@ -332,9 +332,9 @@ def test_constructing_with_a_settings_file_has_already_applied_it(tmp_path):
 
 
 def test_the_catalog_offers_only_families_that_can_play_a_pitch():
-    """`ins_string` is named like an instrument, sits in SUSTAINED beside the
-    violins, and holds twelve unpitched effect samples. Offering it would
-    compile the part to silence with no error anywhere."""
+    """`ins_string` is named like an instrument but holds twelve unpitched
+    effect samples. Offering it would compile the part to silence with no
+    error anywhere."""
     families = Bridge().catalog()["families"]
     names = [f["name"] for f in families]
     assert names == palette.pitched_families()

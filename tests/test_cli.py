@@ -229,6 +229,14 @@ def test_baseline_flag_adds_to_a_supplied_map(tmp_path, minimal_timeline_map):
         if entity.get("displayName", "").startswith("snapmap-midi-v")
     ]
     assert len(masters) == 1 and masters[0]["uniqueId"] == 1
+    # 2 voices: all four notes in TINY_MIDI are expressive one-shots (each
+    # already carries its own pitch/volume adjustment, isolating it for that
+    # reason alone), but they no longer all share identical scheduling.
+    # Piano (channel 0) is one of the families `_AUTOMATIC_NOTE_OFF_OVERRIDES`
+    # excludes from the automatic Note Off default, so it keeps its full,
+    # uncapped natural decay while violin's (channel 1) is capped at its own
+    # note-off -- different enough durations that they no longer fit
+    # sequentially on one shared lane.
     assert len(emitters) == 2
     assert not any(
         (entity.get("entityDef") or {}).get("className")
